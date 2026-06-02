@@ -1,0 +1,77 @@
+# Copy this file into each consumer repo as:
+#   .github/workflows/ai-review.yml
+#
+# Two variants below:
+#   1. SAME-ORG (ignite-corp consumers): cab, qayak, t2a, infra-common
+#   2. CROSS-ORG (ignite-pilot-org consumers): same shape, identical
+#      explicit-secret block. `secrets: inherit` does NOT work cross-org.
+#
+# Pick ONE variant and delete the other before committing.
+# Both pin to @v1.0.0 -- DO NOT use @main in production.
+
+# --- Variant 1: same-org (ignite-corp) ---
+name: AI Code Review
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review (required for manual trigger)"
+        required: true
+        type: string
+
+jobs:
+  review:
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.0
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      code-review-system-prompt-path: .github/prompts/code-review-system.md
+      code-review-checklist-path: .github/prompts/code-review-checklist.md
+    secrets:
+      # Explicit mapping is required even within ignite-corp because
+      # `secrets: inherit` ties the consumer to the same org AND prevents
+      # the consumer from auditing which secrets the workflow uses.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+# --- Variant 2: cross-org (ignite-pilot-org and any external org) ---
+#
+# Prerequisites for cross-org:
+#   1. Org admin grants the consumer repo access to org-level secrets
+#      OPENAI_API_KEY, GOOGLE_AI_API_KEY, CLAUDE_CODE_OAUTH_TOKEN.
+#      Settings -> Organization -> Secrets and variables -> Actions
+#      -> add each secret and set "Repository access" to include this repo.
+#   2. Org admin allows `ignite-corp/ai-dev-pr-review` in
+#      Settings -> Actions -> General -> Workflow permissions ->
+#      Allow specified actions and reusable workflows.
+#   3. Org admin permits the underlying actions invoked by this workflow:
+#        anthropics/claude-code-action
+#        actions/checkout
+#        actions/setup-python
+#        actions/download-artifact
+#        actions/upload-artifact
+#
+# The YAML is identical to Variant 1 -- only the env setup differs:
+#
+# name: AI Code Review
+# on:
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:
+#     inputs:
+#       pr_number:
+#         required: true
+#         type: string
+# jobs:
+#   review:
+#     uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.0
+#     with:
+#       pr_number: ${{ inputs.pr_number || '' }}
+#     secrets:
+#       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+#       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

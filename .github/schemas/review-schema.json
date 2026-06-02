@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "1-2 sentence overall review summary"
+    },
+    "early_exit": {
+      "type": "boolean",
+      "description": "true only when the PR has fundamental flaws that make further review unnecessary (e.g., security vulnerability that must be redesigned). false for normal critical issues that other reviewers should still evaluate."
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor", "suggestion"]
+          },
+          "file": {
+            "type": "string",
+            "nullable": true
+          },
+          "line": {
+            "type": "integer",
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "suggestion": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": ["severity", "file", "line", "description", "suggestion"]
+      }
+    }
+  },
+  "required": ["summary", "early_exit", "issues"]
+}

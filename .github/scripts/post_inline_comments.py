@@ -1,0 +1,369 @@
+#!/usr/bin/env python3
+"""Post inline PR review comments from a review JSON file.
+
+Parses pr.diff to validate line numbers against the actual diff hunks,
+then posts inline comments via the GitHub PR Reviews API.
+Falls back to a plain PR comment if the API call fails.
+
+Dedup strategy (exact-match):
+  1. Fetch ALL existing threads (resolved + unresolved)
+  2. Normalise each thread's first comment body via _normalize_body
+  3. For each new issue, check if a thread with the same file and identical
+     normalised body exists (survives force-push line shifts, content-based)
+
+Issues outside the diff range are not posted -- they appear in aggregate summary.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from github_pr_support import (
+    DIFF_FILE_PREFIX,
+    DIFF_FILE_PREFIX_LEN,
+    DIFF_SIDE_RIGHT,
+    REVIEWER_NAMES,
+    SEVERITY_ICONS,
+    GH_TIMEOUT_SEC,
+    fetch_paginated_nodes,
+    get_pr_head_sha,
+)
+
+# Page size per GraphQL request for thread pagination.
+THREAD_PAGE_SIZE = 100
+_FALLBACK_HEADER = "## [bot] {} Inline Review (fallback)"
+
+# Pre-compiled patterns for _normalize_body
+_ICON_RE = re.compile("[" + "".join(SEVERITY_ICONS.values()) + "*]")
+_BOLD_RE = re.compile(r"\*\*.*?\*\*")
+_REVIEWER_RE = re.compile(
+    rf"\((?:{'|'.join(re.escape(r) for r in REVIEWER_NAMES)})\)", re.IGNORECASE
+)
+_BLOCKQUOTE_RE = re.compile(r"^>.*$", re.MULTILINE)
+_LEADING_COLON_RE = re.compile(r"^\s*:\s*")
+
+
+def parse_diff(diff_text: str) -> dict[str, set[int]]:
+    """Parse unified diff to extract valid right-side line numbers per file."""
+    valid: dict[str, set[int]] = {}
+    current_file: str | None = None
+    right_line = 0
+
+    for line in diff_text.splitlines():
+        if line.startswith("\\"):
+            continue  # "\ No newline at end of file"
+        if line.startswith(DIFF_FILE_PREFIX):
+            # Take only the path; unified diff may append tab+timestamp after it.
+            raw_path = line[DIFF_FILE_PREFIX_LEN:]
+            current_file = raw_path.split("\t")[0] if raw_path else raw_path
+            right_line = 0
+            valid.setdefault(current_file, set())
+        elif line.startswith("@@ "):
+            match = re.search(r"\+(\d+)", line)
+            if match:
+                right_line = int(match.group(1))
+        elif current_file is not None:
+            if line.startswith("+") or line.startswith(" "):
+                valid[current_file].add(right_line)
+                right_line += 1
+            elif line.startswith("-"):
+                pass  # deleted line, no right-side position
+            elif line.startswith("diff --git"):
+                current_file = None
+
+    return valid
+
+
+def _normalize_body(text: str) -> str:
+    """Normalize review comment body for exact-match dedup.
+
+    Strips generated prefixes (icons, severity, reviewer tag, leading colon)
+    so that thread bodies and raw descriptions produce the same output.
+    """
+    text = _ICON_RE.sub("", text)
+    text = _BOLD_RE.sub("", text)
+    text = _REVIEWER_RE.sub("", text)
+    text = _BLOCKQUOTE_RE.sub("", text)
+    text = _LEADING_COLON_RE.sub("", text)
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+_THREADS_QUERY = """
+query($owner: String!, $name: String!, $pr: Int!,
+      $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          path
+          line
+          comments(first: 1) { nodes { body } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _parse_thread_nodes(
+    nodes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert raw GraphQL thread nodes into dedup-ready dicts."""
+    threads: list[dict[str, Any]] = []
+    for node in nodes:
+        body = ""
+        comments = node.get("comments", {}).get("nodes", [])
+        if comments:
+            body = comments[0].get("body", "")
+        threads.append(
+            {
+                "path": node.get("path", ""),
+                "line": node.get("line"),
+                "body": _normalize_body(body),
+            }
+        )
+    return threads
+
+
+def fetch_existing_threads(
+    repo: str,
+    pr_number: str,
+) -> list[dict[str, Any]]:
+    """Fetch all review threads with cursor pagination for dedup."""
+    parts = repo.split("/", 1)
+    if len(parts) != 2:
+        print(f"Invalid GITHUB_REPOSITORY format: {repo}", file=sys.stderr)
+        return []
+    owner, name = parts
+    return fetch_paginated_nodes(
+        query=_THREADS_QUERY,
+        field="reviewThreads",
+        owner=owner,
+        name=name,
+        pr_number=pr_number,
+        page_size=THREAD_PAGE_SIZE,
+        transform=_parse_thread_nodes,
+    )
+
+
+def _is_duplicate(
+    file_path: str,
+    description: str,
+    existing_threads: list[dict[str, Any]],
+) -> bool:
+    """Check if an exact-match duplicate exists (same file + normalized body)."""
+    normalized = _normalize_body(description)
+    if not normalized:
+        return False
+    for thread in existing_threads:
+        if thread["path"] == file_path and thread["body"] == normalized:
+            return True
+    return False
+
+
+def build_comments(
+    issues: list[dict[str, Any]],
+    valid_lines: dict[str, set[int]],
+    existing_threads: list[dict[str, Any]],
+    reviewer: str,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Filter issues and build comment payloads.
+
+    Returns (comments, no_location, out_of_range).
+    """
+    comments: list[dict[str, Any]] = []
+    no_location = 0
+    out_of_range = 0
+
+    for issue in issues:
+        file_path = issue.get("file")
+        raw_line = issue.get("line")
+        if not file_path or raw_line is None:
+            no_location += 1
+            continue
+        try:
+            line_num = int(raw_line)
+        except (ValueError, TypeError):
+            no_location += 1
+            continue
+        if file_path not in valid_lines or line_num not in valid_lines[file_path]:
+            out_of_range += 1
+            continue
+        desc = issue.get("description", "")
+        if _is_duplicate(file_path, desc, existing_threads):
+            print(f"{reviewer}: skip {file_path}:{line_num} (similar thread exists)")
+            continue
+
+        sev = issue.get("severity", "suggestion")
+        icon = SEVERITY_ICONS.get(sev, "*")
+        body = f"{icon} **{sev}** ({reviewer}): {desc}"
+        if issue.get("suggestion"):
+            body += f"\n\n> {SEVERITY_ICONS['suggestion']} {issue['suggestion']}"
+        comments.append(
+            {"path": file_path, "line": line_num, "side": DIFF_SIDE_RIGHT, "body": body}
+        )
+
+    return comments, no_location, out_of_range
+
+
+def post_inline_review(
+    repo: str,
+    pr_number: str,
+    commit_sha: str,
+    reviewer: str,
+    comments: list[dict[str, Any]],
+) -> bool:
+    """Post inline comments via Reviews API. Returns True on success."""
+    payload = json.dumps(
+        {
+            "commit_id": commit_sha,
+            "event": "COMMENT",
+            "body": "",
+            "comments": comments,
+        }
+    )
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews", "--input", "-"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"{reviewer}: inline API timed out", file=sys.stderr)
+        return False
+    if result.returncode == 0:
+        print(f"{reviewer}: posted {len(comments)} inline comment(s)")
+        return True
+    print(f"{reviewer}: inline API failed ({result.stderr.strip()})", file=sys.stderr)
+    return False
+
+
+def post_fallback(
+    repo: str, pr_number: str, reviewer: str, comments: list[dict[str, Any]]
+) -> None:
+    """Fallback: post all issues as a single PR comment.
+
+    Uses a marker comment to prevent duplicate fallback posts on reruns.
+    """
+    marker = f"<!-- inline-fallback-{reviewer} -->"
+
+    # Check for existing fallback comment to avoid duplicates
+    check = subprocess.run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/issues/{pr_number}/comments",
+            "--jq",
+            "[.[] | select(.body | contains($marker))] | length",
+            "--arg",
+            "marker",
+            marker,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=GH_TIMEOUT_SEC,
+    )
+    if check.returncode == 0 and check.stdout.strip() not in ("", "0"):
+        print(f"{reviewer}: fallback comment already exists, skipping")
+        return
+
+    lines = [marker, _FALLBACK_HEADER.format(reviewer), ""]
+    for c in comments:
+        lines.append(f"- **{c.get('path')}:{c.get('line')}** -- {c.get('body', '')}")
+    body = "\n".join(lines)
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "comment",
+                pr_number,
+                "--repo",
+                repo,
+                "--body-file",
+                "-",
+            ],
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"{reviewer}: fallback comment timed out", file=sys.stderr)
+        sys.exit(1)
+    if result.returncode != 0:
+        print(f"{reviewer}: fallback comment failed: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--issues", required=True, help="Path to review JSON file")
+    parser.add_argument("--diff", required=True, help="Path to pr.diff file")
+    parser.add_argument("--reviewer", required=True, help="Reviewer name")
+    args = parser.parse_args()
+
+    pr_number = os.environ.get("PR_NUMBER", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not pr_number or not repo:
+        print("PR_NUMBER or GITHUB_REPOSITORY not set", file=sys.stderr)
+        sys.exit(1)
+    if not pr_number.isdigit():
+        print(f"Invalid PR_NUMBER: {pr_number}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(args.issues, encoding="utf-8") as f:
+            review = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Cannot load {args.issues}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    issues = review.get("issues", [])
+    if not issues:
+        print(f"{args.reviewer}: no issues to post")
+        return
+
+    diff_path = Path(args.diff)
+    if not diff_path.exists():
+        print(f"Warning: diff file not found: {args.diff}", file=sys.stderr)
+    diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
+    valid_lines = parse_diff(diff_text)
+    existing_threads = fetch_existing_threads(repo, pr_number)
+
+    comments, no_location, out_of_range = build_comments(
+        issues, valid_lines, existing_threads, args.reviewer
+    )
+
+    if no_location:
+        print(f"{args.reviewer}: {no_location} issue(s) without file/line")
+    if out_of_range:
+        print(f"{args.reviewer}: {out_of_range} issue(s) outside diff")
+
+    if not comments:
+        print(f"{args.reviewer}: no inline comments to post")
+        return
+
+    try:
+        commit_sha = get_pr_head_sha(pr_number)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"{args.reviewer}: failed to get PR head SHA: {e}", file=sys.stderr)
+        post_fallback(repo, pr_number, args.reviewer, comments)
+        return
+    if not post_inline_review(repo, pr_number, commit_sha, args.reviewer, comments):
+        post_fallback(repo, pr_number, args.reviewer, comments)
+
+
+if __name__ == "__main__":
+    main()

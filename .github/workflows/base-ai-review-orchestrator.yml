@@ -1,0 +1,146 @@
+name: Base AI Code Review (orchestrator)
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "PR number to review (required when caller triggers via workflow_dispatch)"
+        required: false
+        type: string
+      code-review-system-prompt-path:
+        description: "Path (in caller repo) to the per-repo system prompt md file"
+        required: false
+        type: string
+        default: ".github/prompts/code-review-system.md"
+      code-review-checklist-path:
+        description: "Path (in caller repo) to the per-repo review checklist md file"
+        required: false
+        type: string
+        default: ".github/prompts/code-review-checklist.md"
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      GOOGLE_AI_API_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+# vars.REVIEW_MODE: "parallel" (default) or "sequential"
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/base-ai-review-prepare.yml
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      code-review-system-prompt-path: ${{ inputs.code-review-system-prompt-path }}
+      code-review-checklist-path: ${{ inputs.code-review-checklist-path }}
+
+  # --- Parallel mode (default) ---
+  # Note: early_exit in parallel mode only affects aggregate verdict,
+  # not job execution. Use REVIEW_MODE=sequential to short-circuit.
+  review-gemini-p:
+    if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
+    needs: prepare
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: gemini
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  review-codex-p:
+    if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
+    needs: prepare
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: codex
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  review-claude-p:
+    if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
+    needs: prepare
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: claude
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # --- Sequential mode (Claude -> Codex -> Gemini) ---
+  review-claude-s:
+    if: vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false'
+    needs: prepare
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: claude
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  review-codex-s:
+    if: >-
+      vars.REVIEW_MODE == 'sequential' &&
+      needs.prepare.outputs.skip == 'false' &&
+      needs.review-claude-s.outputs.early_exit != 'true'
+    needs: [prepare, review-claude-s]
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: codex
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  review-gemini-s:
+    if: >-
+      always() &&
+      vars.REVIEW_MODE == 'sequential' &&
+      needs.prepare.outputs.skip == 'false' &&
+      needs.review-claude-s.result == 'success' &&
+      needs.review-claude-s.outputs.early_exit != 'true' &&
+      (needs.review-codex-s.result == 'failure' || needs.review-codex-s.outputs.early_exit != 'true')
+    needs: [prepare, review-claude-s, review-codex-s]
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: gemini
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # --- Aggregate ---
+  aggregate:
+    needs:
+      - prepare
+      - review-gemini-p
+      - review-codex-p
+      - review-claude-p
+      - review-gemini-s
+      - review-codex-s
+      - review-claude-s
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.skip == 'false'
+    uses: ./.github/workflows/base-ai-review-aggregate.yml
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      claude_result: ${{ needs.review-claude-p.result != 'skipped' && needs.review-claude-p.result || needs.review-claude-s.result }}
+      codex_result: ${{ needs.review-codex-p.result != 'skipped' && needs.review-codex-p.result || needs.review-codex-s.result }}
+      gemini_result: ${{ needs.review-gemini-p.result != 'skipped' && needs.review-gemini-p.result || needs.review-gemini-s.result }}
