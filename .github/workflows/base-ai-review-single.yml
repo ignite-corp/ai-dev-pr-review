@@ -47,32 +47,16 @@ jobs:
       - name: Checkout caller repo (PR head)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           repository: ${{ github.repository }}
-
-      - name: Compute self-ref for ai-dev-pr-review checkout
-        id: self-ref
-        shell: bash
-        run: |
-          # github.workflow_ref format:
-          #   owner/repo/.github/workflows/file.yml@refs/<heads|tags>/<name>
-          # Extract post-@ portion and strip refs/heads/ or refs/tags/ prefix.
-          WF_REF="${{ github.workflow_ref }}"
-          REF="${WF_REF##*@}"
-          REF="${REF#refs/heads/}"
-          REF="${REF#refs/tags/}"
-          if [ -z "$REF" ]; then
-            REF="main"
-          fi
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "Resolved self-ref: $REF"
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       # Reusable-repo checkout: helper scripts + trusted codex prompt live here.
       - name: Checkout ai-dev-pr-review scripts
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: ${{ steps.self-ref.outputs.ref }}
+          ref: ${{ github.workflow_sha }}
           path: .ai-dev-pr-review
           fetch-depth: 1
 
