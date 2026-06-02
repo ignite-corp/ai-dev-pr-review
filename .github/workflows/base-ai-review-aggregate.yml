@@ -41,11 +41,16 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
       # Reusable-repo checkout: helper scripts live here.
-      - name: Checkout ai-dev-pr-review scripts
+      # WARNING: ref below is hardcoded to this release's tag. When cutting a new
+      # version, FIRST bump this literal to the new tag in a release PR, THEN tag
+      # that commit. Both github.workflow_ref and github.workflow_sha return the
+      # caller's context inside a reusable workflow (not the reusable's own
+      # ref/SHA), so hardcoding is the only reliable mechanism.
+      - name: Checkout ai-dev-pr-review scripts (pinned to release tag)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: ${{ github.workflow_sha }}
+          ref: v1.0.3
           path: .ai-dev-pr-review
           fetch-depth: 1
 
