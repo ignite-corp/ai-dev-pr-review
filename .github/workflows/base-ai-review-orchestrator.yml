@@ -29,6 +29,10 @@ concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: write
+
 # vars.REVIEW_MODE: "parallel" (default) or "sequential"
 
 jobs:
