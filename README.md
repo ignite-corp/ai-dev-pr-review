@@ -98,36 +98,32 @@ GitHub does NOT propagate `secrets: inherit` across organizations. For `ignite-p
 2. Consumer thin trigger: use the explicit `secrets:` mapping shown above. Do NOT use `secrets: inherit`.
 3. Org admin: ensure the Actions allowlist permits `anthropics/claude-code-action`, `actions/checkout`, `actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`. The reusable workflow itself does not pull `oven-sh/setup-bun`, but the underlying `anthropics/claude-code-action` may; check that action's requirements before adding the consumer.
 
-## Automated release propagation (AT-1228)
+## Receiving release updates (Dependabot)
 
-When a new tag is published, `.github/workflows/propagate-release.yml` automatically:
+When this repo publishes a new tag, each consumer's own Dependabot opens a 1-line bump PR on the consumer side. No central propagation infrastructure or cross-org token required.
 
-1. Discovers active consumers in real-time via GitHub Code Search (`uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator`), unioned with the fallback list in `.github/consumers.yml`.
-2. Opens a 1-line bump PR in each consumer (`@<old>` -> `@<new>` in `.github/workflows/ai-review.yml`).
-3. Adds an `auto-merge` label to each PR (if the consumer's settings configure that label).
+### Per-consumer setup (one-time)
 
-### Onboarding a new consumer
+Add `.github/dependabot.yml` in each consumer repo:
 
-Auto-discovery picks up any default-branch `ai-review.yml` that references `base-ai-review-orchestrator`. You usually don't need to touch the registry — just merge your thin trigger into your default branch.
+````yaml
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+````
 
-Add an entry to `.github/consumers.yml` only when:
-- The consumer is in a private repo that the propagation PAT cannot index via Code Search, OR
-- You want to guarantee inclusion before the first merge to default branch.
+Dependabot for `github-actions` covers reusable workflow refs (e.g. `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5`) in addition to plain action refs. Adjust `interval` to `daily` for faster pickup or `monthly` for less PR noise.
 
-### Manual dispatch (dry run)
+### Trade-offs vs. central propagation
 
-```bash
-gh workflow run propagate-release.yml --repo ignite-corp/ai-dev-pr-review \
-  -f target_tag=v1.0.6 -f dry_run=true
-```
+- **Pros**: zero shared secrets, dependabot[bot] uses each repo's least-privilege token, no admin overhead per release
+- **Cons**: not instant — bumps appear within the configured `interval`, not the moment the tag is pushed
 
-### Required secret
-
-`PROPAGATE_PAT` — fine-grained PAT (or GitHub App installation token) with:
-- `Contents: write`, `Pull requests: write`, `Workflows: write` across all consumer repos
-- Read access on private consumer repos for Code Search visibility
-
-Configure at org-level (`Organization settings -> Secrets and variables -> Actions`) with `ai-dev-pr-review` in the selected-repos allowlist, or at repo-level on `ai-dev-pr-review`.
+The previous push-based workflow (PR #6) was reverted; consumers now self-pull via Dependabot.
 
 ## Tag pinning
 
