@@ -18,7 +18,7 @@ from google import genai
 from google.genai import types as genai_types
 
 REVIEW_FILE = "review-gemini.json"
-REVIEW_SCHEMA_PATH = Path(".github/schemas/review-schema.json")
+REVIEW_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "review-schema.json"
 # Defaults to gemini-2.5-pro (current latest stable). Override via vars.GEMINI_MODEL
 # in the orchestrator workflow (matches the CLAUDE_MODEL / CODEX_MODEL pattern).
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
@@ -45,7 +45,29 @@ def _load_schema() -> str:
             "properties": {
                 "summary": {"type": "string"},
                 "early_exit": {"type": "boolean"},
-                "issues": {"type": "array"},
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {
+                                "type": "string",
+                                "enum": ["critical", "major", "minor", "suggestion"],
+                            },
+                            "file": {"type": "string", "nullable": True},
+                            "line": {"type": "integer", "nullable": True},
+                            "description": {"type": "string"},
+                            "suggestion": {"type": "string", "nullable": True},
+                        },
+                        "required": [
+                            "severity",
+                            "file",
+                            "line",
+                            "description",
+                            "suggestion",
+                        ],
+                    },
+                },
             },
         }
     )
