@@ -45,7 +45,29 @@ def _load_schema() -> str:
             "properties": {
                 "summary": {"type": "string"},
                 "early_exit": {"type": "boolean"},
-                "issues": {"type": "array"},
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {
+                                "type": "string",
+                                "enum": ["critical", "major", "minor", "suggestion"],
+                            },
+                            "file": {"type": "string", "nullable": True},
+                            "line": {"type": "integer", "nullable": True},
+                            "description": {"type": "string"},
+                            "suggestion": {"type": "string", "nullable": True},
+                        },
+                        "required": [
+                            "severity",
+                            "file",
+                            "line",
+                            "description",
+                            "suggestion",
+                        ],
+                    },
+                },
             },
         }
     )
