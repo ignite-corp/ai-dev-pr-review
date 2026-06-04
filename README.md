@@ -46,7 +46,7 @@ on:
 
 jobs:
   review:
-    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.0
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       code-review-system-prompt-path: .github/prompts/code-review-system.md
@@ -97,6 +97,37 @@ GitHub does NOT propagate `secrets: inherit` across organizations. For `ignite-p
 1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` as org-level secrets and grant the consumer repos access.
 2. Consumer thin trigger: use the explicit `secrets:` mapping shown above. Do NOT use `secrets: inherit`.
 3. Org admin: ensure the Actions allowlist permits `anthropics/claude-code-action`, `actions/checkout`, `actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`. The reusable workflow itself does not pull `oven-sh/setup-bun`, but the underlying `anthropics/claude-code-action` may; check that action's requirements before adding the consumer.
+
+## Automated release propagation (AT-1228)
+
+When a new tag is published, `.github/workflows/propagate-release.yml` automatically:
+
+1. Discovers active consumers in real-time via GitHub Code Search (`uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator`), unioned with the fallback list in `.github/consumers.yml`.
+2. Opens a 1-line bump PR in each consumer (`@<old>` -> `@<new>` in `.github/workflows/ai-review.yml`).
+3. Adds an `auto-merge` label to each PR (if the consumer's settings configure that label).
+
+### Onboarding a new consumer
+
+Auto-discovery picks up any default-branch `ai-review.yml` that references `base-ai-review-orchestrator`. You usually don't need to touch the registry — just merge your thin trigger into your default branch.
+
+Add an entry to `.github/consumers.yml` only when:
+- The consumer is in a private repo that the propagation PAT cannot index via Code Search, OR
+- You want to guarantee inclusion before the first merge to default branch.
+
+### Manual dispatch (dry run)
+
+```bash
+gh workflow run propagate-release.yml --repo ignite-corp/ai-dev-pr-review \
+  -f target_tag=v1.0.6 -f dry_run=true
+```
+
+### Required secret
+
+`PROPAGATE_PAT` — fine-grained PAT (or GitHub App installation token) with:
+- `Contents: write`, `Pull requests: write`, `Workflows: write` across all consumer repos
+- Read access on private consumer repos for Code Search visibility
+
+Configure at org-level (`Organization settings -> Secrets and variables -> Actions`) with `ai-dev-pr-review` in the selected-repos allowlist, or at repo-level on `ai-dev-pr-review`.
 
 ## Tag pinning
 

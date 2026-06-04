@@ -1,0 +1,28 @@
+# consumers.yml -- fallback registry for AT-1228 auto-propagation.
+# Merged with the GitHub Code Search result (union, deduped).
+# Add / remove entries when consumers join or leave the centralized review.
+
+consumers:
+  # ignite-corp
+  - ignite-corp/ai-dev-cab
+  - ignite-corp/ai-dev-qa-partner
+  - ignite-corp/ai-tf-t2a
+  - ignite-corp/ai-dev-infra-common
+  # ignite-pilot-org
+  - ignite-pilot-org/IGTdesignsystem
+  - ignite-pilot-org/Ignite-pilot-plugins
+  - ignite-pilot-org/PS-Simulation1
+  - ignite-pilot-org/admin-tools-plugins
+  - ignite-pilot-org/bnk-mes
+  - ignite-pilot-org/bnk-mes-prod-plan
+  - ignite-pilot-org/cowork-tunnel
+  - ignite-pilot-org/daon-manufacturing
+  - ignite-pilot-org/dev-project-list
+  - ignite-pilot-org/factory-process-maker
+  - ignite-pilot-org/hp-builder
+  - ignite-pilot-org/ig-ai-report
+  - ignite-pilot-org/ig-member
+  - ignite-pilot-org/ig-notification
+  - ignite-pilot-org/peaknow
+  - ignite-pilot-org/shop-maker
+  - ignite-pilot-org/spec-interview
