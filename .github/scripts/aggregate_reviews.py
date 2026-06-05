@@ -706,8 +706,27 @@ def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
 def main() -> None:
     reviews = load_reviews()
     conclusions = load_reviewer_conclusions()
-    _emit_partial_observability(reviews, conclusions)
+    partial_names = _emit_partial_observability(reviews, conclusions)
     verdict, reason, available = apply_verdict_rules(reviews)
+
+    # Downgrade CHANGES_REQUESTED -> COMMENTED when at most one reviewer
+    # produced a non-partial response. A single survivor is not enough
+    # signal to block; defer to manual review.
+    total = len(REVIEWERS)
+    successful_count = total - len(partial_names)
+    if verdict == "request_changes" and successful_count <= 1:
+        print(
+            "::notice::Aggregate downgraded -- only"
+            f" {successful_count}/{total} reviewers responded; manual review"
+            " recommended.",
+            file=sys.stderr,
+        )
+        verdict = "comment"
+        reason = (
+            f"Downgraded from CHANGES_REQUESTED -- only {successful_count}/{total}"
+            " reviewers responded (manual review recommended)"
+        )
+
     comment_only = _is_comment_only()
     comment = format_summary(
         reviews, verdict, reason, available, conclusions, comment_only=comment_only
