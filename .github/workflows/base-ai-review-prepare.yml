@@ -51,7 +51,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: v1.0.5
+          ref: v1.0.6
           path: .ai-dev-pr-review
           fetch-depth: 1
 
@@ -128,13 +128,24 @@ jobs:
         run: |
           git diff "origin/${BASE_REF}...${HEAD_SHA}" > pr.diff
           # Pull prompts from BASE branch to prevent PRs from modifying
-          # review instructions via context.md injection.
+          # review instructions via context.md injection. On first-time
+          # onboarding the base branch lacks the prompt files; fall back to
+          # the PR head copy and emit a warning so the security caveat is
+          # surfaced. Future PRs will use the base version once merged.
           git fetch --depth=1 origin "$BASE_REF"
-          git show "origin/${BASE_REF}:${SYSTEM_PROMPT_PATH}" \
-            > context.md
+          if git show "origin/${BASE_REF}:${SYSTEM_PROMPT_PATH}" > context.md 2>/dev/null; then
+            :
+          else
+            echo "::warning title=Onboarding prompt fallback::Base branch '${BASE_REF}' has no ${SYSTEM_PROMPT_PATH}; using PR head. Future PRs will use the base branch version once this PR merges."
+            cat "${SYSTEM_PROMPT_PATH}" > context.md
+          fi
           printf '\n\n---\n\n' >> context.md
-          git show "origin/${BASE_REF}:${CHECKLIST_PATH}" \
-            >> context.md
+          if git show "origin/${BASE_REF}:${CHECKLIST_PATH}" >> context.md 2>/dev/null; then
+            :
+          else
+            echo "::warning title=Onboarding prompt fallback::Base branch '${BASE_REF}' has no ${CHECKLIST_PATH}; using PR head. Future PRs will use the base branch version once this PR merges."
+            cat "${CHECKLIST_PATH}" >> context.md
+          fi
           # Prepend PR metadata so reviewers can detect dependabot PRs.
           {
             echo "## PR Metadata"

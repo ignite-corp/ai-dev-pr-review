@@ -219,6 +219,86 @@ def _has_early_exit(available: dict[str, dict[str, Any]]) -> bool:
     return any(v.get("early_exit") is True for v in available.values())
 
 
+_PARTIAL_SUMMARY_PREFIX = "partial:"
+
+
+def _is_partial(review: dict[str, Any] | None) -> bool:
+    """Return True if the reviewer hit a partial failure.
+
+    Partial means: missing payload, an ``error`` field, or a summary that
+    starts with ``partial:`` (case-insensitive). These signals are emitted
+    by ``review_gemini.py`` / ``review_codex.py`` / ``review_claude.py``
+    when the underlying API call raised or returned a truncated response.
+    """
+    if review is None:
+        return True
+    if review.get("error"):
+        return True
+    summary = review.get("summary", "")
+    return isinstance(summary, str) and summary.strip().lower().startswith(
+        _PARTIAL_SUMMARY_PREFIX
+    )
+
+
+def _partial_short_message(
+    name: str,
+    review: dict[str, Any] | None,
+    conclusion: str,
+) -> str:
+    """Build a short human-readable description for a partial reviewer."""
+    if review is None:
+        if conclusion:
+            return _missing_reason(conclusion)
+        return "no payload"
+    err = review.get("error")
+    if isinstance(err, str) and err:
+        return err[:ERROR_TRUNCATE_LEN]
+    summary = review.get("summary", "")
+    if isinstance(summary, str) and summary:
+        return summary[:ERROR_TRUNCATE_LEN]
+    return "partial output"
+
+
+def _emit_partial_observability(
+    reviews: dict[str, dict[str, Any] | None],
+    conclusions: dict[str, str],
+) -> list[str]:
+    """Emit GHA warnings + Job Summary rows per partial-failed reviewer.
+
+    Returns the list of partial reviewer names so the caller can use the
+    count when deciding whether to downgrade the verdict.
+    """
+    partial_names: list[str] = []
+    summary_rows: list[str] = []
+    for name in REVIEWER_NAMES:
+        review = reviews.get(name)
+        if not _is_partial(review):
+            continue
+        partial_names.append(name)
+        msg = _partial_short_message(name, review, conclusions.get(name, ""))
+        print(
+            f"::warning title={name.title()} partial-fail::{msg}",
+            file=sys.stderr,
+        )
+        summary_rows.append(f"| {name.title()} | {msg} |")
+
+    step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+    if summary_rows and step_summary_path:
+        try:
+            with open(step_summary_path, "a", encoding="utf-8") as fh:
+                fh.write("\n### Multi-LLM partial-fail reviewers\n\n")
+                fh.write("| Reviewer | Reason |\n")
+                fh.write("| --- | --- |\n")
+                fh.write("\n".join(summary_rows))
+                fh.write("\n")
+        except OSError as e:
+            print(
+                f"::warning::Failed to write GITHUB_STEP_SUMMARY: {e}",
+                file=sys.stderr,
+            )
+    return partial_names
+
+
 def _all_reviewer_jobs_succeeded(total: int) -> bool:
     """True when every reviewer job exited 0 but produced no review payload.
 
@@ -626,7 +706,27 @@ def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
 def main() -> None:
     reviews = load_reviews()
     conclusions = load_reviewer_conclusions()
+    partial_names = _emit_partial_observability(reviews, conclusions)
     verdict, reason, available = apply_verdict_rules(reviews)
+
+    # Downgrade CHANGES_REQUESTED -> COMMENTED when at most one reviewer
+    # produced a non-partial response. A single survivor is not enough
+    # signal to block; defer to manual review.
+    total = len(REVIEWERS)
+    successful_count = total - len(partial_names)
+    if verdict == "request_changes" and successful_count <= 1:
+        print(
+            "::notice::Aggregate downgraded -- only"
+            f" {successful_count}/{total} reviewers responded; manual review"
+            " recommended.",
+            file=sys.stderr,
+        )
+        verdict = "comment"
+        reason = (
+            f"Downgraded from CHANGES_REQUESTED -- only {successful_count}/{total}"
+            " reviewers responded (manual review recommended)"
+        )
+
     comment_only = _is_comment_only()
     comment = format_summary(
         reviews, verdict, reason, available, conclusions, comment_only=comment_only
