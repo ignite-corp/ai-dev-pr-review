@@ -197,6 +197,11 @@ def main() -> None:
             raise ValueError("Gemini returned empty response (filtered or no candidates)")
         review = extract_json(text)  # type: ignore[reportUnknownVariableType]
     except Exception as exc:
+        print(
+            f"::warning title=Gemini reviewer partial::Gemini reviewer hit"
+            f" {type(exc).__name__}: {str(exc)[:200]}",
+            file=sys.stderr,
+        )
         print(f"Gemini review failed: {exc}", file=sys.stderr)
         review = {
             "summary": f"Review failed: {exc}",
