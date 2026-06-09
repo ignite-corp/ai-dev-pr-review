@@ -1,0 +1,48 @@
+name: Move major version tag
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  move-major-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute major version
+        id: parse
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          SHA: ${{ github.event.release.target_commitish }}
+        run: |
+          set -e
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::Release tag '$TAG' does not match vX.Y.Z; skipping major-tag move."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MAJOR="v${BASH_REMATCH[1]}"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "::notice::Will force-move $MAJOR to $SHA (from release $TAG)"
+
+      - name: Force-move major tag to release commit
+        if: steps.parse.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR: ${{ steps.parse.outputs.major }}
+          SHA: ${{ steps.parse.outputs.sha }}
+        run: |
+          set -e
+          # Try update first; if 422 (ref doesn't exist), create
+          if gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$MAJOR" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$MAJOR" \
+              -f "sha=$SHA" -F force=true
+            echo "::notice::Force-moved tag $MAJOR -> $SHA"
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$MAJOR" -f "sha=$SHA"
+            echo "::notice::Created new tag $MAJOR -> $SHA"
+          fi
