@@ -5,11 +5,14 @@ Parses pr.diff to validate line numbers against the actual diff hunks,
 then posts inline comments via the GitHub PR Reviews API.
 Falls back to a plain PR comment if the API call fails.
 
-Dedup strategy (exact-match):
+Dedup strategy (fuzzy):
   1. Fetch ALL existing threads (resolved + unresolved)
   2. Normalise each thread's first comment body via _normalize_body
-  3. For each new issue, check if a thread with the same file and identical
-     normalised body exists (survives force-push line shifts, content-based)
+  3. For each new issue, check whether a thread on the same file and
+     within DEDUP_LINE_WINDOW lines exists whose normalised body has
+     Jaccard token-set similarity >= DEDUP_JACCARD_THRESHOLD. This
+     survives both force-push line shifts and small wording changes
+     (paraphrases, added punctuation, reworded suggestions).
 
 Issues outside the diff range are not posted -- they appear in aggregate summary.
 """
@@ -39,6 +42,13 @@ from github_pr_support import (
 # Page size per GraphQL request for thread pagination.
 THREAD_PAGE_SIZE = 100
 _FALLBACK_HEADER = "## [bot] {} Inline Review (fallback)"
+
+# Fuzzy-dedup thresholds. Two comments on the same path are considered
+# duplicates when their normalised token sets overlap by at least
+# DEDUP_JACCARD_THRESHOLD and their right-side line numbers are within
+# DEDUP_LINE_WINDOW lines of each other.
+DEDUP_JACCARD_THRESHOLD = 0.6
+DEDUP_LINE_WINDOW = 5
 
 # Pre-compiled patterns for _normalize_body
 _ICON_RE = re.compile("[" + "".join(SEVERITY_ICONS.values()) + "*]")
@@ -159,13 +169,39 @@ def _is_duplicate(
     file_path: str,
     description: str,
     existing_threads: list[dict[str, Any]],
+    line: int | None = None,
+    threshold: float = DEDUP_JACCARD_THRESHOLD,
+    line_window: int = DEDUP_LINE_WINDOW,
 ) -> bool:
-    """Check if an exact-match duplicate exists (same file + normalized body)."""
+    """Check if a fuzzy duplicate exists.
+
+    A thread is considered a duplicate when it is on the same file, its
+    line is within ``line_window`` of ``line`` (when both lines are
+    known), and its normalised body has Jaccard token-set similarity
+    >= ``threshold`` with the new description.
+
+    ``line=None`` skips the line-distance check, preserving backward
+    compatibility for callers that lack a right-side line number.
+    """
     normalized = _normalize_body(description)
-    if not normalized:
+    tokens = set(normalized.split())
+    if not tokens:
         return False
     for thread in existing_threads:
-        if thread["path"] == file_path and thread["body"] == normalized:
+        if thread["path"] != file_path:
+            continue
+        other_line = thread.get("line")
+        if line is not None and other_line is not None:
+            if abs(line - other_line) > line_window:
+                continue
+        other_tokens = set(thread.get("body", "").split())
+        if not other_tokens:
+            continue
+        union = tokens | other_tokens
+        if not union:
+            continue
+        jaccard = len(tokens & other_tokens) / len(union)
+        if jaccard >= threshold:
             return True
     return False
 
@@ -199,7 +235,7 @@ def build_comments(
             out_of_range += 1
             continue
         desc = issue.get("description", "")
-        if _is_duplicate(file_path, desc, existing_threads):
+        if _is_duplicate(file_path, desc, existing_threads, line=line_num):
             print(f"{reviewer}: skip {file_path}:{line_num} (similar thread exists)")
             continue
 

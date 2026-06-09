@@ -22,7 +22,13 @@ from github_pr_support import GH_TIMEOUT_SEC, fetch_paginated_nodes
 BODY_TRUNCATE_LEN = 500
 _THREADS_PAGE_SIZE = 100
 _THREAD_COMMENT_LIMIT = 5
-_TRUSTED_BOT_AUTHORS = {"github-actions[bot]", "github-actions"}
+_TRUSTED_BOT_AUTHORS = {
+    "github-actions[bot]",
+    "github-actions",
+    "claude",
+    "gemini-code-assist",
+    "codex",
+}
 _TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # Human replies are only honoured when they start with one of these
 # structured rationale tags, forcing attackers to begin any injection
