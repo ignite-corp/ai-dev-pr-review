@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: v1.0.7
+          ref: v1.0.10
           path: .ai-dev-pr-review
           fetch-depth: 1
 
@@ -417,6 +417,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REVIEWER: ${{ inputs.reviewer }}
+          JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
         run: |
           REVIEW_FILE="review-${REVIEWER}.json"
           if [ -f "$REVIEW_FILE" ]; then
