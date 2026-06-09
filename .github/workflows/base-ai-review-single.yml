@@ -417,6 +417,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REVIEWER: ${{ inputs.reviewer }}
+          JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
         run: |
           REVIEW_FILE="review-${REVIEWER}.json"
           if [ -f "$REVIEW_FILE" ]; then

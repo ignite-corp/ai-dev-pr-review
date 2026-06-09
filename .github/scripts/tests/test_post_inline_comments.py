@@ -7,6 +7,8 @@ on the same path, and backward compatibility when no line is supplied.
 
 from __future__ import annotations
 
+import importlib
+import sys
 from typing import Any
 
 from post_inline_comments import _is_duplicate, _normalize_body
@@ -104,3 +106,13 @@ class TestIsDuplicate:
             existing,
             line=10,
         )
+
+
+def test_jaccard_threshold_env_override(monkeypatch: Any) -> None:
+    """Setting JACCARD_THRESHOLD via env should make dedup stricter or looser."""
+    # Force a fresh import with the env set
+    monkeypatch.setenv("JACCARD_THRESHOLD", "0.95")
+    sys.modules.pop("post_inline_comments", None)
+    mod = importlib.import_module("post_inline_comments")
+    # The module-level _JACCARD_THRESHOLD should reflect the env value
+    assert getattr(mod, "_JACCARD_THRESHOLD", None) == 0.95

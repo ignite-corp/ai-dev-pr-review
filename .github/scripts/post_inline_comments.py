@@ -10,7 +10,7 @@ Dedup strategy (fuzzy):
   2. Normalise each thread's first comment body via _normalize_body
   3. For each new issue, check whether a thread on the same file and
      within DEDUP_LINE_WINDOW lines exists whose normalised body has
-     Jaccard token-set similarity >= DEDUP_JACCARD_THRESHOLD. This
+     Jaccard token-set similarity >= _JACCARD_THRESHOLD. This
      survives both force-push line shifts and small wording changes
      (paraphrases, added punctuation, reworded suggestions).
 
@@ -45,9 +45,14 @@ _FALLBACK_HEADER = "## [bot] {} Inline Review (fallback)"
 
 # Fuzzy-dedup thresholds. Two comments on the same path are considered
 # duplicates when their normalised token sets overlap by at least
-# DEDUP_JACCARD_THRESHOLD and their right-side line numbers are within
-# DEDUP_LINE_WINDOW lines of each other.
-DEDUP_JACCARD_THRESHOLD = 0.6
+# _JACCARD_THRESHOLD and their right-side line numbers are within
+# DEDUP_LINE_WINDOW lines of each other. The Jaccard threshold is
+# tunable at runtime via the JACCARD_THRESHOLD environment variable
+# (typically 0.5-0.8: lower dedups more aggressively, higher is stricter).
+_DEFAULT_JACCARD_THRESHOLD = 0.6
+_JACCARD_THRESHOLD = float(
+    os.environ.get("JACCARD_THRESHOLD", _DEFAULT_JACCARD_THRESHOLD)
+)
 DEDUP_LINE_WINDOW = 5
 
 # Pre-compiled patterns for _normalize_body
@@ -170,7 +175,7 @@ def _is_duplicate(
     description: str | None,
     existing_threads: list[dict[str, Any]],
     line: int | None = None,
-    threshold: float = DEDUP_JACCARD_THRESHOLD,
+    threshold: float = _JACCARD_THRESHOLD,
     line_window: int = DEDUP_LINE_WINDOW,
 ) -> bool:
     """Check if a fuzzy duplicate exists.
