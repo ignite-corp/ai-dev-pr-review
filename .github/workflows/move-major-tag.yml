@@ -15,7 +15,7 @@ jobs:
         id: parse
         env:
           TAG: ${{ github.event.release.tag_name }}
-          SHA: ${{ github.event.release.target_commitish }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           if [[ ! "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
@@ -24,9 +24,21 @@ jobs:
             exit 0
           fi
           MAJOR="v${BASH_REMATCH[1]}"
+          # Resolve TAG -> commit SHA via git ref API.
+          # Lightweight tag: object.sha IS the commit.
+          # Annotated tag: object.type=='tag' AND we need one more dereference.
+          REF_OBJ=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" --jq '.object')
+          OBJ_TYPE=$(echo "$REF_OBJ" | jq -r .type)
+          OBJ_SHA=$(echo "$REF_OBJ" | jq -r .sha)
+          if [ "$OBJ_TYPE" = "tag" ]; then
+            # Annotated tag - dereference to the commit
+            SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$OBJ_SHA" --jq '.object.sha')
+          else
+            SHA="$OBJ_SHA"
+          fi
           echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "::notice::Will force-move $MAJOR to $SHA (from release $TAG)"
+          echo "::notice::Will force-move $MAJOR to $SHA (from release $TAG, resolved via git refs API)"
 
       - name: Force-move major tag to release commit
         if: steps.parse.outputs.skip != 'true'
