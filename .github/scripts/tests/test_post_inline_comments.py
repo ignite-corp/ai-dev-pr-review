@@ -89,3 +89,18 @@ class TestIsDuplicate:
             "Missing input validation on user_id",
             existing,
         )
+
+    def test_none_description_does_not_raise(self) -> None:
+        # An issue payload with description=None must not crash dedup.
+        existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
+        assert not _is_duplicate("a.py", None, existing, line=10)
+
+    def test_none_thread_body_does_not_raise(self) -> None:
+        # A thread fetched with body=None (explicit null) must not crash dedup.
+        existing = [{"path": "a.py", "line": 10, "body": None}]
+        assert not _is_duplicate(
+            "a.py",
+            "Missing input validation on user_id",
+            existing,
+            line=10,
+        )

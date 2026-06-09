@@ -133,7 +133,7 @@ def _parse_thread_nodes(
         body = ""
         comments = node.get("comments", {}).get("nodes", [])
         if comments:
-            body = comments[0].get("body", "")
+            body = comments[0].get("body") or ""
         threads.append(
             {
                 "path": node.get("path", ""),
@@ -167,7 +167,7 @@ def fetch_existing_threads(
 
 def _is_duplicate(
     file_path: str,
-    description: str,
+    description: str | None,
     existing_threads: list[dict[str, Any]],
     line: int | None = None,
     threshold: float = DEDUP_JACCARD_THRESHOLD,
@@ -183,7 +183,7 @@ def _is_duplicate(
     ``line=None`` skips the line-distance check, preserving backward
     compatibility for callers that lack a right-side line number.
     """
-    normalized = _normalize_body(description)
+    normalized = _normalize_body(description or "")
     tokens = set(normalized.split())
     if not tokens:
         return False
@@ -194,7 +194,7 @@ def _is_duplicate(
         if line is not None and other_line is not None:
             if abs(line - other_line) > line_window:
                 continue
-        other_tokens = set(thread.get("body", "").split())
+        other_tokens = set((thread.get("body") or "").split())
         if not other_tokens:
             continue
         union = tokens | other_tokens
