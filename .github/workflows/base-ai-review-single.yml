@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: v1.0.6
+          ref: v1.0.7
           path: .ai-dev-pr-review
           fetch-depth: 1
 
@@ -314,7 +314,21 @@ jobs:
             2>&1 | tee "${RUNNER_TEMP}/codex-run.log"
           EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
-          if [ "$EXIT_CODE" -ne 0 ] && [ ! -f review-codex.json ]; then
+          if [ -s review-codex.json ]; then
+            echo "::notice::Codex verdict file written directly"
+          elif [ "$EXIT_CODE" -eq 0 ]; then
+            # gpt-5-mini / low-reasoning models don't use sandbox tools -- extract JSON from stdout
+            python3 .ai-dev-pr-review/.github/scripts/extract_codex_json.py \
+              "${RUNNER_TEMP}/codex-run.log" \
+              review-codex.json \
+            && echo "::notice::Extracted Codex verdict JSON from stdout" \
+            || {
+              echo "::warning::Codex emitted output but no parseable verdict JSON found"
+              echo '{"summary":"Codex output unparseable.","early_exit":false,"issues":[]}' \
+                > review-codex.json
+            }
+          else
+            echo "::warning::Codex review failed (exit=${EXIT_CODE}) -- emitting empty verdict"
             echo '{"summary":"Codex unavailable (quota/auth error).","early_exit":false,"issues":[]}' \
               > review-codex.json
           fi
