@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import cast
 
@@ -23,6 +24,57 @@ REVIEW_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "revie
 # in the orchestrator workflow (matches the CLAUDE_MODEL / CODEX_MODEL pattern).
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
 MAX_OUTPUT_TOKENS = 8192
+
+_MAX_RETRY_ATTEMPTS = 3
+_INITIAL_BACKOFF_SECONDS = 4.0
+_BACKOFF_MULTIPLIER = 2.0
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect Gemini API rate-limit (429 RESOURCE_EXHAUSTED) errors.
+
+    The google-genai SDK exposes these as different exception classes across
+    versions. Match by status code in message OR error code attribute.
+    """
+    msg = str(exc).lower()
+    if "429" in msg or "resource_exhausted" in msg or "rate" in msg and "limit" in msg:
+        return True
+    # genai newer SDK: exc.code or exc.status_code
+    for attr in ("status_code", "code"):
+        if getattr(exc, attr, None) == 429:
+            return True
+    return False
+
+
+def _call_gemini_with_retry(client, model, contents, config):  # type: ignore[no-untyped-def]
+    """Call Gemini generate_content with exponential backoff on 429.
+
+    On non-rate-limit errors, raise immediately. On retry exhaustion, raise
+    the last 429 to surface in the existing partial-fail observability pipeline.
+    """
+    backoff = _INITIAL_BACKOFF_SECONDS
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+        try:
+            return client.models.generate_content(
+                model=model, contents=contents, config=config
+            )
+        except Exception as exc:
+            last_exc = exc
+            if not _is_rate_limit_error(exc):
+                raise
+            if attempt == _MAX_RETRY_ATTEMPTS:
+                # surface to existing partial-fail path
+                raise
+            print(
+                f"::warning::Gemini rate-limited (429); attempt {attempt}/{_MAX_RETRY_ATTEMPTS}, sleeping {backoff:.1f}s",
+                file=sys.stderr,
+            )
+            time.sleep(backoff)
+            backoff *= _BACKOFF_MULTIPLIER
+    # Unreachable but mypy-friendly
+    assert last_exc is not None
+    raise last_exc
 
 
 def load_files() -> tuple[str, str]:
@@ -192,7 +244,8 @@ def main() -> None:
 
         if client.models is None:
             raise RuntimeError("google-genai Client.models is None after Client(api_key=...)")
-        response = client.models.generate_content(  # type: ignore[reportUnknownMemberType]
+        response = _call_gemini_with_retry(
+            client,
             model=MODEL,
             contents=build_user_prompt(diff),
             config=config,
