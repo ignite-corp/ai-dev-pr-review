@@ -59,6 +59,55 @@ jobs:
 
 See `examples/consumer-thin-trigger.yml` for the full file with cross-org variant.
 
+## Pinning strategy
+
+Consumers can pin the reusable workflow ref in two ways. Each is supported and tagged simultaneously.
+
+### Option 1 — Major floating tag (`@v1`) — default recommendation
+
+```yaml
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
+```
+
+The `v1` tag automatically tracks the latest `v1.x.y` release. When this repo publishes `v1.0.8`, `v1.0.9`, etc., the `v1` tag is force-moved to the new commit by the `move-major-tag.yml` workflow. All `@v1` consumers pick up the change on their next `ai-review` run — no per-consumer PR.
+
+**Use when**: you trust this upstream and want fixes (like AT-1264's codex stdout fallback) without per-release admin work.
+
+**Note**: breaking changes ship under `v2`, with a new `v2` tag. `@v1` consumers are NOT auto-bumped to v2 — that requires an explicit caller update. So `@v1` is safe within the v1 major line.
+
+### Option 2 — Specific version pin (`@v1.0.7`)
+
+```yaml
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+```
+
+Pins to a specific immutable commit. Each new release surfaces as a Dependabot bump PR (when `package-ecosystem: github-actions` is enabled).
+
+**Use when**: you want explicit per-release review/approval (audit trail), want to defer adopting a new minor for any reason, or are in a regulated environment that requires immutable supply-chain refs.
+
+### Comparison
+
+| Aspect | `@v1` (mutable major) | `@v1.0.X` (specific) |
+|---|---|---|
+| New release adoption | Automatic, next run | Manual via Dependabot PR |
+| Per-release PR overhead | None | 1 PR per consumer per release |
+| Audit trail | Coarser (major-line) | Per-release explicit |
+| Breaking-change safety | Pinned to v1.x.x (won't auto-jump to v2) | Pinned exactly |
+| Force-push window | Yes (between release publish and next caller run) | None |
+
+### Switching between the two
+
+To switch a consumer from specific to floating:
+
+```yaml
+# Before
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+# After
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
+```
+
+And vice versa. Both refs always resolve.
+
 ## Input contract reference
 
 All workflows accept `workflow_call` inputs:
