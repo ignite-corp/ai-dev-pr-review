@@ -15,8 +15,10 @@ on:
         required: true
       GOOGLE_AI_API_KEY:
         required: true
+      ANTHROPIC_API_KEY:
+        required: false
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        required: false
     outputs:
       early_exit:
         description: "Whether the reviewer recommends stopping further reviews"
@@ -182,6 +184,7 @@ jobs:
         uses: anthropics/claude-code-action@f4fb5c6cdccc1ee7af63692f5d08d56efaa64cc8  # v1.0.121
         with:
           github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ vars.CLAUDE_MODEL || 'claude-opus-4-7' }}
           claude_args: '--allowedTools "Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)"'
