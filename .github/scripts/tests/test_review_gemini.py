@@ -67,3 +67,29 @@ def test_call_gemini_with_retry_raises_after_exhaustion(monkeypatch):
 
     with pytest.raises(Exception, match="RESOURCE_EXHAUSTED"):
         review_gemini._call_gemini_with_retry(MockClient(), "m", "c", "cfg")
+
+
+def test_load_files_returns_empty_when_inputs_missing(tmp_path, monkeypatch):
+    """load_files() must not raise when context.md / pr.diff are absent.
+
+    The call site in main() lives outside the partial-fail try/except, so a
+    FileNotFoundError there crashes the whole review job. Guard with
+    Path.exists() and fall back to empty strings.
+    """
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "context.md").exists()
+    assert not (tmp_path / "pr.diff").exists()
+
+    context, diff = review_gemini.load_files()
+    assert context == ""
+    assert diff == ""
+
+
+def test_load_files_reads_existing_inputs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "context.md").write_text("ctx", encoding="utf-8")
+    (tmp_path / "pr.diff").write_text("diff", encoding="utf-8")
+
+    context, diff = review_gemini.load_files()
+    assert context == "ctx"
+    assert diff == "diff"

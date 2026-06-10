@@ -78,8 +78,25 @@ def _call_gemini_with_retry(client, model, contents, config):  # type: ignore[no
 
 
 def load_files() -> tuple[str, str]:
-    context = Path("context.md").read_text(encoding="utf-8")
-    diff = Path("pr.diff").read_text(encoding="utf-8")
+    # PR-content inputs: tolerate non-UTF-8 bytes (mixed-encoding source
+    # files surface here verbatim through pr.diff and quoted review-thread
+    # bodies in context.md). The reviewer LLM does not need byte-perfect
+    # fidelity; ``errors="replace"`` prevents a stray byte from crashing
+    # the whole review job. Guard with ``exists()`` so a missing input
+    # falls back to an empty string instead of raising FileNotFoundError
+    # outside the partial-fail handler in ``main()``.
+    context_path = Path("context.md")
+    diff_path = Path("pr.diff")
+    context = (
+        context_path.read_text(encoding="utf-8", errors="replace")
+        if context_path.exists()
+        else ""
+    )
+    diff = (
+        diff_path.read_text(encoding="utf-8", errors="replace")
+        if diff_path.exists()
+        else ""
+    )
     return context, diff
 
 

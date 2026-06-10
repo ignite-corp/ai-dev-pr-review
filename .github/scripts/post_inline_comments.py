@@ -379,7 +379,13 @@ def main() -> None:
     diff_path = Path(args.diff)
     if not diff_path.exists():
         print(f"Warning: diff file not found: {args.diff}", file=sys.stderr)
-    diff_text = diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
+    # ``errors="replace"`` keeps validation alive when the PR diff carries
+    # non-UTF-8 bytes; we only need hunk headers, which are ASCII.
+    diff_text = (
+        diff_path.read_text(encoding="utf-8", errors="replace")
+        if diff_path.exists()
+        else ""
+    )
     valid_lines = parse_diff(diff_text)
     existing_threads = fetch_existing_threads(repo, pr_number)
 

@@ -336,7 +336,12 @@ def _render_xml(pins: list[ResultPin]) -> str:
 
 def main() -> None:
     try:
-        with open("pr.diff", encoding="utf-8") as f:
+        # ``errors="replace"`` keeps the script tolerant of PR diffs that
+        # carry non-UTF-8 bytes (e.g. mixed-encoding text added to source).
+        # SHA verification is the job here -- not policing diff encoding --
+        # and replacing bad bytes preserves byte/line positions for
+        # downstream regex matching.
+        with open("pr.diff", encoding="utf-8", errors="replace") as f:
             diff_text = f.read()
     except FileNotFoundError:
         print("pr.diff not found -- skipping SHA verification", file=sys.stderr)
