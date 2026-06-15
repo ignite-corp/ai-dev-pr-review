@@ -1,0 +1,186 @@
+name: consumer-health
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_ID }}
+          private-key: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+
+      - name: Consumer health check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -u
+          CONSUMERS=(ai-dev-cab ai-dev-qa-partner ai-tf-t2a ai-dev-infra-common app-cast)
+          REQUIRED_SECRETS=(OPENAI_API_KEY GOOGLE_AI_API_KEY CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY)
+
+          # Stale cutoff for known-bad startup_failure runs
+          STALE_BEFORE="2026-06-09T00:00:00Z"
+
+          any_flag=0
+
+          check_org_secret_grants_repo() {
+            local scope="$1" # actions | dependabot
+            local key="$2"
+            local repo="$3"
+            local meta
+            if ! meta=$(gh api "orgs/ignite-corp/${scope}/secrets/${key}" 2>/dev/null); then
+              return 1
+            fi
+            local visibility
+            visibility=$(jq -r '.visibility' <<<"$meta")
+            case "$visibility" in
+              all)
+                return 0
+                ;;
+              private)
+                # dependabot 'private' visibility => all private repos
+                if [ "$scope" = "dependabot" ]; then
+                  return 0
+                fi
+                # actions 'private' also = all private repos in the org
+                return 0
+                ;;
+              selected)
+                local url
+                url=$(jq -r '.selected_repositories_url' <<<"$meta")
+                if [ -z "$url" ] || [ "$url" = "null" ]; then
+                  return 1
+                fi
+                if gh api --paginate "$url" 2>/dev/null \
+                  | jq -e --arg name "$repo" '.repositories[]? | select(.name == $name)' > /dev/null; then
+                  return 0
+                fi
+                return 1
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          check_repo_secret() {
+            local scope="$1"
+            local key="$2"
+            local slug="$3"
+            gh api "repos/${slug}/${scope}/secrets/${key}" >/dev/null 2>&1
+          }
+
+          for name in "${CONSUMERS[@]}"; do
+            slug="ignite-corp/${name}"
+            echo "::group::Consumer ${slug}"
+            consumer_flags=0
+
+            # 1. Recent ai-review.yml runs
+            echo "--- Recent ai-review.yml runs (last 3) ---"
+            runs_json=$(gh run list --repo "$slug" --workflow ai-review.yml --limit 3 \
+              --json databaseId,conclusion,headBranch,createdAt 2>/dev/null || echo '[]')
+            echo "$runs_json" | jq -r '.[] | "  id=\(.databaseId) branch=\(.headBranch) conclusion=\(.conclusion) created=\(.createdAt)"'
+
+            considered_runs=$(jq --arg cutoff "$STALE_BEFORE" '
+              [ .[] | select(
+                .createdAt > $cutoff
+                or (.headBranch | test("^chore/add-anthropic-api-key$") | not)
+              ) ]
+            ' <<<"$runs_json")
+
+            fail_count=$(jq '[ .[] | select(.conclusion == "failure" or .conclusion == "startup_failure") ] | length' <<<"$considered_runs")
+            total_count=$(jq 'length' <<<"$considered_runs")
+            if [ "$total_count" -ge 1 ] && [ "$fail_count" -ge 2 ]; then
+              echo "  [FLAG] ${fail_count}/${total_count} of recent ai-review runs failed"
+              consumer_flags=$((consumer_flags + 1))
+            fi
+
+            # 2. Workflow pin freshness
+            echo "--- ai-review.yml pin ---"
+            content_b64=$(gh api "repos/${slug}/contents/.github/workflows/ai-review.yml" \
+              --jq '.content' 2>/dev/null || echo "")
+            if [ -z "$content_b64" ]; then
+              echo "  [FLAG] no .github/workflows/ai-review.yml at $slug"
+              consumer_flags=$((consumer_flags + 1))
+            else
+              content=$(echo "$content_b64" | base64 -d 2>/dev/null || true)
+              pin=$(echo "$content" \
+                | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
+                | head -1 \
+                | sed -E 's|.*@||')
+              echo "  pin=${pin:-<none>}"
+              if [ -z "$pin" ]; then
+                echo "  [FLAG] no reusable workflow pin found"
+                consumer_flags=$((consumer_flags + 1))
+              elif echo "$pin" | grep -Eq '^v1$'; then
+                : # floating major tag = OK
+              elif echo "$pin" | grep -Eq '^v1\.0\.[6-9]$'; then
+                :
+              elif echo "$pin" | grep -Eq '^v1\.[1-9][0-9]*(\..*)?$'; then
+                :
+              elif echo "$pin" | grep -Eq '^v1\.0\.[1-9][0-9]+$'; then
+                :
+              else
+                echo "  [FLAG] pin ${pin} is stale (below v1.0.6)"
+                consumer_flags=$((consumer_flags + 1))
+              fi
+            fi
+
+            # 3. Secrets accessibility
+            echo "--- Secrets (actions + dependabot) ---"
+            for key in "${REQUIRED_SECRETS[@]}"; do
+              actions_ok=0
+              dependabot_ok=0
+              if check_org_secret_grants_repo actions "$key" "$name"; then
+                actions_ok=1
+              elif check_repo_secret actions "$key" "$slug"; then
+                actions_ok=1
+              fi
+              if check_org_secret_grants_repo dependabot "$key" "$name"; then
+                dependabot_ok=1
+              elif check_repo_secret dependabot "$key" "$slug"; then
+                dependabot_ok=1
+              fi
+              echo "  ${key}: actions=${actions_ok} dependabot=${dependabot_ok}"
+              if [ "$actions_ok" -ne 1 ] || [ "$dependabot_ok" -ne 1 ]; then
+                echo "  [FLAG] ${key} missing on actions=${actions_ok} dependabot=${dependabot_ok}"
+                consumer_flags=$((consumer_flags + 1))
+              fi
+            done
+
+            # 4. Recent Dependabot PRs (informational)
+            echo "--- Recent Dependabot PRs (informational) ---"
+            gh pr list --repo "$slug" --author "app/dependabot" --state all --limit 3 \
+              --json number,title,state,createdAt 2>/dev/null \
+              | jq -r '.[] | "  #\(.number) \(.state) \(.createdAt) \(.title)"' || echo "  (none)"
+
+            if [ "$consumer_flags" -gt 0 ]; then
+              echo "Consumer ${slug}: ${consumer_flags} flag(s)"
+              any_flag=1
+            else
+              echo "Consumer ${slug}: OK"
+            fi
+            echo "::endgroup::"
+          done
+
+          # Informational notes (always printed, never failure)
+          echo "::group::Known-issue classifications (informational only)"
+          echo "- Stale chore/add-anthropic-api-key startup_failure runs before ${STALE_BEFORE}: ignored"
+          echo "- Gemini partial responses (429 RESOURCE_EXHAUSTED): informational, do not fail"
+          echo "- verify_action_shas.py UnicodeDecodeError until floating tag passes PR #17 fix: informational"
+          echo "::endgroup::"
+
+          if [ "$any_flag" -ne 0 ]; then
+            echo "::error::One or more consumers flagged"
+            exit 1
+          fi

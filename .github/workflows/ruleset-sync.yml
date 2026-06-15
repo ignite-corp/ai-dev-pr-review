@@ -1,0 +1,64 @@
+name: ruleset-sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rulesets/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mint App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_ID }}
+          private-key: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+
+      - name: Sync rulesets
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -u
+          declare -A RULESET_IDS=(
+            [ai-dev-cab]=11121613
+            [ai-dev-qa-partner]=16312939
+            [ai-dev-infra-common]=13761444
+            [ai-tf-t2a]=7046917
+          )
+
+          failed=0
+          for f in rulesets/*.json; do
+            name="$(basename "$f" .json)"
+            rid="${RULESET_IDS[$name]:-}"
+            if [ -z "$rid" ]; then
+              echo "::error::No ruleset ID mapping for $name"
+              failed=1
+              continue
+            fi
+            slug="ignite-corp/${name}"
+            echo "::group::Sync $slug (ruleset $rid)"
+            if gh api --method PUT "repos/${slug}/rulesets/${rid}" --input "$f" > /tmp/sync-out.json; then
+              echo "OK: $slug"
+            else
+              echo "::error::Failed to sync $slug"
+              cat /tmp/sync-out.json || true
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more ruleset syncs failed"
+            exit 1
+          fi
