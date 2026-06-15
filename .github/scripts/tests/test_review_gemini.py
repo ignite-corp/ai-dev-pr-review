@@ -1,5 +1,8 @@
+import importlib
+import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -93,3 +96,73 @@ def test_load_files_reads_existing_inputs(tmp_path, monkeypatch):
     context, diff = review_gemini.load_files()
     assert context == "ctx"
     assert diff == "diff"
+
+
+def test_main_raises_on_max_tokens_finish_reason(tmp_path, monkeypatch, capsys):
+    """When Gemini returns finish_reason=MAX_TOKENS, main() must surface a clear
+    RuntimeError via the existing partial-fail handler rather than letting the
+    truncated JSON crash with an opaque JSONDecodeError.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "test-key")
+
+    fake_finish_reason = MagicMock()
+    fake_finish_reason.name = "MAX_TOKENS"
+    fake_candidate = MagicMock()
+    fake_candidate.finish_reason = fake_finish_reason
+    fake_usage = MagicMock()
+    fake_usage.candidates_token_count = 8192
+    fake_usage.prompt_token_count = 1000
+    fake_usage.total_token_count = 9192
+    fake_response = MagicMock()
+    fake_response.candidates = [fake_candidate]
+    fake_response.usage_metadata = fake_usage
+
+    monkeypatch.setattr(
+        review_gemini,
+        "_call_gemini_with_retry",
+        lambda *args, **kwargs: fake_response,
+    )
+
+    fake_client = MagicMock()
+    fake_client.models = MagicMock()
+    monkeypatch.setattr(
+        review_gemini.genai, "Client", lambda api_key=None: fake_client
+    )
+
+    review_gemini.main()
+
+    written = (tmp_path / review_gemini.REVIEW_FILE).read_text(encoding="utf-8")
+    assert "truncated at MAX_OUTPUT_TOKENS" in written
+    captured = capsys.readouterr()
+    assert "truncated at MAX_OUTPUT_TOKENS" in captured.err
+
+
+def test_max_output_tokens_env_override(monkeypatch):
+    """GEMINI_MAX_OUTPUT_TOKENS env var must override the default at import time."""
+    original = os.environ.get("GEMINI_MAX_OUTPUT_TOKENS")
+    try:
+        os.environ["GEMINI_MAX_OUTPUT_TOKENS"] = "16384"
+        reloaded = importlib.reload(review_gemini)
+        assert reloaded.MAX_OUTPUT_TOKENS == 16384
+    finally:
+        if original is None:
+            os.environ.pop("GEMINI_MAX_OUTPUT_TOKENS", None)
+        else:
+            os.environ["GEMINI_MAX_OUTPUT_TOKENS"] = original
+        importlib.reload(review_gemini)
+
+
+def test_max_output_tokens_env_invalid_falls_back_to_default():
+    """Invalid GEMINI_MAX_OUTPUT_TOKENS value falls back to default 32768 instead of crashing."""
+    original = os.environ.get("GEMINI_MAX_OUTPUT_TOKENS")
+    try:
+        os.environ["GEMINI_MAX_OUTPUT_TOKENS"] = "not-a-number"
+        reloaded = importlib.reload(review_gemini)
+        assert reloaded.MAX_OUTPUT_TOKENS == 32768
+    finally:
+        if original is None:
+            os.environ.pop("GEMINI_MAX_OUTPUT_TOKENS", None)
+        else:
+            os.environ["GEMINI_MAX_OUTPUT_TOKENS"] = original
+        importlib.reload(review_gemini)
