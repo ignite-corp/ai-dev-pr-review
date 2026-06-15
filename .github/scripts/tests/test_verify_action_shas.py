@@ -770,3 +770,42 @@ class TestMain:
             main()
 
         assert run_mock.call_count == 1
+
+    def test_main_tolerates_non_utf8_bytes_in_diff(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A pr.diff with non-UTF-8 bytes must not crash the script.
+
+        Regression guard: a PR on a consumer repo carried ``0xeb`` mid-line
+        and the strict utf-8 decode raised ``UnicodeDecodeError`` from
+        ``open()``, taking down the whole "Append verified action SHA pins"
+        step. With ``errors="replace"`` the script should keep running and
+        still extract pins from the surrounding ASCII content.
+        """
+        diff_bytes = (
+            b"diff --git a/x b/x\n"
+            b"@@ -1,1 +1,1 @@\n"
+            b"-old\n"
+            b"+      - uses: actions/checkout@"
+            + CHECKOUT_SHA.encode("ascii")
+            + b"  # v4.3.1 \xeb\xeb\n"
+        )
+        (tmp_path / "pr.diff").write_bytes(diff_bytes)
+        (tmp_path / "context.md").write_text("")
+
+        tags_payload = _tags_payload(
+            [{"name": "v4.3.1", "commit": {"sha": CHECKOUT_SHA}}]
+        )
+
+        monkeypatch.chdir(tmp_path)
+        with patch(
+            "verify_action_shas.subprocess.run",
+            return_value=_completed(tags_payload),
+        ):
+            main()
+
+        captured = capsys.readouterr()
+        assert "Verified 1/1 action SHA pins" in captured.out
