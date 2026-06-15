@@ -23,7 +23,14 @@ REVIEW_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "revie
 # Defaults to gemini-2.5-pro (current latest stable). Override via vars.GEMINI_MODEL
 # in the orchestrator workflow (matches the CLAUDE_MODEL / CODEX_MODEL pattern).
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
-MAX_OUTPUT_TOKENS = 8192
+# Configurable via env (matches MODEL / *_MODEL pattern). gemini-2.5 family supports
+# up to 65536 output tokens; 32768 default keeps cost low while handling most large PRs.
+try:
+    MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
+except ValueError:
+    # Invalid override (empty string, non-numeric) -- fall back to default rather than
+    # crash at import time. Operator sees the fallback via the usage_metadata log.
+    MAX_OUTPUT_TOKENS = 32768
 
 _MAX_RETRY_ATTEMPTS = 3
 _INITIAL_BACKOFF_SECONDS = 4.0
@@ -267,6 +274,26 @@ def main() -> None:
             contents=build_user_prompt(diff),
             config=config,
         )
+        # Detect MAX_TOKENS truncation BEFORE attempting JSON parse, so the operator
+        # gets a clear actionable error instead of an opaque JSONDecodeError.
+        if response.candidates and response.candidates[0] and response.candidates[0].finish_reason:
+            fr = response.candidates[0].finish_reason
+            fr_name = fr.name if hasattr(fr, "name") else str(fr)
+            if fr_name == "MAX_TOKENS":
+                usage = response.usage_metadata
+                used = usage.candidates_token_count if usage else None
+                raise RuntimeError(
+                    f"Gemini response truncated at MAX_OUTPUT_TOKENS={MAX_OUTPUT_TOKENS} "
+                    f"(candidates_token_count={used}). Increase via GEMINI_MAX_OUTPUT_TOKENS env or "
+                    f"reduce input size."
+                )
+        if response.usage_metadata:
+            print(
+                f"INFO: Gemini usage -- prompt={response.usage_metadata.prompt_token_count}, "
+                f"output={response.usage_metadata.candidates_token_count}, "
+                f"total={response.usage_metadata.total_token_count}",
+                file=sys.stderr,
+            )
         text = response.text
         if not text:
             raise ValueError("Gemini returned empty response (filtered or no candidates)")
