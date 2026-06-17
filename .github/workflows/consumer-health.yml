@@ -137,23 +137,35 @@ jobs:
             fi
 
             # 3. Secrets accessibility
+            #
+            # Actions scope: org-level + repo-level both introspectable via the GitHub App
+            # token (the App holds Organization Secrets: Read). Missing = [FLAG].
+            #
+            # Dependabot scope: GitHub Apps cannot read org-level Dependabot secrets
+            # (platform limitation -- no "Organization Dependabot Secrets: Read" permission
+            # exists in the App catalog as of 2026-06-17). check_org_secret_grants_repo
+            # dependabot always returns 1 (failure) under App auth, regardless of actual
+            # configuration. We therefore probe repo-level only, surface as informational,
+            # and rely on downstream "recent ai-review runs failed" to catch real misconfig
+            # (a Dependabot PR with broken secret auth fails the actual ai-review run, which
+            # our fail-count check above already detects).
             echo "--- Secrets (actions + dependabot) ---"
             for key in "${REQUIRED_SECRETS[@]}"; do
               actions_ok=0
-              dependabot_ok=0
               if check_org_secret_grants_repo actions "$key" "$name"; then
                 actions_ok=1
               elif check_repo_secret actions "$key" "$slug"; then
                 actions_ok=1
               fi
-              if check_org_secret_grants_repo dependabot "$key" "$name"; then
-                dependabot_ok=1
-              elif check_repo_secret dependabot "$key" "$slug"; then
-                dependabot_ok=1
+
+              dependabot_repo_present=0
+              if check_repo_secret dependabot "$key" "$slug"; then
+                dependabot_repo_present=1
               fi
-              echo "  ${key}: actions=${actions_ok} dependabot=${dependabot_ok}"
-              if [ "$actions_ok" -ne 1 ] || [ "$dependabot_ok" -ne 1 ]; then
-                echo "  [FLAG] ${key} missing on actions=${actions_ok} dependabot=${dependabot_ok}"
+
+              echo "  ${key}: actions=${actions_ok} dependabot_repo=${dependabot_repo_present} (org-level invisible to App)"
+              if [ "$actions_ok" -ne 1 ]; then
+                echo "  [FLAG] ${key} missing on actions scope"
                 consumer_flags=$((consumer_flags + 1))
               fi
             done
@@ -178,6 +190,7 @@ jobs:
           echo "- Stale chore/add-anthropic-api-key startup_failure runs before ${STALE_BEFORE}: ignored"
           echo "- Gemini partial responses (429 RESOURCE_EXHAUSTED): informational, do not fail"
           echo "- verify_action_shas.py UnicodeDecodeError until floating tag passes PR #17 fix: informational"
+          echo "- Dependabot org-level secrets: not introspectable via GitHub App (platform limitation); repo-level only checked"
           echo "::endgroup::"
 
           if [ "$any_flag" -ne 0 ]; then
