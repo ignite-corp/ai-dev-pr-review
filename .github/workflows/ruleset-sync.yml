@@ -35,6 +35,7 @@ jobs:
             [ai-dev-qa-partner]=16312939
             [ai-dev-infra-common]=13761444
             [ai-tf-t2a]=7046917
+            [app-cast]=17884678
           )
 
           failed=0
