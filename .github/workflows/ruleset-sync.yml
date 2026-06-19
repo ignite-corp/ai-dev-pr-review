@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       review_count_override:
-        description: 'Override required_approving_review_count for all rulesets (e.g., 2). Leave empty to use JSON value.'
+        description: 'Ad-hoc override for required_approving_review_count (e.g., 2). Ignored if vars.RULESET_REVIEW_COUNT_OVERRIDE is set. Leave empty to use JSON value.'
         required: false
         type: string
         default: ''
@@ -34,7 +34,7 @@ jobs:
       - name: Sync rulesets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REVIEW_COUNT_OVERRIDE: ${{ inputs.review_count_override }}
+          REVIEW_COUNT_OVERRIDE: ${{ vars.RULESET_REVIEW_COUNT_OVERRIDE || inputs.review_count_override }}
         run: |
           set -u
           declare -A RULESET_IDS=(
