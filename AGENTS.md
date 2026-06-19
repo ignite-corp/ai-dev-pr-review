@@ -5,7 +5,7 @@
 This repo owns reviewer infrastructure AND consumer fleet management for the tracked consumers.
 
 ### Rulesets are code
-GitHub Rulesets for the 4 tracked consumers are managed in `rulesets/` of this repo, one JSON per consumer.
+GitHub Rulesets for the 5 tracked consumers are managed in `rulesets/` of this repo, one JSON per consumer.
 
 - **Never edit rulesets via the GitHub UI.** The UI has a footgun: required status checks added as "Any source" (integration_id=null) silently never match check_runs, leaving PRs permanently BLOCKED. See AT-1270.
 - To change a ruleset: edit `rulesets/<repo>.json` via PR. On merge, `ruleset-sync.yml` PUTs to live ruleset via API.
