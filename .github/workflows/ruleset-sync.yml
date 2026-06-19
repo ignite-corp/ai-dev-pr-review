@@ -6,6 +6,12 @@ on:
     paths:
       - 'rulesets/**'
   workflow_dispatch:
+    inputs:
+      review_count_override:
+        description: 'Override required_approving_review_count for all rulesets (e.g., 2). Leave empty to use JSON value.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -28,6 +34,7 @@ jobs:
       - name: Sync rulesets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REVIEW_COUNT_OVERRIDE: ${{ inputs.review_count_override }}
         run: |
           set -u
           declare -A RULESET_IDS=(
@@ -37,6 +44,13 @@ jobs:
             [ai-tf-t2a]=7046917
             [app-cast]=17884678
           )
+
+          if [ -n "${REVIEW_COUNT_OVERRIDE:-}" ]; then
+            if ! [[ "$REVIEW_COUNT_OVERRIDE" =~ ^[0-9]+$ ]]; then
+              echo "::error::review_count_override must be a non-negative integer, got: $REVIEW_COUNT_OVERRIDE"
+              exit 1
+            fi
+          fi
 
           failed=0
           for f in rulesets/*.json; do
@@ -49,12 +63,26 @@ jobs:
             fi
             slug="ignite-corp/${name}"
             echo "::group::Sync $slug (ruleset $rid)"
-            if gh api --method PUT "repos/${slug}/rulesets/${rid}" --input "$f" > /tmp/sync-out.json; then
-              echo "OK: $slug"
+            if [ -n "${REVIEW_COUNT_OVERRIDE:-}" ]; then
+              echo "::notice::Applying review_count_override=$REVIEW_COUNT_OVERRIDE to $slug"
+              payload=$(jq --argjson count "$REVIEW_COUNT_OVERRIDE" '
+                (.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count) = $count
+              ' "$f")
+              if printf '%s' "$payload" | gh api --method PUT "repos/${slug}/rulesets/${rid}" --input - > /tmp/sync-out.json; then
+                echo "OK: $slug"
+              else
+                echo "::error::Failed to sync $slug"
+                cat /tmp/sync-out.json || true
+                failed=1
+              fi
             else
-              echo "::error::Failed to sync $slug"
-              cat /tmp/sync-out.json || true
-              failed=1
+              if gh api --method PUT "repos/${slug}/rulesets/${rid}" --input "$f" > /tmp/sync-out.json; then
+                echo "OK: $slug"
+              else
+                echo "::error::Failed to sync $slug"
+                cat /tmp/sync-out.json || true
+                failed=1
+              fi
             fi
             echo "::endgroup::"
           done
