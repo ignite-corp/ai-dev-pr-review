@@ -186,8 +186,7 @@ jobs:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ vars.CLAUDE_MODEL || 'claude-opus-4-7' }}
-          claude_args: '--allowedTools "Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)"'
+          claude_args: '--model ${{ vars.CLAUDE_MODEL || ''claude-sonnet-4-6'' }} --allowedTools "Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)"'
           prompt: ${{ env.CLAUDE_PROMPT }}
 
       - name: Extract Claude review from execution log (fallback)
