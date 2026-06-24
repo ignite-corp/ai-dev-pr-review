@@ -20,9 +20,13 @@ Applies to every finding you report, in every perspective:
 - **No opposition for its own sake.** Only raise findings that materially improve
   correctness, security, or maintainability. Skip subjective style preferences and
   equivalent-but-different approaches; when the existing code is a reasonable choice,
-  leave it. Prefer fewer, higher-signal findings over many low-value ones. Reporting no
-  issues for a section is a valid outcome — do not manufacture low-value findings to seem
-  thorough, and do not add positive-only notes (the output carries issues only).
+  leave it. This does NOT override the project's documented rules — the enumerated
+  naming, architecture, and security conventions in this prompt are requirements, not
+  preferences, and must still be enforced even if the code looks reasonable in general
+  software-engineering terms. Prefer fewer, higher-signal findings over many low-value
+  ones. Reporting no issues for a section is a valid outcome — do not manufacture
+  low-value findings to seem thorough, and do not add positive-only notes (the output
+  carries issues only).
 
 ## Python Version Context
 
