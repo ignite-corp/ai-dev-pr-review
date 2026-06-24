@@ -1,5 +1,7 @@
 # ai-dev-pr-review
 
+[English](README.md) | [한국어](README.ko.md)
+
 Reusable GitHub Actions workflows for multi-LLM pull request review (Claude + Codex + Gemini, parallel or sequential), with inline comment posting, deduplication against prior rounds, and a rule-based aggregate verdict.
 
 ## What this repo provides
@@ -133,12 +135,21 @@ These tune behavior without code changes. Set them under repository or organizat
 | `MAJOR_CONSENSUS_OVERLAP` | `0.3` | Word-overlap ratio (0-1) at which two reviewers' major findings count as the same issue. |
 | `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP` | `0.5` | Dependabot-only. |
 | `MAJOR_CONSENSUS_MIN` | `2` | Number of reviewers required for consensus to trigger `request_changes` on a major issue. |
-| `CLAUDE_MODEL` | `claude-opus-4-7` | Model passed to `anthropics/claude-code-action`. |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model passed to `anthropics/claude-code-action` via `claude_args --model`. |
 | `CODEX_MODEL` | `gpt-5.5` | Model passed to `codex exec --model`. |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Model passed to the `google-genai` client. |
 | `BOT_LOGIN` | `github-actions[bot]` | Author login used for minimizing prior bot comments and dismissing stale reviews. |
 | `JACCARD_THRESHOLD` | `0.6` | Token-set Jaccard similarity threshold for dedup. Lower values dedup more aggressively (more strings collapse to same issue), higher values are stricter. Tune `0.5`-`0.8` for behavior trade-off. |
 | `ALLOW_AUTO_APPROVE` | `false` | Killswitch. When `false`, "approve" verdicts are posted as plain comments (no actual approval submitted). Flip to `true` to enable real `gh pr review --approve`. |
+
+## Concurrency and re-push behavior
+
+The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`, so each PR has at most one active review run at a time. The group key is the PR number (`inputs.pr_number` for `workflow_dispatch`, falling back to `github.run_id`).
+
+- **New push during a review:** every push fires `pull_request: synchronize`, which starts a new run and cancels the in-progress run for the same PR. The new run restarts from `prepare` against the latest diff. Runs do not accumulate — the PR converges to a single active run.
+- **Different PRs:** different group keys, so they run independently and never cancel each other.
+- **`sequential` trade-off:** because reviewers run one after another (`Claude -> Codex -> Gemini`), a run takes longer wall-clock than `parallel`, so a re-push is more likely to land mid-run. Cancellation discards already-completed stages (e.g. a finished Claude review) and the new run re-runs the chain from the start. `parallel` wastes less work on rapid successive pushes.
+- **Manual `workflow_dispatch`:** pass `pr_number` so the group key matches the PR. Without it the key falls back to `github.run_id`, which is unique per run, so concurrent manual runs are not de-duplicated.
 
 ## Cross-org usage
 
