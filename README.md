@@ -140,6 +140,15 @@ These tune behavior without code changes. Set them under repository or organizat
 | `JACCARD_THRESHOLD` | `0.6` | Token-set Jaccard similarity threshold for dedup. Lower values dedup more aggressively (more strings collapse to same issue), higher values are stricter. Tune `0.5`-`0.8` for behavior trade-off. |
 | `ALLOW_AUTO_APPROVE` | `false` | Killswitch. When `false`, "approve" verdicts are posted as plain comments (no actual approval submitted). Flip to `true` to enable real `gh pr review --approve`. |
 
+## Concurrency and re-push behavior
+
+The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`, so each PR has at most one active review run at a time. The group key is the PR number (`inputs.pr_number` for `workflow_dispatch`, falling back to `github.run_id`).
+
+- **New push during a review:** every push fires `pull_request: synchronize`, which starts a new run and cancels the in-progress run for the same PR. The new run restarts from `prepare` against the latest diff. Runs do not accumulate — the PR converges to a single active run.
+- **Different PRs:** different group keys, so they run independently and never cancel each other.
+- **`sequential` trade-off:** because reviewers run one after another (`Claude -> Codex -> Gemini`), a run takes longer wall-clock than `parallel`, so a re-push is more likely to land mid-run. Cancellation discards already-completed stages (e.g. a finished Claude review) and the new run re-runs the chain from the start. `parallel` wastes less work on rapid successive pushes.
+- **Manual `workflow_dispatch`:** pass `pr_number` so the group key matches the PR. Without it the key falls back to `github.run_id`, which is unique per run, so concurrent manual runs are not de-duplicated.
+
 ## Cross-org usage
 
 GitHub does NOT propagate `secrets: inherit` across organizations. For `ignite-pilot-org` (or any other org) consumers:
