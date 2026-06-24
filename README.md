@@ -208,9 +208,9 @@ Version policy:
 The per-repo system prompt and checklist live in the consumer repo, NOT here. The reusable workflow reads them via `code-review-system-prompt-path` / `code-review-checklist-path` and concatenates them into the `context.md` that every reviewer (Claude / Codex / Gemini) reads as its shared guideline. To customize:
 
 1. Copy the starter templates from this repo's `examples/prompts/` into the consumer's `.github/prompts/`:
-   - `code-review-system.md` — baseline **review disposition** (always provide a concrete `suggestion`; no opposition-for-opposition nitpicks; still raise critical flaws) plus a Repository specifics section to fill in.
+   - `code-review-system.md` — baseline **review disposition** (always provide a concrete `suggestion`; no opposition-for-opposition nitpicks; still raise critical flaws) plus inline `<...>` placeholders (project identity, architecture layers) to fill in.
    - `code-review-checklist.md` — baseline code-quality / security / spec-compliance checklist.
-2. Edit them with repo-specific rules (architecture conventions, naming taboos, security expectations). Tune the review disposition here — this is the single place that shapes how *all three* reviewers behave.
+2. Edit them with repo-specific rules (architecture conventions, naming taboos, security expectations). Tune the review disposition here — all three reviewers read these files as their shared guideline.
 3. Reference them from the thin trigger only if you use a non-default path:
    ```yaml
    with:

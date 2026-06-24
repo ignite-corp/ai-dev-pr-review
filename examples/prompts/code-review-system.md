@@ -71,32 +71,18 @@ ruff 0.11.0+ normalizes the parenthesized form to the PEP 758 unparenthesized fo
 
 | Level | Icon | Meaning | Action Required |
 |-------|------|---------|-----------------|
-| critical | :red_circle: | Blocks merge. Bug, security vulnerability, or architecture violation. | Must fix before merge |
-| major | :orange_circle: | Significant issue. Wrong pattern, missing validation, poor naming. | Should fix in this PR |
-| minor | :yellow_circle: | Minor improvement. Style, redundancy, minor optimization. | Fix recommended |
-| suggestion | :bulb: | Optional enhancement. Alternative approach, documentation. | Consider for future |
+| critical | `!` | Blocks merge. Bug, security vulnerability, or architecture violation. | Must fix before merge |
+| major | `+` | Significant issue. Wrong pattern, missing validation, poor naming. | Should fix in this PR |
+| minor | `-` | Minor improvement. Style, redundancy, minor optimization. | Fix recommended |
+| suggestion | `?` | Optional enhancement. Alternative approach, documentation. | Consider for future |
 
 ## Output Format
 
-```markdown
-## AI Code Review
-
-### Code Quality
-- :severity_icon: severity -- `file:line` description
-
-### Security
-- :severity_icon: severity -- `file:line` description (or "No issues found")
-
-### Spec Compliance
-- :severity_icon: severity -- description referencing spec document
-
-### Summary
-| Perspective | Critical | Major | Minor | Suggestion |
-|-------------|----------|-------|-------|------------|
-| Code Quality | N | N | N | N |
-| Security | N | N | N | N |
-| Spec Compliance | N | N | N | N |
-```
+Emit findings ONLY as the JSON your reviewer entrypoint specifies (one object per
+finding with `severity`, `file`, `line`, `description`, `suggestion`), conforming to
+`.github/schemas/review-schema.json`. Do not write a markdown report and do not post PR
+comments or reviews yourself — the aggregate pipeline renders the verdict and applies the
+severity icons above.
 
 ## GitHub Actions SHA Pins
 

@@ -208,9 +208,9 @@ updates:
 레포별 시스템 프롬프트와 체크리스트는 여기가 아니라 소비자 레포에 있습니다. 재사용 워크플로우가 `code-review-system-prompt-path` / `code-review-checklist-path`로 읽어 `context.md`로 합치고, 세 리뷰어(Claude / Codex / Gemini)가 이를 공통 지침으로 읽습니다. 커스터마이즈하려면:
 
 1. 이 레포의 `examples/prompts/` 스타터 템플릿을 소비자의 `.github/prompts/`로 복사:
-   - `code-review-system.md` — 기본 **리뷰 성향(disposition)**(이슈마다 구체적 `suggestion` 필수, 반대를 위한 반대 금지, 그래도 critical 결함은 보고) + 채워 넣을 "Repository specifics" 섹션.
+   - `code-review-system.md` — 기본 **리뷰 성향(disposition)**(이슈마다 구체적 `suggestion` 필수, 반대를 위한 반대 금지, 그래도 critical 결함은 보고) + 채워 넣을 인라인 `<...>` 플레이스홀더(프로젝트 정체성, 아키텍처 레이어).
    - `code-review-checklist.md` — 기본 코드 품질 / 보안 / 스펙 준수 체크리스트.
-2. 레포별 규칙(아키텍처 관례, 네이밍 금기, 보안 기대사항)으로 편집. 리뷰 성향도 여기서 조정 — **세 리뷰어 모두**의 동작을 결정하는 단일 지점입니다.
+2. 레포별 규칙(아키텍처 관례, 네이밍 금기, 보안 기대사항)으로 편집. 리뷰 성향도 여기서 조정 — 세 리뷰어 모두 이 파일들을 공통 지침으로 읽습니다.
 3. 기본값이 아닌 경로를 쓸 때만 thin 트리거에서 참조:
    ```yaml
    with:
