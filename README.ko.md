@@ -16,7 +16,7 @@
 | `base-ai-review-aggregate.yml` | 모든 리뷰어 출력을 로드, 심각도 규칙 적용, PR에 통합 판정 게시. |
 
 `.github/scripts/` 아래 헬퍼 (Python 3.14, 그리고 bash 1개 + jq 1개):
-`aggregate_reviews.py`, `extract_claude_review.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
+`aggregate_reviews.py`, `extract_claude_review.py`, `extract_codex_json.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
 
 `.github/schemas/review-schema.json` 스키마 (리뷰어별 출력 계약).
 
@@ -48,7 +48,7 @@ on:
 
 jobs:
   review:
-    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       code-review-system-prompt-path: .github/prompts/code-review-system.md
@@ -77,10 +77,10 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 **비고**: 호환성 깨지는 변경은 새 `v2` 태그와 함께 `v2`로 배포됩니다. `@v1` 소비자는 v2로 자동 승급되지 **않습니다** — 명시적인 호출자(caller) 업데이트가 필요합니다. 따라서 `@v1`은 v1 메이저 라인 내에서 안전합니다.
 
-### 옵션 2 — 특정 버전 핀 (`@v1.0.7`)
+### 옵션 2 — 특정 버전 핀 (`@v1.0.15`)
 
 ```yaml
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 ```
 
 특정 불변(immutable) 커밋에 핀합니다. 각 신규 릴리스는 Dependabot bump PR로 나타납니다(`package-ecosystem: github-actions` 활성화 시).
@@ -103,7 +103,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 ```yaml
 # Before
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 # After
 uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
 ```
@@ -177,7 +177,7 @@ updates:
     open-pull-requests-limit: 5
 ````
 
-`github-actions`용 Dependabot은 일반 action ref뿐 아니라 재사용 워크플로우 ref(예: `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5`)도 다룹니다. 더 빠른 채택은 `interval`을 `daily`로, PR 노이즈를 줄이려면 `monthly`로 조정하세요.
+`github-actions`용 Dependabot은 일반 action ref뿐 아니라 재사용 워크플로우 ref(예: `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15`)도 다룹니다. 더 빠른 채택은 `interval`을 `daily`로, PR 노이즈를 줄이려면 `monthly`로 조정하세요.
 
 ### 중앙 전파 대비 트레이드오프
 

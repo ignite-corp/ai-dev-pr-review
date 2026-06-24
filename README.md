@@ -16,7 +16,7 @@ Four `workflow_call` workflows under `.github/workflows/`:
 | `base-ai-review-aggregate.yml` | Loads all reviewer outputs, applies severity rules, posts the consolidated verdict on the PR. |
 
 Helpers under `.github/scripts/` (Python 3.14, plus one bash + one jq):
-`aggregate_reviews.py`, `extract_claude_review.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
+`aggregate_reviews.py`, `extract_claude_review.py`, `extract_codex_json.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
 
 Schema under `.github/schemas/review-schema.json` (the per-reviewer output contract).
 
@@ -48,7 +48,7 @@ on:
 
 jobs:
   review:
-    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       code-review-system-prompt-path: .github/prompts/code-review-system.md
@@ -77,10 +77,10 @@ The `v1` tag automatically tracks the latest `v1.x.y` release. When this repo pu
 
 **Note**: breaking changes ship under `v2`, with a new `v2` tag. `@v1` consumers are NOT auto-bumped to v2 — that requires an explicit caller update. So `@v1` is safe within the v1 major line.
 
-### Option 2 — Specific version pin (`@v1.0.7`)
+### Option 2 — Specific version pin (`@v1.0.15`)
 
 ```yaml
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 ```
 
 Pins to a specific immutable commit. Each new release surfaces as a Dependabot bump PR (when `package-ecosystem: github-actions` is enabled).
@@ -103,7 +103,7 @@ To switch a consumer from specific to floating:
 
 ```yaml
 # Before
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 # After
 uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
 ```
@@ -177,7 +177,7 @@ updates:
     open-pull-requests-limit: 5
 ````
 
-Dependabot for `github-actions` covers reusable workflow refs (e.g. `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5`) in addition to plain action refs. Adjust `interval` to `daily` for faster pickup or `monthly` for less PR noise.
+Dependabot for `github-actions` covers reusable workflow refs (e.g. `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15`) in addition to plain action refs. Adjust `interval` to `daily` for faster pickup or `monthly` for less PR noise.
 
 ### Trade-offs vs. central propagation
 
