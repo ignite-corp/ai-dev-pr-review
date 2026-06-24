@@ -37,6 +37,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
 # --- Variant 2: cross-org (ignite-pilot-org and any external org) ---
 #
@@ -75,3 +76,4 @@ jobs:
 #       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 #       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

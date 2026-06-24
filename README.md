@@ -22,13 +22,14 @@ Schema under `.github/schemas/review-schema.json` (the per-reviewer output contr
 
 ## Required consumer-repo secrets
 
-Pass all three explicitly in the consumer thin trigger. `secrets: inherit` does NOT work cross-org — use the explicit form below in every consumer, same-org or not.
+Pass all four explicitly in the consumer thin trigger. `secrets: inherit` does NOT work cross-org — use the explicit form below in every consumer, same-org or not.
 
 | Secret | Used by | Notes |
 |---|---|---|
 | `OPENAI_API_KEY` | Codex reviewer | Org or repo secret. Codex CLI logs in via stdin. |
 | `GOOGLE_AI_API_KEY` | Gemini reviewer | Org or repo secret. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude reviewer | OAuth token from `anthropics/claude-code-action`. |
+| `ANTHROPIC_API_KEY` | Claude reviewer | API-key auth passed to `anthropics/claude-code-action` alongside the OAuth token. |
 
 ## Minimal consumer thin trigger
 
@@ -57,6 +58,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 See `examples/consumer-thin-trigger.yml` for the full file with cross-org variant.
@@ -155,7 +157,7 @@ The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-pr
 
 GitHub does NOT propagate `secrets: inherit` across organizations. For `ignite-pilot-org` (or any other org) consumers:
 
-1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` as org-level secrets and grant the consumer repos access.
+1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` as org-level secrets and grant the consumer repos access.
 2. Consumer thin trigger: use the explicit `secrets:` mapping shown above. Do NOT use `secrets: inherit`.
 3. Org admin: ensure the Actions allowlist permits `anthropics/claude-code-action`, `actions/checkout`, `actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`. The reusable workflow itself does not pull `oven-sh/setup-bun`, but the underlying `anthropics/claude-code-action` may; check that action's requirements before adding the consumer.
 

@@ -22,13 +22,14 @@
 
 ## 소비자 레포에 필요한 시크릿
 
-소비자 thin 트리거에서 세 개를 모두 명시적으로 전달하세요. `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 모든 소비자에서 아래의 명시적 형태를 사용하세요.
+소비자 thin 트리거에서 네 개를 모두 명시적으로 전달하세요. `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 모든 소비자에서 아래의 명시적 형태를 사용하세요.
 
 | 시크릿 | 사용처 | 비고 |
 |---|---|---|
 | `OPENAI_API_KEY` | Codex 리뷰어 | 조직 또는 레포 시크릿. Codex CLI가 stdin으로 로그인. |
 | `GOOGLE_AI_API_KEY` | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude 리뷰어 | `anthropics/claude-code-action`의 OAuth 토큰. |
+| `ANTHROPIC_API_KEY` | Claude 리뷰어 | OAuth 토큰과 함께 `anthropics/claude-code-action`에 전달되는 API 키 인증. |
 
 ## 최소 소비자 thin 트리거
 
@@ -57,6 +58,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 조직 간 변형을 포함한 전체 파일은 `examples/consumer-thin-trigger.yml`를 참고하세요.
@@ -155,7 +157,7 @@ orchestrator는 `concurrency: { group: ai-review-<pr-number>, cancel-in-progress
 
 GitHub은 조직 간에 `secrets: inherit`를 전파하지 **않습니다**. `ignite-pilot-org`(또는 다른 조직) 소비자의 경우:
 
-1. 조직 관리자: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`을 조직 수준 시크릿으로 구성하고 소비자 레포에 접근 권한 부여.
+1. 조직 관리자: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`를 조직 수준 시크릿으로 구성하고 소비자 레포에 접근 권한 부여.
 2. 소비자 thin 트리거: 위에 표시된 명시적 `secrets:` 매핑 사용. `secrets: inherit`를 사용하지 **마세요**.
 3. 조직 관리자: Actions allowlist가 `anthropics/claude-code-action`, `actions/checkout`, `actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`를 허용하는지 확인. 재사용 워크플로우 자체는 `oven-sh/setup-bun`을 가져오지 않지만 기반 `anthropics/claude-code-action`이 가져올 수 있으니, 소비자 추가 전 해당 action의 요구사항을 확인하세요.
 
