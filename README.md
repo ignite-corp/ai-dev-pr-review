@@ -16,19 +16,32 @@ Four `workflow_call` workflows under `.github/workflows/`:
 | `base-ai-review-aggregate.yml` | Loads all reviewer outputs, applies severity rules, posts the consolidated verdict on the PR. |
 
 Helpers under `.github/scripts/` (Python 3.14, plus one bash + one jq):
-`aggregate_reviews.py`, `extract_claude_review.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
+`aggregate_reviews.py`, `extract_claude_review.py`, `extract_codex_json.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
 
 Schema under `.github/schemas/review-schema.json` (the per-reviewer output contract).
 
 ## Required consumer-repo secrets
 
-Pass all three explicitly in the consumer thin trigger. `secrets: inherit` does NOT work cross-org — use the explicit form below in every consumer, same-org or not.
+`OPENAI_API_KEY` and `GOOGLE_AI_API_KEY` are required. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly — `secrets: inherit` does NOT work cross-org, same-org or not.
 
-| Secret | Used by | Notes |
+| Secret | Required | Used by | Notes |
+|---|---|---|---|
+| `OPENAI_API_KEY` | yes | Codex reviewer | Org or repo secret. Codex CLI logs in via stdin. |
+| `GOOGLE_AI_API_KEY` | yes | Gemini reviewer | Org or repo secret. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | one of these two | Claude reviewer | Claude Pro/Max subscription OAuth token (`claude setup-token`). |
+| `ANTHROPIC_API_KEY` | one of these two | Claude reviewer | Standard `sk-ant-` API key. |
+
+### Claude reviewer auth: OAuth token vs API key
+
+The Claude reviewer runs through `anthropics/claude-code-action`, which accepts two credential types and requires **at least one** of them (or workload identity):
+
+| | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 |---|---|---|
-| `OPENAI_API_KEY` | Codex reviewer | Org or repo secret. Codex CLI logs in via stdin. |
-| `GOOGLE_AI_API_KEY` | Gemini reviewer | Org or repo secret. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude reviewer | OAuth token from `anthropics/claude-code-action`. |
+| What it is | OAuth token for a Claude Pro/Max **subscription** (`claude setup-token`) | Standard **API key** (`sk-ant-...`) |
+| Billing | Against the subscription | Against your Anthropic API account (usage-based) |
+| Generate via | `claude setup-token` locally | Anthropic Console |
+
+**Precedence when both are set:** the action documents the two as **mutually exclusive** and does NOT define which wins — both are exported to the Claude process and the runtime resolves one, so the outcome is not contractual. Provide the single credential you want to authenticate and bill against; do not rely on a particular one taking priority. This repo's workflow wires both inputs through, so a consumer supplies only the secret for the method it uses. (The `consumer-health` check reports all four so a misconfigured repo surfaces early — that is a health signal, not a hard requirement to set both Claude secrets.)
 
 ## Minimal consumer thin trigger
 
@@ -48,7 +61,7 @@ on:
 
 jobs:
   review:
-    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       code-review-system-prompt-path: .github/prompts/code-review-system.md
@@ -57,6 +70,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 See `examples/consumer-thin-trigger.yml` for the full file with cross-org variant.
@@ -77,10 +91,10 @@ The `v1` tag automatically tracks the latest `v1.x.y` release. When this repo pu
 
 **Note**: breaking changes ship under `v2`, with a new `v2` tag. `@v1` consumers are NOT auto-bumped to v2 — that requires an explicit caller update. So `@v1` is safe within the v1 major line.
 
-### Option 2 — Specific version pin (`@v1.0.7`)
+### Option 2 — Specific version pin (`@v1.0.15`)
 
 ```yaml
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 ```
 
 Pins to a specific immutable commit. Each new release surfaces as a Dependabot bump PR (when `package-ecosystem: github-actions` is enabled).
@@ -103,7 +117,7 @@ To switch a consumer from specific to floating:
 
 ```yaml
 # Before
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 # After
 uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
 ```
@@ -155,7 +169,7 @@ The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-pr
 
 GitHub does NOT propagate `secrets: inherit` across organizations. For `ignite-pilot-org` (or any other org) consumers:
 
-1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` as org-level secrets and grant the consumer repos access.
+1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` as org-level secrets and grant the consumer repos access.
 2. Consumer thin trigger: use the explicit `secrets:` mapping shown above. Do NOT use `secrets: inherit`.
 3. Org admin: ensure the Actions allowlist permits `anthropics/claude-code-action`, `actions/checkout`, `actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`. The reusable workflow itself does not pull `oven-sh/setup-bun`, but the underlying `anthropics/claude-code-action` may; check that action's requirements before adding the consumer.
 
@@ -177,7 +191,7 @@ updates:
     open-pull-requests-limit: 5
 ````
 
-Dependabot for `github-actions` covers reusable workflow refs (e.g. `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5`) in addition to plain action refs. Adjust `interval` to `daily` for faster pickup or `monthly` for less PR noise.
+Dependabot for `github-actions` covers reusable workflow refs (e.g. `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15`) in addition to plain action refs. Adjust `interval` to `daily` for faster pickup or `monthly` for less PR noise.
 
 ### Trade-offs vs. central propagation
 

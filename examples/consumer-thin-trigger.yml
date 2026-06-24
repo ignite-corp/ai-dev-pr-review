@@ -7,7 +7,7 @@
 #      explicit-secret block. `secrets: inherit` does NOT work cross-org.
 #
 # Pick ONE variant and delete the other before committing.
-# Both pin to @v1.0.0 -- DO NOT use @main in production.
+# Both pin to @v1 (floating major tag) -- DO NOT use @main in production.
 
 # --- Variant 1: same-org (ignite-corp) ---
 name: AI Code Review
@@ -25,7 +25,7 @@ on:
 
 jobs:
   review:
-    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.0
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       code-review-system-prompt-path: .github/prompts/code-review-system.md
@@ -37,6 +37,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
 # --- Variant 2: cross-org (ignite-pilot-org and any external org) ---
 #
@@ -68,10 +69,11 @@ jobs:
 #         type: string
 # jobs:
 #   review:
-#     uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.0
+#     uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
 #     with:
 #       pr_number: ${{ inputs.pr_number || '' }}
 #     secrets:
 #       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 #       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

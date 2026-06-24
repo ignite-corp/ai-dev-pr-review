@@ -16,19 +16,32 @@
 | `base-ai-review-aggregate.yml` | 모든 리뷰어 출력을 로드, 심각도 규칙 적용, PR에 통합 판정 게시. |
 
 `.github/scripts/` 아래 헬퍼 (Python 3.14, 그리고 bash 1개 + jq 1개):
-`aggregate_reviews.py`, `extract_claude_review.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
+`aggregate_reviews.py`, `extract_claude_review.py`, `extract_codex_json.py`, `fetch_review_context.py`, `github_pr_support.py`, `post_inline_comments.py`, `review_gemini.py`, `verify_action_shas.py`, `collect_review_threads.sh`, `threads.jq`, `review_prompt.md`, `requirements.txt`, `.python-version`.
 
 `.github/schemas/review-schema.json` 스키마 (리뷰어별 출력 계약).
 
 ## 소비자 레포에 필요한 시크릿
 
-소비자 thin 트리거에서 세 개를 모두 명시적으로 전달하세요. `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 모든 소비자에서 아래의 명시적 형태를 사용하세요.
+`OPENAI_API_KEY`와 `GOOGLE_AI_API_KEY`는 필수입니다. Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
 
-| 시크릿 | 사용처 | 비고 |
+| 시크릿 | 필수 | 사용처 | 비고 |
+|---|---|---|---|
+| `OPENAI_API_KEY` | 예 | Codex 리뷰어 | 조직 또는 레포 시크릿. Codex CLI가 stdin으로 로그인. |
+| `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
+| `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
+
+### Claude 리뷰어 인증: OAuth 토큰 vs API 키
+
+Claude 리뷰어는 `anthropics/claude-code-action`을 통해 실행되며, 이 액션은 두 가지 자격증명을 받고 그중 **최소 하나**(또는 workload identity)를 요구합니다:
+
+| | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 |---|---|---|
-| `OPENAI_API_KEY` | Codex 리뷰어 | 조직 또는 레포 시크릿. Codex CLI가 stdin으로 로그인. |
-| `GOOGLE_AI_API_KEY` | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude 리뷰어 | `anthropics/claude-code-action`의 OAuth 토큰. |
+| 정체 | Claude Pro/Max **구독**용 OAuth 토큰(`claude setup-token`) | 일반 **API 키**(`sk-ant-...`) |
+| 과금 | 구독에 청구 | Anthropic API 계정에 청구(사용량 기반) |
+| 발급 | 로컬에서 `claude setup-token` | Anthropic Console |
+
+**둘 다 설정된 경우의 우선순위:** 액션은 이 둘을 **상호 배타적(mutually exclusive)**으로 문서화하며 어느 쪽이 이기는지 **정의하지 않습니다** — 둘 다 Claude 프로세스에 env로 export되고 런타임이 하나를 선택하므로 결과가 계약상 보장되지 않습니다. 인증·과금하려는 **하나만** 제공하고 특정 쪽이 우선한다고 가정하지 마세요. 이 레포의 워크플로우는 두 입력을 모두 연결하므로, 소비자는 자신이 쓰는 방식의 시크릿만 제공하면 됩니다. (`consumer-health` 체크는 네 개를 모두 점검해 잘못 구성된 레포를 조기에 드러내지만, 이는 헬스 신호일 뿐 Claude 시크릿 두 개를 모두 설정해야 한다는 하드 요구사항은 아닙니다.)
 
 ## 최소 소비자 thin 트리거
 
@@ -48,7 +61,7 @@ on:
 
 jobs:
   review:
-    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       code-review-system-prompt-path: .github/prompts/code-review-system.md
@@ -57,6 +70,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 조직 간 변형을 포함한 전체 파일은 `examples/consumer-thin-trigger.yml`를 참고하세요.
@@ -77,10 +91,10 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 **비고**: 호환성 깨지는 변경은 새 `v2` 태그와 함께 `v2`로 배포됩니다. `@v1` 소비자는 v2로 자동 승급되지 **않습니다** — 명시적인 호출자(caller) 업데이트가 필요합니다. 따라서 `@v1`은 v1 메이저 라인 내에서 안전합니다.
 
-### 옵션 2 — 특정 버전 핀 (`@v1.0.7`)
+### 옵션 2 — 특정 버전 핀 (`@v1.0.15`)
 
 ```yaml
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 ```
 
 특정 불변(immutable) 커밋에 핀합니다. 각 신규 릴리스는 Dependabot bump PR로 나타납니다(`package-ecosystem: github-actions` 활성화 시).
@@ -103,7 +117,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 ```yaml
 # Before
-uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.7
+uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15
 # After
 uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
 ```
@@ -155,7 +169,7 @@ orchestrator는 `concurrency: { group: ai-review-<pr-number>, cancel-in-progress
 
 GitHub은 조직 간에 `secrets: inherit`를 전파하지 **않습니다**. `ignite-pilot-org`(또는 다른 조직) 소비자의 경우:
 
-1. 조직 관리자: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`을 조직 수준 시크릿으로 구성하고 소비자 레포에 접근 권한 부여.
+1. 조직 관리자: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`를 조직 수준 시크릿으로 구성하고 소비자 레포에 접근 권한 부여.
 2. 소비자 thin 트리거: 위에 표시된 명시적 `secrets:` 매핑 사용. `secrets: inherit`를 사용하지 **마세요**.
 3. 조직 관리자: Actions allowlist가 `anthropics/claude-code-action`, `actions/checkout`, `actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`를 허용하는지 확인. 재사용 워크플로우 자체는 `oven-sh/setup-bun`을 가져오지 않지만 기반 `anthropics/claude-code-action`이 가져올 수 있으니, 소비자 추가 전 해당 action의 요구사항을 확인하세요.
 
@@ -177,7 +191,7 @@ updates:
     open-pull-requests-limit: 5
 ````
 
-`github-actions`용 Dependabot은 일반 action ref뿐 아니라 재사용 워크플로우 ref(예: `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.5`)도 다룹니다. 더 빠른 채택은 `interval`을 `daily`로, PR 노이즈를 줄이려면 `monthly`로 조정하세요.
+`github-actions`용 Dependabot은 일반 action ref뿐 아니라 재사용 워크플로우 ref(예: `uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1.0.15`)도 다룹니다. 더 빠른 채택은 `interval`을 `daily`로, PR 노이즈를 줄이려면 `monthly`로 조정하세요.
 
 ### 중앙 전파 대비 트레이드오프
 
