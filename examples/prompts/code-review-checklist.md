@@ -3,7 +3,8 @@
 > **Starter template.** Copy to the consumer repo as `.github/prompts/code-review-checklist.md`.
 > Fill in the architecture-layers line marked `<...>`; keep the rest as the org standard.
 > For every finding, follow the **Review Disposition** in the system prompt: pair it with a
-> concrete suggestion, skip low-value/contrarian items, and still raise critical flaws.
+> concrete suggestion, skip low-value/contrarian items, and still raise material flaws of
+> any severity even when the fix is non-trivial.
 
 ## Code Quality
 

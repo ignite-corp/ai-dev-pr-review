@@ -222,7 +222,7 @@ updates:
 레포별 시스템 프롬프트와 체크리스트는 여기가 아니라 소비자 레포에 있습니다. 재사용 워크플로우가 `code-review-system-prompt-path` / `code-review-checklist-path`로 읽어 `context.md`로 합치고, 세 리뷰어(Claude / Codex / Gemini)가 이를 공통 지침으로 읽습니다. 커스터마이즈하려면:
 
 1. 이 레포의 `examples/prompts/` 스타터 템플릿을 소비자의 `.github/prompts/`로 복사:
-   - `code-review-system.md` — 기본 **리뷰 성향(disposition)**(이슈마다 구체적 `suggestion` 필수, 반대를 위한 반대 금지, 그래도 critical 결함은 보고) + 채워 넣을 인라인 `<...>` 플레이스홀더(프로젝트 정체성, 아키텍처 레이어).
+   - `code-review-system.md` — 기본 **리뷰 성향(disposition)**(이슈마다 구체적 `suggestion` 동반, 반대를 위한 반대 금지, 수정이 어려워도 모든 심각도의 실질적 결함은 보고) + 채워 넣을 인라인 `<...>` 플레이스홀더(프로젝트 정체성, 아키텍처 레이어).
    - `code-review-checklist.md` — 기본 코드 품질 / 보안 / 스펙 준수 체크리스트.
 2. 레포별 규칙(아키텍처 관례, 네이밍 금기, 보안 기대사항)으로 편집. 리뷰 성향도 여기서 조정 — 세 리뷰어 모두 이 파일들을 공통 지침으로 읽습니다.
 3. 기본값이 아닌 경로를 쓸 때만 thin 트리거에서 참조:
@@ -231,6 +231,20 @@ updates:
      code-review-system-prompt-path: my/custom/path/system.md
    ```
 4. 프롬프트를 소비자의 **BASE** 브랜치에 커밋. `prepare` 워크플로우는 프롬프트 인젝션 방지를 위해 항상 PR head가 아닌 base 브랜치에서 읽으므로 — 변경은 머지 후 다음 PR부터 적용됩니다.
+
+### system 프롬프트 vs checklist — 각각 어떻게 작성하나
+
+두 파일은 이어붙인 `context.md` 안에서 역할이 다릅니다:
+
+| | `code-review-system.md` | `code-review-checklist.md` |
+|---|---|---|
+| 역할 | **어떻게 판단하나** — 페르소나·정책·심각도 기준 | **무엇을 점검하나** — 통과/실패 항목 나열 |
+| 형식 | 산문 + 표 | `- [ ]` 항목 |
+| 담는 것 | 리뷰 disposition, 3관점, 심각도 의미, 출력 계약, SHA-pin / 중복회피 / Dependabot 규칙, repo 아키텍처·보안 기대치 | 코드품질 / 보안 / 스펙준수의 구체적·이진 점검 항목 |
+
+- **system.md** — *리뷰어가 어떻게 사고·결정할지*를 작성. org 표준 섹션은 유지하고, `<...>` 2줄(프로젝트 정체성, 아키텍처 레이어) + repo별 아키텍처/네이밍/보안 기대치만 커스터마이즈. 심각도 의미와 disposition은 여기에.
+- **checklist.md** — 짧고 스캔 가능한 **이진** 항목만("함수 80줄 초과 금지", "파라미터라이즈드 쿼리만", "JWT 검증 존재"). 판단/철학은 넣지 말 것 — 그건 system.md 소관. disposition은 재서술하지 말고 한 줄로 참조.
+- **중복 금지.** 정책 / disposition / 심각도 → system.md에만. 열거 점검 → checklist.md에만. 같은 규칙을 양쪽에 쓰면 어긋나며 모순이 생깁니다.
 
 ## 심각도 아이콘
 

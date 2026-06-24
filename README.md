@@ -222,7 +222,7 @@ Version policy:
 The per-repo system prompt and checklist live in the consumer repo, NOT here. The reusable workflow reads them via `code-review-system-prompt-path` / `code-review-checklist-path` and concatenates them into the `context.md` that every reviewer (Claude / Codex / Gemini) reads as its shared guideline. To customize:
 
 1. Copy the starter templates from this repo's `examples/prompts/` into the consumer's `.github/prompts/`:
-   - `code-review-system.md` — baseline **review disposition** (always provide a concrete `suggestion`; no opposition-for-opposition nitpicks; still raise critical flaws) plus inline `<...>` placeholders (project identity, architecture layers) to fill in.
+   - `code-review-system.md` — baseline **review disposition** (pair each finding with a concrete `suggestion`; no opposition-for-opposition nitpicks; still raise material flaws of any severity even when the fix is non-trivial) plus inline `<...>` placeholders (project identity, architecture layers) to fill in.
    - `code-review-checklist.md` — baseline code-quality / security / spec-compliance checklist.
 2. Edit them with repo-specific rules (architecture conventions, naming taboos, security expectations). Tune the review disposition here — all three reviewers read these files as their shared guideline.
 3. Reference them from the thin trigger only if you use a non-default path:
@@ -231,6 +231,20 @@ The per-repo system prompt and checklist live in the consumer repo, NOT here. Th
      code-review-system-prompt-path: my/custom/path/system.md
    ```
 4. Commit the prompts to the consumer's BASE branch. The `prepare` workflow always reads from the base branch, never the PR head, to prevent prompt injection — so changes take effect on the next PR after they merge.
+
+### system prompt vs checklist — how to author each
+
+The two files play different roles in the concatenated `context.md`:
+
+| | `code-review-system.md` | `code-review-checklist.md` |
+|---|---|---|
+| Role | **How to judge** — persona, policy, severity rubric | **What to check** — enumerated pass/fail items |
+| Form | Prose + tables | `- [ ]` bullets |
+| Holds | Review disposition, the three perspectives, severity meanings, output contract, SHA-pin / dedup / Dependabot rules, repo architecture & security expectations | Concrete, binary checks under Code Quality / Security / Spec Compliance |
+
+- **system.md** — write *how the reviewer should think and decide*. Keep the org-standard sections; customize only the two `<...>` lines (project identity, architecture layers) plus repo-specific architecture / naming / security expectations. Severity semantics and the review disposition belong here.
+- **checklist.md** — write short, scannable, **binary** items ("no function over 80 lines", "parameterized queries only", "JWT validation present"). No judgment or philosophy — that lives in system.md. Reference the disposition with one line rather than restating it.
+- **Don't duplicate.** Policy / disposition / severity → system.md only. Enumerated checks → checklist.md only. Restating the same rule in both invites drift and contradiction.
 
 ## Severity icons
 
