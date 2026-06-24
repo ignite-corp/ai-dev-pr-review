@@ -1,5 +1,7 @@
 # ai-dev-pr-review
 
+[English](README.md) | [한국어](README.ko.md)
+
 Reusable GitHub Actions workflows for multi-LLM pull request review (Claude + Codex + Gemini, parallel or sequential), with inline comment posting, deduplication against prior rounds, and a rule-based aggregate verdict.
 
 ## What this repo provides
