@@ -22,14 +22,26 @@
 
 ## 소비자 레포에 필요한 시크릿
 
-소비자 thin 트리거에서 네 개를 모두 명시적으로 전달하세요. `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 모든 소비자에서 아래의 명시적 형태를 사용하세요.
+`OPENAI_API_KEY`와 `GOOGLE_AI_API_KEY`는 필수입니다. Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
 
-| 시크릿 | 사용처 | 비고 |
+| 시크릿 | 필수 | 사용처 | 비고 |
+|---|---|---|---|
+| `OPENAI_API_KEY` | 예 | Codex 리뷰어 | 조직 또는 레포 시크릿. Codex CLI가 stdin으로 로그인. |
+| `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
+| `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
+
+### Claude 리뷰어 인증: OAuth 토큰 vs API 키
+
+Claude 리뷰어는 `anthropics/claude-code-action`을 통해 실행되며, 이 액션은 두 가지 자격증명을 받고 그중 **최소 하나**(또는 workload identity)를 요구합니다:
+
+| | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 |---|---|---|
-| `OPENAI_API_KEY` | Codex 리뷰어 | 조직 또는 레포 시크릿. Codex CLI가 stdin으로 로그인. |
-| `GOOGLE_AI_API_KEY` | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude 리뷰어 | `anthropics/claude-code-action`의 OAuth 토큰. |
-| `ANTHROPIC_API_KEY` | Claude 리뷰어 | OAuth 토큰과 함께 `anthropics/claude-code-action`에 전달되는 API 키 인증. |
+| 정체 | Claude Pro/Max **구독**용 OAuth 토큰(`claude setup-token`) | 일반 **API 키**(`sk-ant-...`) |
+| 과금 | 구독에 청구 | Anthropic API 계정에 청구(사용량 기반) |
+| 발급 | 로컬에서 `claude setup-token` | Anthropic Console |
+
+**둘 다 설정된 경우의 우선순위:** 액션은 이 둘을 **상호 배타적(mutually exclusive)**으로 문서화하며 어느 쪽이 이기는지 **정의하지 않습니다** — 둘 다 Claude 프로세스에 env로 export되고 런타임이 하나를 선택하므로 결과가 계약상 보장되지 않습니다. 인증·과금하려는 **하나만** 제공하고 특정 쪽이 우선한다고 가정하지 마세요. 이 레포의 워크플로우는 두 입력을 모두 연결하므로, 소비자는 자신이 쓰는 방식의 시크릿만 제공하면 됩니다. (`consumer-health` 체크는 네 개를 모두 점검해 잘못 구성된 레포를 조기에 드러내지만, 이는 헬스 신호일 뿐 Claude 시크릿 두 개를 모두 설정해야 한다는 하드 요구사항은 아닙니다.)
 
 ## 최소 소비자 thin 트리거
 

@@ -22,14 +22,26 @@ Schema under `.github/schemas/review-schema.json` (the per-reviewer output contr
 
 ## Required consumer-repo secrets
 
-Pass all four explicitly in the consumer thin trigger. `secrets: inherit` does NOT work cross-org — use the explicit form below in every consumer, same-org or not.
+`OPENAI_API_KEY` and `GOOGLE_AI_API_KEY` are required. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly — `secrets: inherit` does NOT work cross-org, same-org or not.
 
-| Secret | Used by | Notes |
+| Secret | Required | Used by | Notes |
+|---|---|---|---|
+| `OPENAI_API_KEY` | yes | Codex reviewer | Org or repo secret. Codex CLI logs in via stdin. |
+| `GOOGLE_AI_API_KEY` | yes | Gemini reviewer | Org or repo secret. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | one of these two | Claude reviewer | Claude Pro/Max subscription OAuth token (`claude setup-token`). |
+| `ANTHROPIC_API_KEY` | one of these two | Claude reviewer | Standard `sk-ant-` API key. |
+
+### Claude reviewer auth: OAuth token vs API key
+
+The Claude reviewer runs through `anthropics/claude-code-action`, which accepts two credential types and requires **at least one** of them (or workload identity):
+
+| | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 |---|---|---|
-| `OPENAI_API_KEY` | Codex reviewer | Org or repo secret. Codex CLI logs in via stdin. |
-| `GOOGLE_AI_API_KEY` | Gemini reviewer | Org or repo secret. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude reviewer | OAuth token from `anthropics/claude-code-action`. |
-| `ANTHROPIC_API_KEY` | Claude reviewer | API-key auth passed to `anthropics/claude-code-action` alongside the OAuth token. |
+| What it is | OAuth token for a Claude Pro/Max **subscription** (`claude setup-token`) | Standard **API key** (`sk-ant-...`) |
+| Billing | Against the subscription | Against your Anthropic API account (usage-based) |
+| Generate via | `claude setup-token` locally | Anthropic Console |
+
+**Precedence when both are set:** the action documents the two as **mutually exclusive** and does NOT define which wins — both are exported to the Claude process and the runtime resolves one, so the outcome is not contractual. Provide the single credential you want to authenticate and bill against; do not rely on a particular one taking priority. This repo's workflow wires both inputs through, so a consumer supplies only the secret for the method it uses. (The `consumer-health` check reports all four so a misconfigured repo surfaces early — that is a health signal, not a hard requirement to set both Claude secrets.)
 
 ## Minimal consumer thin trigger
 
