@@ -259,6 +259,22 @@ updates:
 
 이는 공개 레포를 위한 의도적인 ASCII 전용 선택입니다. 더 풍부한 아이콘(이모지)을 원하는 소비자는 포크하거나 `SEVERITY_ICONS`를 구성 가능하게 만드는 PR을 열 수 있습니다.
 
+## PR 응대 스킬 (Claude Code)
+
+리뷰어는 findings를 게시하지만, 실제 PR을 리뷰→수정→머지 사이클로 몰아가는 건 개발자 몫입니다. 정본 `pr-response-cycle` Claude Code 스킬이 여기 [`.claude/skills/pr-response-cycle/`](.claude/skills/pr-response-cycle/SKILL.md)에 있습니다. 10단계 체크리스트로 PR을 구동합니다: 리뷰 스레드 일괄 분류(Fixed / Deferred / Won't fix / Duplicate / Outdated), 증거 기반 답글, 타임라인 3종(스레드 + 이슈 코멘트 + 리뷰 바디) 관리, fixup-rebase, 머지 상태(CLEAN / BLOCKED / BEHIND / DIRTY) 판단, 정책 허용 시 merge commit(절대 squash 아님)으로 머지.
+
+**리뷰어 설정 repo에서 쓰려면** 스킬 폴더를 아래 중 한 곳에 복사하세요:
+
+```bash
+# repo 단위 (그 repo 작업자 전원 사용 가능)
+cp -R .claude/skills/pr-response-cycle <consumer-repo>/.claude/skills/
+
+# 또는 개발자 단위 (본인은 모든 곳에서 사용)
+cp -R .claude/skills/pr-response-cycle ~/.claude/skills/
+```
+
+이후 Claude Code에서 `/pr-response-cycle`을 호출하거나, PR 번호와 함께 "PR 리뷰 처리" / "process the review"라고 말하면 됩니다. repo의 `~/.claude/projects/<cwd>/memory/` 프로젝트 정책이 스킬 기본값과 충돌하면 정책이 우선합니다. 이 사본을 source of truth로 유지하고, 변경 시 다시 복사하세요.
+
 ## 기여
 
 이 레포에 이슈와 PR을 여세요. 공개 레포의 CI / 테스트는 v1.0.0 범위 밖입니다. `CONTRIBUTING.md`(예정)가 생기면 참고하세요.
