@@ -26,6 +26,8 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
+      REVIEWER_APP_PRIVATE_KEY:
+        required: false
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
@@ -156,3 +158,5 @@ jobs:
       claude_result: ${{ needs.review-claude-p.result != 'skipped' && needs.review-claude-p.result || needs.review-claude-s.result }}
       codex_result: ${{ needs.review-codex-p.result != 'skipped' && needs.review-codex-p.result || needs.review-codex-s.result }}
       gemini_result: ${{ needs.review-gemini-p.result != 'skipped' && needs.review-gemini-p.result || needs.review-gemini-s.result }}
+    secrets:
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
