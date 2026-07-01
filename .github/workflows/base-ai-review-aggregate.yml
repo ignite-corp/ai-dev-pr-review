@@ -22,6 +22,10 @@ on:
         required: false
         default: ""
         description: "Conclusion of the gemini reviewer job (success/failure/cancelled/skipped)"
+    secrets:
+      REVIEWER_APP_PRIVATE_KEY:
+        required: false
+        description: "Private key of the reviewer GitHub App (enables real APPROVED reviews; optional)"
 
 permissions:
   contents: read
@@ -50,7 +54,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: v1.0.14
+          ref: v1.0.16
           path: .ai-dev-pr-review
           fetch-depth: 1
 
@@ -76,9 +80,22 @@ jobs:
         with:
           python-version-file: ".ai-dev-pr-review/.github/scripts/.python-version"
 
+      # Optional dedicated reviewer App token. github-actions[bot] cannot post
+      # an APPROVED review, so when REVIEWER_APP_ID is configured we mint an App
+      # installation token and hand it to the aggregate script for the approve
+      # call only. Skipped entirely when the var is unset (backward compatible).
+      - name: Mint reviewer App token
+        id: reviewer_token
+        if: ${{ vars.REVIEWER_APP_ID != '' }}
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+
       - name: Aggregate and post verdict
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEWER_TOKEN: ${{ steps.reviewer_token.outputs.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           BOT_LOGIN: ${{ vars.BOT_LOGIN || 'github-actions[bot]' }}

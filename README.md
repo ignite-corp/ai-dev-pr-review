@@ -30,6 +30,7 @@ Schema under `.github/schemas/review-schema.json` (the per-reviewer output contr
 | `GOOGLE_AI_API_KEY` | yes | Gemini reviewer | Org or repo secret. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | one of these two | Claude reviewer | Claude Pro/Max subscription OAuth token (`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | one of these two | Claude reviewer | Standard `sk-ant-` API key. |
+| `REVIEWER_APP_PRIVATE_KEY` | no | Aggregate approve | Private key of a dedicated reviewer GitHub App. Paired with the `REVIEWER_APP_ID` var, it enables a real APPROVED review on `approve` verdicts. Without it (or the var), `approve` posts a plain comment — the current default behavior. |
 
 ### Claude reviewer auth: OAuth token vs API key
 
@@ -155,6 +156,7 @@ These tune behavior without code changes. Set them under repository or organizat
 | `BOT_LOGIN` | `github-actions[bot]` | Author login used for minimizing prior bot comments and dismissing stale reviews. |
 | `JACCARD_THRESHOLD` | `0.6` | Token-set Jaccard similarity threshold for dedup. Lower values dedup more aggressively (more strings collapse to same issue), higher values are stricter. Tune `0.5`-`0.8` for behavior trade-off. |
 | `ALLOW_AUTO_APPROVE` | `false` | Killswitch. When `false`, "approve" verdicts are posted as plain comments (no actual approval submitted). Flip to `true` to enable real `gh pr review --approve`. |
+| `REVIEWER_APP_ID` | _(unset)_ | App ID of a dedicated reviewer GitHub App. When set (and the `REVIEWER_APP_PRIVATE_KEY` secret is configured), the aggregate mints an App installation token and submits a real APPROVED review on `approve` verdicts. `github-actions[bot]` cannot approve PRs, so without this the `approve` verdict falls back to a plain comment — the current default behavior. Optional and fully backward compatible. |
 
 ## Concurrency and re-push behavior
 

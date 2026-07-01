@@ -673,6 +673,14 @@ def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
         if repo:
             base_args += ["--repo", repo]
         flag = "--approve" if verdict == "approve" else "--request-changes"
+        # github-actions[bot] is forbidden from approving PRs. When a dedicated
+        # reviewer App token is provided, use it ONLY for the approve call so a
+        # real APPROVED review is posted. All other gh calls keep the default
+        # GH_TOKEN. Missing/empty token falls through to the existing behavior.
+        review_env = os.environ.copy()
+        reviewer_token = os.environ.get("REVIEWER_TOKEN", "").strip()
+        if verdict == "approve" and reviewer_token:
+            review_env["GH_TOKEN"] = reviewer_token
         try:
             result = subprocess.run(
                 base_args + [flag],
@@ -680,6 +688,7 @@ def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
                 capture_output=True,
                 text=True,
                 timeout=GH_TIMEOUT_SEC,
+                env=review_env,
             )
         except subprocess.TimeoutExpired:
             print("Post review timed out, falling back to comment", file=sys.stderr)

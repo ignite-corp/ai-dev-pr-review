@@ -36,6 +36,13 @@ inherit` does not work cross-org — the thin trigger maps them explicitly.
 The Claude reviewer needs at least one of the last two; the `consumer-health` check
 reports all four so a misconfigured repo surfaces early.
 
+**Optional — real APPROVED reviews.** `github-actions[bot]` cannot approve PRs, so an
+`approve` verdict posts a plain comment by default. To get a real APPROVED review, set a
+per-repo var `REVIEWER_APP_ID` and a per-repo secret `REVIEWER_APP_PRIVATE_KEY` from a
+dedicated reviewer GitHub App, and map the secret in the thin trigger
+(`REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}`). Leaving both unset
+keeps the current comment-fallback behavior.
+
 ### 2. Thin trigger — `.github/workflows/ai-review.yml`
 
 Calls `wrapper.yml@v1`, maps the four secrets explicitly, and sets `branches:` to the
@@ -80,7 +87,8 @@ repo](../README.md#overriding-prompts-per-consumer-repo) for how `system.md` and
 
 Set under repo or org `Settings → Secrets and variables → Actions → Variables`. Common
 ones: `REVIEW_MODE` (`parallel` default | `sequential`), `GEMINI_MODEL`, `CLAUDE_MODEL`,
-`CODEX_MODEL`, `PR_SIZE_LIMIT`, `CRITICAL_THRESHOLD`, `ALLOW_AUTO_APPROVE`. Full list:
+`CODEX_MODEL`, `PR_SIZE_LIMIT`, `CRITICAL_THRESHOLD`, `ALLOW_AUTO_APPROVE`,
+`REVIEWER_APP_ID` (see Secrets above). Full list:
 [Runtime configuration via `vars.*`](../README.md#runtime-configuration-via-vars).
 
 ## Actions allowlist (org setting)

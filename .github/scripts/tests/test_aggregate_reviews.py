@@ -13,6 +13,7 @@ from aggregate_reviews import (
     _is_valid_review,
     apply_verdict_rules,
     main,
+    post_verdict,
     REVIEWER_NAMES,
 )
 
@@ -341,3 +342,52 @@ class TestMainAllEarlyExitBenign:
         call_args = mock_post.call_args
         posted_verdict = call_args[0][1]
         assert posted_verdict == "approve"
+
+
+class TestReviewerToken:
+    """post_verdict uses REVIEWER_TOKEN only for the approve review call."""
+
+    def _run(
+        self, monkeypatch: pytest.MonkeyPatch, verdict: str
+    ) -> dict[str, str] | None:
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("GH_TOKEN", "default-token")
+
+        captured: dict[str, dict[str, str] | None] = {"env": None}
+
+        def fake_run(*args: Any, **kwargs: Any) -> Any:
+            captured["env"] = kwargs.get("env")
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+        with (
+            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+        ):
+            post_verdict("body", verdict, comment_only=False)
+
+        return captured["env"]
+
+    def test_approve_with_reviewer_token_uses_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEWER_TOKEN", "app-token")
+        env = self._run(monkeypatch, "approve")
+        assert env is not None
+        assert env["GH_TOKEN"] == "app-token"
+
+    def test_approve_without_reviewer_token_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEWER_TOKEN", "   ")
+        env = self._run(monkeypatch, "approve")
+        assert env is not None
+        assert env["GH_TOKEN"] == "default-token"
+
+    def test_request_changes_does_not_use_reviewer_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEWER_TOKEN", "app-token")
+        env = self._run(monkeypatch, "request_changes")
+        assert env is not None
+        assert env["GH_TOKEN"] == "default-token"

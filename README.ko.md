@@ -30,6 +30,7 @@
 | `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
+| `REVIEWER_APP_PRIVATE_KEY` | 아니오 | 취합 승인 | 전용 리뷰어 GitHub App의 프라이빗 키. `REVIEWER_APP_ID` 변수와 함께 설정하면 `approve` 판정 시 실제 APPROVED 리뷰가 게시됨. 미설정 시(또는 변수 미설정 시) `approve`는 일반 코멘트로 게시됨 — 현재 기본 동작. |
 
 ### Claude 리뷰어 인증: OAuth 토큰 vs API 키
 
@@ -155,6 +156,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `BOT_LOGIN` | `github-actions[bot]` | 이전 봇 코멘트 최소화 및 오래된 리뷰 해제에 사용되는 작성자 로그인. |
 | `JACCARD_THRESHOLD` | `0.6` | 중복 제거용 토큰셋 Jaccard 유사도 임계값. 낮을수록 더 공격적으로 중복 제거(더 많은 문자열이 같은 이슈로 합쳐짐), 높을수록 엄격. 동작 트레이드오프는 `0.5`-`0.8`로 조정. |
 | `ALLOW_AUTO_APPROVE` | `false` | 킬스위치. `false`일 때 "approve" 판정은 일반 코멘트로 게시됨(실제 승인 미제출). `true`로 전환하면 실제 `gh pr review --approve` 활성화. |
+| `REVIEWER_APP_ID` | _(미설정)_ | 전용 리뷰어 GitHub App의 App ID. 설정 시(그리고 `REVIEWER_APP_PRIVATE_KEY` 시크릿 구성 시) 취합 단계가 App 설치 토큰을 발급해 `approve` 판정에 실제 APPROVED 리뷰를 제출함. `github-actions[bot]`은 PR을 승인할 수 없으므로, 미설정 시 `approve` 판정은 일반 코멘트로 폴백됨 — 현재 기본 동작. 선택 사항이며 완전한 하위 호환. |
 
 ## 동시성(Concurrency)과 재푸시(re-push) 동작
 
