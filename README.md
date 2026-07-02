@@ -295,11 +295,11 @@ Result: on first open of the repo, the user gets a single folder-trust prompt. A
 
 If the repo already has a `.claude/settings.json`, merge these two keys into it rather than replacing the file, preserving any existing settings.
 
-**Caveat:** the one folder-trust prompt on first open is unavoidable - it is part of Claude Code's workspace-trust model and fires before committed settings are applied. The only way to skip it is for the org to pre-approve trust through enterprise-managed settings.
+**Caveat:** the one folder-trust prompt on first open is unavoidable - it is part of Claude Code's workspace-trust model and fires before committed settings are applied. It cannot be pre-approved or suppressed through any managed setting: Claude Code has no setting to persist folder trust, and only fully non-interactive `-p` mode skips the prompt. So one trust click per repo per machine is the irreducible minimum for interactive use.
 
 ### Org-wide auto-update (admins)
 
-Options A and A2 still leave third-party marketplace auto-update OFF by default, so each user has to enable it once (see the per-user toggle in Option A). An org admin can make auto-update automatic for the whole fleet - with no per-user toggle - by setting `autoUpdate: true` on the marketplace entry in **enterprise-managed settings** (the org-deployed `managed-settings.json`):
+Options A and A2 still leave third-party marketplace auto-update OFF by default, so each user has to enable it once (see the per-user toggle in Option A). An org admin can make auto-update automatic for the whole fleet - with no per-user toggle - and force-enable the plugin org-wide through **enterprise-managed settings** (the org-deployed `managed-settings.json`). The complete block:
 
 ```json
 {
@@ -308,11 +308,27 @@ Options A and A2 still leave third-party marketplace auto-update OFF by default,
       "source": { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" },
       "autoUpdate": true
     }
-  }
+  },
+  "enabledPlugins": { "pr-response-cycle@ai-dev-pr-review": true },
+  "strictKnownMarketplaces": [
+    { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" }
+  ]
 }
 ```
 
-`autoUpdate` is only honored on an `extraKnownMarketplaces.<name>` entry in managed settings. It is **silently ignored** in a project-scoped `.claude/settings.json` (the Option A2 file), so do NOT add it there - keep the auto-update flag in managed settings only. Managed settings is also the only place to pre-approve the folder-trust prompt referenced in the Option A2 caveat above.
+What each key does:
+
+- `autoUpdate: true` makes upstream updates arrive automatically for the whole fleet with no per-user toggle. It is only honored on an `extraKnownMarketplaces.<name>` entry in managed settings; it is **silently ignored** in a project-scoped `.claude/settings.json` (the Option A2 file), so do NOT add it there.
+- `enabledPlugins` force-enables the plugin org-wide. It does NOT auto-install: the first install still happens on folder-trust via the committed project `.claude/settings.json` (Option A2), so this key does not by itself eliminate that step.
+- `strictKnownMarketplaces` is an allowlist of the marketplaces users may add, restricting plugin sources to the entries listed here.
+
+The folder-trust prompt cannot be pre-approved or suppressed by any of these keys - trust pre-approval is not a supported managed setting (see the Option A2 caveat above).
+
+**Deployment methods:**
+
+- **Server-managed (recommended)** - push the block from the claude.ai admin console so it deploys to the fleet without touching each machine's filesystem. Requires Claude Code Teams v2.1.38+ or Enterprise v2.1.30+.
+- **File-based** - write `managed-settings.json` to the OS-specific system path below.
+- **MDM** - deliver the file via device management (macOS configuration profile / plist, or Windows registry under HKLM). Anthropic publishes no ready-made MDM profile, so you author the payload yourself.
 
 Deploy `managed-settings.json` to the OS-specific system path (confirmed from Claude Code docs -> Settings -> managed settings):
 
@@ -321,6 +337,16 @@ Deploy `managed-settings.json` to the OS-specific system path (confirmed from Cl
 | macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` |
 | Linux / WSL | `/etc/claude-code/managed-settings.json` |
 | Windows | `C:\Program Files\ClaudeCode\managed-settings.json` |
+
+**Residual manual steps that cannot be eliminated:**
+
+1. One folder-trust prompt per repo per machine (interactive use); no managed setting can pre-approve it.
+2. First plugin install is handled by the committed project `.claude/settings.json` (Option A2) on folder-trust, not by managed settings.
+3. Each user still authenticates to the org.
+
+**Security note:** trusting a folder auto-loads that repo's settings, hooks, MCP servers, and skills - a code-execution surface. Keep the trust prompt as the human gate, and layer `strictKnownMarketplaces` (allowlisted sources) plus `permissions.deny` to constrain what a trusted repo can do.
+
+Tracked for deployment in AT-1476.
 
 **Option B - manual copy (fallback)**
 
