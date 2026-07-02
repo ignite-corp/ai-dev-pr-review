@@ -1,0 +1,6 @@
+{
+  "extraKnownMarketplaces": {
+    "ai-dev-pr-review": { "source": { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" } }
+  },
+  "enabledPlugins": { "pr-response-cycle@ai-dev-pr-review": true }
+}
