@@ -1,14 +1,21 @@
 name: ruleset-sync
 
+# Consumer ruleset config (repo names, ruleset IDs, per-repo ruleset bodies)
+# lives ONLY in the private org variable RULESET_CONFIG, never in this public
+# repo. This workflow runs in a PUBLIC repo, so its Actions logs are public --
+# it must NOT print consumer repo names or ruleset IDs. Progress is reported by
+# index only; correlate an index to a repo via the private RULESET_CONFIG var.
+#
+# RULESET_CONFIG shape: {"<repo>": {"id": <int>, "ruleset": {<ruleset body>}}, ...}
+# Config changes do not auto-trigger a sync (a var change fires no event); run
+# this workflow manually after updating the variable. ruleset-audit.yml catches
+# any resulting drift nightly.
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'rulesets/**'
   workflow_dispatch:
     inputs:
       review_count_override:
-        description: 'Ad-hoc override for required_approving_review_count (e.g., 2). Ignored if vars.RULESET_REVIEW_COUNT_OVERRIDE is set. Leave empty to use JSON value.'
+        description: 'Ad-hoc override for required_approving_review_count (e.g., 2). Ignored if vars.RULESET_REVIEW_COUNT_OVERRIDE is set. Leave empty to use the stored value.'
         required: false
         type: string
         default: ''
@@ -20,9 +27,6 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Mint App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -34,58 +38,38 @@ jobs:
       - name: Sync rulesets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RULESET_CONFIG: ${{ vars.RULESET_CONFIG }}
           REVIEW_COUNT_OVERRIDE: ${{ vars.RULESET_REVIEW_COUNT_OVERRIDE || inputs.review_count_override }}
         run: |
           set -u
-          declare -A RULESET_IDS=(
-            [ai-dev-cab]=11121613
-            [ai-dev-qa-partner]=16312939
-            [ai-dev-infra-common]=13761444
-            [ai-tf-t2a]=7046917
-            [app-cast]=17884678
-          )
-
-          if [ -n "${REVIEW_COUNT_OVERRIDE:-}" ]; then
-            if ! [[ "$REVIEW_COUNT_OVERRIDE" =~ ^[0-9]+$ ]]; then
-              echo "::error::review_count_override must be a non-negative integer, got: $REVIEW_COUNT_OVERRIDE"
-              exit 1
-            fi
+          if [ -z "${RULESET_CONFIG:-}" ]; then
+            echo "::error::RULESET_CONFIG variable is empty or unset"
+            exit 1
+          fi
+          if [ -n "${REVIEW_COUNT_OVERRIDE:-}" ] && ! [[ "$REVIEW_COUNT_OVERRIDE" =~ ^[0-9]+$ ]]; then
+            echo "::error::review_count_override must be a non-negative integer, got: $REVIEW_COUNT_OVERRIDE"
+            exit 1
           fi
 
+          total=$(jq -r 'keys | length' <<< "$RULESET_CONFIG")
+          i=0
           failed=0
-          for f in rulesets/*.json; do
-            name="$(basename "$f" .json)"
-            rid="${RULESET_IDS[$name]:-}"
-            if [ -z "$rid" ]; then
-              echo "::error::No ruleset ID mapping for $name"
-              failed=1
-              continue
-            fi
-            slug="ignite-corp/${name}"
-            echo "::group::Sync $slug (ruleset $rid)"
+          while IFS= read -r name; do
+            i=$((i + 1))
+            rid=$(jq -r --arg n "$name" '.[$n].id' <<< "$RULESET_CONFIG")
+            body=$(jq -c --arg n "$name" '.[$n].ruleset' <<< "$RULESET_CONFIG")
             if [ -n "${REVIEW_COUNT_OVERRIDE:-}" ]; then
-              echo "::notice::Applying review_count_override=$REVIEW_COUNT_OVERRIDE to $slug"
-              payload=$(jq --argjson count "$REVIEW_COUNT_OVERRIDE" '
+              body=$(jq -c --argjson count "$REVIEW_COUNT_OVERRIDE" '
                 (.rules[] | select(.type == "pull_request") | .parameters.required_approving_review_count) = $count
-              ' "$f")
-              if printf '%s' "$payload" | gh api --method PUT "repos/${slug}/rulesets/${rid}" --input - > /tmp/sync-out.json; then
-                echo "OK: $slug"
-              else
-                echo "::error::Failed to sync $slug"
-                cat /tmp/sync-out.json || true
-                failed=1
-              fi
-            else
-              if gh api --method PUT "repos/${slug}/rulesets/${rid}" --input "$f" > /tmp/sync-out.json; then
-                echo "OK: $slug"
-              else
-                echo "::error::Failed to sync $slug"
-                cat /tmp/sync-out.json || true
-                failed=1
-              fi
+              ' <<< "$body")
             fi
-            echo "::endgroup::"
-          done
+            if printf '%s' "$body" | gh api --method PUT "repos/ignite-corp/${name}/rulesets/${rid}" --input - > /dev/null 2>&1; then
+              echo "OK: entry ${i}/${total}"
+            else
+              echo "::error::Sync failed for entry ${i}/${total}"
+              failed=1
+            fi
+          done < <(jq -r 'keys[]' <<< "$RULESET_CONFIG")
 
           if [ "$failed" -ne 0 ]; then
             echo "::error::One or more ruleset syncs failed"
