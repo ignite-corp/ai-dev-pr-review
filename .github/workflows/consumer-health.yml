@@ -99,51 +99,82 @@ jobs:
             echo "::group::Consumer ${i}/${total}"
             consumer_flags=0
 
-            # 1. Recent ai-review.yml runs
-            runs_json=$(gh run list --repo "$slug" --workflow ai-review.yml --limit 3 \
-              --json databaseId,conclusion,headBranch,createdAt 2>/dev/null || echo '[]')
-
-            considered_runs=$(jq --arg cutoff "$STALE_BEFORE" '
-              [ .[] | select(
-                .createdAt > $cutoff
-                or (.headBranch | test("^chore/add-anthropic-api-key$") | not)
-              ) ]
-            ' <<<"$runs_json")
-
-            fail_count=$(jq '[ .[] | select(.conclusion == "failure" or .conclusion == "startup_failure") ] | length' <<<"$considered_runs")
-            total_count=$(jq 'length' <<<"$considered_runs")
-            if [ "$total_count" -ge 1 ] && [ "$fail_count" -ge 2 ]; then
-              echo "  [FLAG] entry ${i}/${total}: >=2 recent ai-review runs failed"
-              consumer_flags=$((consumer_flags + 1))
+            # Resolve the review-workflow filename for this consumer.
+            # Most consumers use review-ai.yml; some still use ai-review.yml.
+            # The filename itself is not consumer-identifying, so it is safe to log.
+            wf=""
+            for candidate in review-ai.yml ai-review.yml; do
+              if gh api "repos/${slug}/contents/.github/workflows/${candidate}" >/dev/null 2>&1; then
+                wf="$candidate"
+                break
+              fi
+            done
+            if [ -z "$wf" ]; then
+              # Fall back: pick the workflow file that references the reusable orchestrator.
+              while read -r f; do
+                [ -z "$f" ] && continue
+                fb64=$(gh api "repos/${slug}/contents/.github/workflows/${f}" 2>/dev/null | jq -r '.content // empty')
+                [ -z "$fb64" ] && continue
+                if echo "$fb64" | base64 -d 2>/dev/null | grep -q 'base-ai-review-orchestrator'; then
+                  wf="$f"
+                  break
+                fi
+              done < <(gh api "repos/${slug}/contents/.github/workflows" 2>/dev/null | jq -r '.[]?.name // empty')
             fi
 
-            # 2. Workflow pin freshness
-            content_b64=$(gh api "repos/${slug}/contents/.github/workflows/ai-review.yml" \
-              --jq '.content' 2>/dev/null || echo "")
-            if [ -z "$content_b64" ]; then
-              echo "  [FLAG] entry ${i}/${total}: no .github/workflows/ai-review.yml"
+            if [ -z "$wf" ]; then
+              echo "  [FLAG] entry ${i}/${total}: no review workflow found"
               consumer_flags=$((consumer_flags + 1))
             else
-              content=$(echo "$content_b64" | base64 -d 2>/dev/null || true)
-              pin=$(echo "$content" \
-                | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
-                | head -1 \
-                | sed -E 's|.*@||')
-              echo "  pin=${pin:-<none>}"
-              if [ -z "$pin" ]; then
-                echo "  [FLAG] entry ${i}/${total}: no reusable workflow pin found"
+              echo "  workflow=${wf}"
+
+              # 1. Recent review-workflow runs
+              runs_json=$(gh run list --repo "$slug" --workflow "$wf" --limit 3 \
+                --json databaseId,conclusion,headBranch,createdAt 2>/dev/null || echo '[]')
+
+              considered_runs=$(jq --arg cutoff "$STALE_BEFORE" '
+                [ .[] | select(
+                  .createdAt > $cutoff
+                  or (.headBranch | test("^chore/add-anthropic-api-key$") | not)
+                ) ]
+              ' <<<"$runs_json")
+
+              fail_count=$(jq '[ .[] | select(.conclusion == "failure" or .conclusion == "startup_failure") ] | length' <<<"$considered_runs")
+              total_count=$(jq 'length' <<<"$considered_runs")
+              if [ "$total_count" -ge 1 ] && [ "$fail_count" -ge 2 ]; then
+                echo "  [FLAG] entry ${i}/${total}: >=2 recent review runs failed"
                 consumer_flags=$((consumer_flags + 1))
-              elif echo "$pin" | grep -Eq '^v1$'; then
-                : # floating major tag = OK
-              elif echo "$pin" | grep -Eq '^v1\.0\.[6-9]$'; then
-                :
-              elif echo "$pin" | grep -Eq '^v1\.[1-9][0-9]*(\..*)?$'; then
-                :
-              elif echo "$pin" | grep -Eq '^v1\.0\.[1-9][0-9]+$'; then
-                :
+              fi
+
+              # 2. Workflow pin freshness
+              content_b64=$(gh api "repos/${slug}/contents/.github/workflows/${wf}" 2>/dev/null | jq -r '.content // empty')
+              if [ -z "$content_b64" ]; then
+                echo "  [FLAG] entry ${i}/${total}: no review workflow found"
+                consumer_flags=$((consumer_flags + 1))
               else
-                echo "  [FLAG] entry ${i}/${total}: reusable pin ${pin} stale (below v1.0.6)"
-                consumer_flags=$((consumer_flags + 1))
+                content=$(echo "$content_b64" | base64 -d 2>/dev/null || true)
+                pin=$(echo "$content" \
+                  | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
+                  | head -1 \
+                  | sed -E 's|.*@||')
+                echo "  pin=${pin:-<none>}"
+                if [ -z "$pin" ]; then
+                  echo "  [FLAG] entry ${i}/${total}: no reusable workflow pin found"
+                  consumer_flags=$((consumer_flags + 1))
+                elif echo "$pin" | grep -Eiq '^[0-9a-f]{40}$'; then
+                  : # immutable SHA pin = OK
+                elif echo "$pin" | grep -Eq '^v1$'; then
+                  : # floating major tag = OK
+                elif echo "$pin" | grep -Eq '^v1\.0\.[6-9]$'; then
+                  :
+                elif echo "$pin" | grep -Eq '^v1\.[1-9][0-9]*(\..*)?$'; then
+                  :
+                elif echo "$pin" | grep -Eq '^v1\.0\.[1-9][0-9]+$'; then
+                  :
+                else
+                  echo "  [FLAG] entry ${i}/${total}: reusable pin ${pin} stale (below v1.0.6)"
+                  consumer_flags=$((consumer_flags + 1))
+                fi
               fi
             fi
 
