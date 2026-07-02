@@ -297,6 +297,31 @@ If the repo already has a `.claude/settings.json`, merge these two keys into it 
 
 **Caveat:** the one folder-trust prompt on first open is unavoidable - it is part of Claude Code's workspace-trust model and fires before committed settings are applied. The only way to skip it is for the org to pre-approve trust through enterprise-managed settings.
 
+### Org-wide auto-update (admins)
+
+Options A and A2 still leave third-party marketplace auto-update OFF by default, so each user has to enable it once (see the per-user toggle in Option A). An org admin can make auto-update automatic for the whole fleet - with no per-user toggle - by setting `autoUpdate: true` on the marketplace entry in **enterprise-managed settings** (the org-deployed `managed-settings.json`):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "ai-dev-pr-review": {
+      "source": { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" },
+      "autoUpdate": true
+    }
+  }
+}
+```
+
+`autoUpdate` is only honored on an `extraKnownMarketplaces.<name>` entry in managed settings. It is **silently ignored** in a project-scoped `.claude/settings.json` (the Option A2 file), so do NOT add it there - keep the auto-update flag in managed settings only. Managed settings is also the only place to pre-approve the folder-trust prompt referenced in the Option A2 caveat above.
+
+Deploy `managed-settings.json` to the OS-specific system path (confirmed from Claude Code docs -> Settings -> managed settings):
+
+| OS | Path |
+|---|---|
+| macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` |
+| Linux / WSL | `/etc/claude-code/managed-settings.json` |
+| Windows | `C:\Program Files\ClaudeCode\managed-settings.json` |
+
 **Option B - manual copy (fallback)**
 
 Copy the skill folder to one of:
