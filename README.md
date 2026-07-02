@@ -278,6 +278,25 @@ In Claude Code:
 
 Third-party marketplace auto-update is OFF by default. Enable it once via `/plugin` -> Marketplaces -> toggle auto-update for `ai-dev-pr-review`. After that, updates arrive at each Claude Code startup - no push, no write access into your repo, and no per-consumer targeting. Because the plugin ships without a pinned `version`, every commit here becomes a new version (SHA-based auto-follow, the closest analog to a workflow `@v1`).
 
+**Option A2 - zero-config activation via committed settings (no `/plugin` commands)**
+
+To auto-enable the skill for *everyone* working in a consumer repo with no per-user setup, commit [`examples/consumer-claude-settings.json`](examples/consumer-claude-settings.json) into that repo as `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "ai-dev-pr-review": { "source": { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" } }
+  },
+  "enabledPlugins": { "pr-response-cycle@ai-dev-pr-review": true }
+}
+```
+
+Result: on first open of the repo, the user gets a single folder-trust prompt. After they accept, Claude Code auto-adds the `ai-dev-pr-review` marketplace, installs and enables the `pr-response-cycle` plugin, and auto-follows upstream updates from this repo - with no `/plugin marketplace add` / `/plugin install` commands and no skill files copied into the consumer repo (the skill is referenced from the marketplace, not vendored). The skill then invokes as `/pr-response-cycle`.
+
+If the repo already has a `.claude/settings.json`, merge these two keys into it rather than replacing the file, preserving any existing settings.
+
+**Caveat:** the one folder-trust prompt on first open is unavoidable - it is part of Claude Code's workspace-trust model and fires before committed settings are applied. The only way to skip it is for the org to pre-approve trust through enterprise-managed settings.
+
 **Option B - manual copy (fallback)**
 
 Copy the skill folder to one of:
