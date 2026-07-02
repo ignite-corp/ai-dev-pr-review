@@ -1,0 +1,11 @@
+{
+  "name": "ai-dev-pr-review",
+  "owner": { "name": "Ignite" },
+  "plugins": [
+    {
+      "name": "pr-response-cycle",
+      "source": "./plugins/pr-response-cycle",
+      "description": "Drive a GitHub pull request through the full review-fix-merge cycle using the project's 10-step checklist: classify review threads, post evidence-based replies, apply fixup-rebase, navigate merge state, and merge with a merge commit."
+    }
+  ]
+}

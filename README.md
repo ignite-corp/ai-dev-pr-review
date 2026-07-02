@@ -265,17 +265,34 @@ This is a deliberate ASCII-only choice for the public repo. Consumers that want 
 
 The reviewer posts findings; a developer still has to work each PR through the review → fix → merge cycle. The canonical `pr-response-cycle` Claude Code skill lives here at [`.claude/skills/pr-response-cycle/`](.claude/skills/pr-response-cycle/SKILL.md). It drives a PR through the project's 10-step checklist: bulk-classify review threads (Fixed / Deferred / Won't fix / Duplicate / Outdated), post evidence-based replies, manage all three timeline item types (threads + issue comments + review bodies), apply fixup-rebase for review-driven changes, navigate merge state (CLEAN / BLOCKED / BEHIND / DIRTY), and merge with a merge commit (never squash) when policy allows.
 
-**To use it in a reviewer-enabled repo**, copy the skill folder to one of:
+This repo doubles as a Claude Code **plugin marketplace**, so consumer repos can install the skill by reference and auto-follow updates without any push into the consumer repo.
+
+**Option A - install from the marketplace (recommended, auto-follows updates)**
+
+In Claude Code:
+
+```
+/plugin marketplace add ignite-corp/ai-dev-pr-review
+/plugin install pr-response-cycle@ai-dev-pr-review
+```
+
+Third-party marketplace auto-update is OFF by default. Enable it once via `/plugin` -> Marketplaces -> toggle auto-update for `ai-dev-pr-review`. After that, updates arrive at each Claude Code startup - no push, no write access into your repo, and no per-consumer targeting. Because the plugin ships without a pinned `version`, every commit here becomes a new version (SHA-based auto-follow, the closest analog to a workflow `@v1`).
+
+**Option B - manual copy (fallback)**
+
+Copy the skill folder to one of:
 
 ```bash
 # per-repo (available to everyone working in that repo)
-cp -R .claude/skills/pr-response-cycle <consumer-repo>/.claude/skills/
+cp -RL .claude/skills/pr-response-cycle <consumer-repo>/.claude/skills/
 
 # or per-developer (available everywhere for you)
-cp -R .claude/skills/pr-response-cycle ~/.claude/skills/
+cp -RL .claude/skills/pr-response-cycle ~/.claude/skills/
 ```
 
-Then invoke `/pr-response-cycle` in Claude Code, or just say "process the review" / "PR 리뷰 처리" with a PR number. Project policy in the repo's `~/.claude/projects/<cwd>/memory/` overrides the skill's defaults where they conflict. Keep this copy the source of truth; re-copy when it changes.
+The canonical copy lives under `plugins/pr-response-cycle/skills/pr-response-cycle/`; `.claude/skills/pr-response-cycle` is a symlink to it, so `-L` (follow symlinks) resolves the real files when copying.
+
+Then invoke `/pr-response-cycle` in Claude Code, or just say "process the review" / "PR 리뷰 처리" with a PR number. Project policy in the repo's `~/.claude/projects/<cwd>/memory/` overrides the skill's defaults where they conflict.
 
 ## Contributing
 
