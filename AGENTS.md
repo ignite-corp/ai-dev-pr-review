@@ -5,12 +5,12 @@
 This repo owns reviewer infrastructure AND consumer fleet management for the tracked consumers.
 
 ### Rulesets are code
-GitHub Rulesets for the 5 tracked consumers are managed in `rulesets/` of this repo, one JSON per consumer.
+GitHub Rulesets for the tracked consumers are stored in the PRIVATE org variable `RULESET_CONFIG` (scoped to this repo), shape `{"<repo>": {"id": <int>, "ruleset": {<body>}}, ...}`. This repo is PUBLIC, so consumer repo names, ruleset IDs, and ruleset bodies must never live in the tree or be printed to Actions logs. `ruleset-sync.yml` / `ruleset-audit.yml` read the variable and report progress by index only.
 
 - **Never edit rulesets via the GitHub UI.** The UI has a footgun: required status checks added as "Any source" (integration_id=null) silently never match check_runs, leaving PRs permanently BLOCKED. See AT-1270.
-- To change a ruleset: edit `rulesets/<repo>.json` via PR. On merge, `ruleset-sync.yml` PUTs to live ruleset via API.
-- Drift detection runs nightly via `ruleset-audit.yml`. Live vs JSON divergence fails the workflow.
-- New tracked repo: add `rulesets/<name>.json` + entries in the static slug-to-ID maps in both `ruleset-sync.yml` and `ruleset-audit.yml`.
+- To change a ruleset: edit the `RULESET_CONFIG` org variable, then run `ruleset-sync.yml` manually (workflow_dispatch). A variable change fires no event, so the sync is not automatic.
+- Drift detection runs nightly via `ruleset-audit.yml`. Live vs stored divergence fails the workflow (details are not logged in the public repo; investigate privately).
+- New tracked repo: add a `<repo>: {id, ruleset}` entry to `RULESET_CONFIG`. No workflow code change needed.
 
 ### Daily consumer health
 `consumer-health.yml` runs daily (00:00 UTC) checking the 5 tracked consumers:

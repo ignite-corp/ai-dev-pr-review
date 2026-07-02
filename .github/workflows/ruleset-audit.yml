@@ -1,5 +1,13 @@
 name: ruleset-audit
 
+# Consumer ruleset config lives ONLY in the private org variable RULESET_CONFIG,
+# never in this public repo. This workflow runs in a PUBLIC repo, so its Actions
+# logs are public -- it must NOT print consumer repo names, ruleset IDs, or drift
+# diffs (which contain ruleset bodies). Results are reported by index only;
+# correlate an index to a repo via the private RULESET_CONFIG var. A failing run
+# signals drift/footgun; investigate details privately (re-run the sync, or diff
+# the live ruleset against the var locally).
+
 on:
   schedule:
     - cron: '0 0 * * *'
@@ -12,9 +20,6 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Mint App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -26,55 +31,35 @@ jobs:
       - name: Audit rulesets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RULESET_CONFIG: ${{ vars.RULESET_CONFIG }}
         run: |
           set -u
-          declare -A RULESET_IDS=(
-            [ai-dev-cab]=11121613
-            [ai-dev-qa-partner]=16312939
-            [ai-dev-infra-common]=13761444
-            [ai-tf-t2a]=7046917
-            [app-cast]=17884678
-          )
+          if [ -z "${RULESET_CONFIG:-}" ]; then
+            echo "::error::RULESET_CONFIG variable is empty or unset"
+            exit 1
+          fi
 
+          total=$(jq -r 'keys | length' <<< "$RULESET_CONFIG")
+          i=0
           drifted=0
           footgun=0
-          for f in rulesets/*.json; do
-            name="$(basename "$f" .json)"
-            rid="${RULESET_IDS[$name]:-}"
-            slug="ignite-corp/${name}"
+          while IFS= read -r name; do
+            i=$((i + 1))
+            rid=$(jq -r --arg n "$name" '.[$n].id' <<< "$RULESET_CONFIG")
 
-            if [ -z "$rid" ]; then
-              echo "::error::No ruleset ID mapping for $name"
+            if ! gh api "repos/ignite-corp/${name}/rulesets/${rid}" > /tmp/live.json 2>/dev/null; then
+              echo "::error::entry ${i}/${total}: failed to fetch live ruleset"
               drifted=1
               continue
             fi
 
-            echo "::group::Audit $slug (ruleset $rid)"
+            jq -S '{ name, target, enforcement, conditions, rules, bypass_actors }' /tmp/live.json > /tmp/live.norm.json
+            jq -S --arg n "$name" '.[$n].ruleset' <<< "$RULESET_CONFIG" > /tmp/stored.norm.json
 
-            if ! gh api "repos/${slug}/rulesets/${rid}" > /tmp/live.json; then
-              echo "::error::Failed to fetch live ruleset for $slug"
-              drifted=1
-              echo "::endgroup::"
-              continue
-            fi
-
-            jq -S '
-              {
-                name,
-                target,
-                enforcement,
-                conditions,
-                rules,
-                bypass_actors
-              }
-            ' /tmp/live.json > /tmp/live.norm.json
-            jq -S '.' "$f" > /tmp/stored.norm.json
-
-            if diff -u /tmp/stored.norm.json /tmp/live.norm.json > /tmp/diff.txt; then
-              echo "OK: $slug matches stored"
+            if diff -q /tmp/stored.norm.json /tmp/live.norm.json > /dev/null; then
+              echo "OK: entry ${i}/${total} matches stored"
             else
-              echo "::error::Drift detected for $slug"
-              cat /tmp/diff.txt
+              echo "::error::entry ${i}/${total}: drift detected"
               drifted=1
             fi
 
@@ -85,14 +70,10 @@ jobs:
               | .context
             ' /tmp/live.json)
             if [ -n "$footgun_hits" ]; then
-              while IFS= read -r ctx; do
-                echo "[FOOTGUN] ${slug}: context=${ctx}"
-              done <<< "$footgun_hits"
+              echo "[FOOTGUN] entry ${i}/${total}: required status check(s) missing integration_id"
               footgun=1
             fi
-
-            echo "::endgroup::"
-          done
+          done < <(jq -r 'keys[]' <<< "$RULESET_CONFIG")
 
           if [ "$drifted" -ne 0 ] || [ "$footgun" -ne 0 ]; then
             echo "::error::Audit failed (drift=${drifted} footgun=${footgun})"
