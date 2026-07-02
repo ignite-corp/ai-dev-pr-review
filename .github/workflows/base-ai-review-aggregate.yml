@@ -88,6 +88,7 @@ jobs:
         id: reviewer_token
         if: ${{ vars.REVIEWER_APP_ID != '' }}
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        continue-on-error: true
         with:
           app-id: ${{ vars.REVIEWER_APP_ID }}
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
