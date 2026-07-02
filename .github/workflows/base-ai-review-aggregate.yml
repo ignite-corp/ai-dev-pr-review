@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: v1.0.17
+          ref: v1.0.18
           path: .ai-dev-pr-review
           fetch-depth: 1
 
@@ -84,9 +84,27 @@ jobs:
       # an APPROVED review, so when REVIEWER_APP_ID is configured we mint an App
       # installation token and hand it to the aggregate script for the approve
       # call only. Skipped entirely when the var is unset (backward compatible).
+      #
+      # REVIEWER_APP_ID is an org-wide variable, so it is set on every consumer
+      # even when that consumer's top-level caller does not forward the
+      # REVIEWER_APP_PRIVATE_KEY secret. Secrets cannot be read in an `if:`
+      # condition, so we surface the secret's presence via an env-backed step
+      # output and gate the mint on it. This keeps the mint from hard-failing
+      # (Input required and not supplied: private-key) on consumers that have
+      # not opted in -- they degrade to the existing no-approve behavior.
+      - name: Check reviewer App key present
+        id: reviewer_key
+        env:
+          REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$REVIEWER_APP_PRIVATE_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Mint reviewer App token
         id: reviewer_token
-        if: ${{ vars.REVIEWER_APP_ID != '' }}
+        if: ${{ vars.REVIEWER_APP_ID != '' && steps.reviewer_key.outputs.present == 'true' }}
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
         continue-on-error: true
         with:
