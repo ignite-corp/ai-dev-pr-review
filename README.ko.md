@@ -42,7 +42,7 @@ Claude 리뷰어는 `anthropics/claude-code-action`을 통해 실행되며, 이 
 | 과금 | 구독에 청구 | Anthropic API 계정에 청구(사용량 기반) |
 | 발급 | 로컬에서 `claude setup-token` | Anthropic Console |
 
-**둘 다 설정된 경우의 우선순위:** 액션은 이 둘을 **상호 배타적(mutually exclusive)**으로 문서화하며 어느 쪽이 이기는지 **정의하지 않습니다** — 둘 다 Claude 프로세스에 env로 export되고 런타임이 하나를 선택하므로 결과가 계약상 보장되지 않습니다. 인증·과금하려는 **하나만** 제공하고 특정 쪽이 우선한다고 가정하지 마세요. 이 레포의 워크플로우는 두 입력을 모두 연결하므로, 소비자는 자신이 쓰는 방식의 시크릿만 제공하면 됩니다. (`consumer-health` 체크는 네 개를 모두 점검해 잘못 구성된 레포를 조기에 드러내지만, 이는 헬스 신호일 뿐 Claude 시크릿 두 개를 모두 설정해야 한다는 하드 요구사항은 아닙니다.)
+**둘 다 설정된 경우의 우선순위:** CLI는 `ANTHROPIC_API_KEY`에 더 높은 우선순위를 부여하므로, 둘 다 전달하면 OAuth 토큰이 있어도 API에 과금됩니다. 이를 피하기 위해 이 레포의 워크플로우는 이제 `CLAUDE_CODE_OAUTH_TOKEN`이 설정된 경우 **OAuth 토큰만** 전달하여 구독이 사용되도록 하며, `ANTHROPIC_API_KEY`는 OAuth 토큰이 없을 때만 연결되는 폴백입니다(docs: code.claude.com/docs/en/authentication). 인증·과금하려는 **하나만** 제공하세요. (`consumer-health` 체크는 네 개를 모두 점검해 잘못 구성된 레포를 조기에 드러내지만, 이는 헬스 신호일 뿐 Claude 시크릿 두 개를 모두 설정해야 한다는 하드 요구사항은 아닙니다.)
 
 ## 최소 소비자 thin 트리거
 
