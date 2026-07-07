@@ -19,8 +19,6 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
-      REVIEWER_APP_PRIVATE_KEY:
-        required: false
     outputs:
       early_exit:
         description: "Whether the reviewer recommends stopping further reviews"
@@ -209,70 +207,6 @@ jobs:
             exit 0
           fi
           python3 .ai-dev-pr-review/.github/scripts/extract_claude_review.py "$EXEC_FILE"
-
-      # --- Claude: auto model scaling on usage-limit events (AT-1512) ---
-      # When the review hits a usage-limit error, downgrade CLAUDE_MODEL to
-      # sonnet on the ignite-corp org var and every pilot repo var, and record
-      # the reset epoch; claude-model-restore.yml (hourly cron in the base
-      # repo) restores the default once the epoch passes. Fail-safe: skipped
-      # silently when the App key is not forwarded, and the script itself
-      # never fails the review job. Secrets cannot be read in an `if:`
-      # condition, so the key's presence is surfaced via a step output
-      # (mirrors base-ai-review-aggregate.yml).
-      - name: Check reviewer App key present (model scaling)
-        id: scale_key
-        if: inputs.reviewer == 'claude' && always()
-        env:
-          REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-        run: |
-          if [ -n "$REVIEWER_APP_PRIVATE_KEY" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Mint corp App token (model scaling)
-        id: scale_token_corp
-        if: >-
-          inputs.reviewer == 'claude' && always() &&
-          vars.REVIEWER_APP_ID != '' &&
-          steps.scale_key.outputs.present == 'true'
-        continue-on-error: true
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
-        with:
-          app-id: ${{ vars.REVIEWER_APP_ID }}
-          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-          owner: ignite-corp
-
-      - name: Mint pilot App token (model scaling)
-        id: scale_token_pilot
-        if: >-
-          inputs.reviewer == 'claude' && always() &&
-          vars.REVIEWER_APP_ID != '' &&
-          steps.scale_key.outputs.present == 'true'
-        continue-on-error: true
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
-        with:
-          app-id: ${{ vars.REVIEWER_APP_ID }}
-          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-          owner: ignite-pilot-org
-
-      - name: Scale Claude model on usage limit
-        if: >-
-          inputs.reviewer == 'claude' && always() &&
-          steps.scale_token_corp.outputs.token != ''
-        continue-on-error: true
-        env:
-          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
-          GH_TOKEN_CORP: ${{ steps.scale_token_corp.outputs.token }}
-          GH_TOKEN_PILOT: ${{ steps.scale_token_pilot.outputs.token }}
-        run: |
-          SCRIPT=".ai-dev-pr-review/.github/scripts/scale_claude_model.py"
-          if [ ! -f "$SCRIPT" ]; then
-            echo "scale_claude_model.py not in pinned checkout, skipping"
-            exit 0
-          fi
-          python3 "$SCRIPT" detect-and-downgrade
 
       # --- Gemini ---
       - name: Setup Python (Gemini)
