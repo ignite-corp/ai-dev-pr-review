@@ -219,6 +219,8 @@ Version policy:
 - Minor (`v1.x.0`): new optional inputs, additive reviewer features.
 - Major (`v2.0.0`): input contract changes, breaking script signatures, severity threshold defaults shift.
 
+Wrapper version alignment: this repo and the pilot wrapper `ignite-pilot-org/ai-dev-pr-review-wrapper` keep their release versions in MAJOR.MINOR lockstep; PATCH moves independently per repo. Current pairing: base `v1.1.0` (content of `v1.0.21`) ↔ wrapper `v1.1.0`. When either repo needs a MINOR (or MAJOR) bump, the other cuts a matching alignment release — content-identical if it has no changes. Both repos auto-float their `v1` major tag via `move-major-tag.yml` on release publish, so `@v1` consumers need no action.
+
 ## Overriding prompts per consumer repo
 
 The per-repo system prompt and checklist live in the consumer repo, NOT here. The reusable workflow reads them via `code-review-system-prompt-path` / `code-review-checklist-path` and concatenates them into the `context.md` that every reviewer (Claude / Codex / Gemini) reads as its shared guideline. To customize:
