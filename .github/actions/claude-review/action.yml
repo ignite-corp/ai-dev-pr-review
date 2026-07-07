@@ -1,0 +1,52 @@
+# Shared single source of truth for the Claude review step: auth precedence
+# (AT-1499), the pinned claude-code-action version, and model/allowed-tools
+# wiring. Consumed by base-ai-review-single.yml and the pilot wrapper via the
+# `.ai-dev-pr-review` local checkout path
+# (uses: ./.ai-dev-pr-review/.github/actions/claude-review).
+name: Claude review
+description: Run the Claude PR reviewer via anthropics/claude-code-action with OAuth-preferred auth (single source of truth for auth precedence, action version, and model wiring)
+inputs:
+  github_token:
+    description: GitHub token for the action
+    required: true
+  anthropic_api_key:
+    description: Anthropic API key (fallback, used only when no OAuth token)
+    required: false
+    default: ''
+  claude_code_oauth_token:
+    description: Claude Code OAuth (subscription) token; preferred when set
+    required: false
+    default: ''
+  model:
+    description: Model passed via --model
+    required: false
+    default: 'claude-sonnet-4-6'
+  allowed_tools:
+    description: --allowedTools value
+    required: false
+    default: 'Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)'
+  prompt:
+    description: Review prompt
+    required: true
+outputs:
+  execution_file:
+    description: Path to the claude-code-action execution log
+    value: ${{ steps.claude-review.outputs.execution_file }}
+runs:
+  using: composite
+  steps:
+    - id: claude-review
+      # Literal true (not an interpolated input) so the composite action
+      # completes even when claude exits abnormally, keeping the
+      # execution_file output available for callers' fallback extraction.
+      continue-on-error: true
+      uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464  # v1.0.159
+      with:
+        github_token: ${{ inputs.github_token }}
+        # Prefer OAuth (subscription); pass the billed API key only when no
+        # OAuth token is set. ANTHROPIC_API_KEY otherwise takes CLI precedence
+        # and bills the API (docs: code.claude.com/docs/en/authentication).
+        anthropic_api_key: ${{ inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key || '' }}
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed_tools }}"'
+        prompt: ${{ inputs.prompt }}
