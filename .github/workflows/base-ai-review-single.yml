@@ -184,7 +184,11 @@ jobs:
         uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464  # v1.0.159
         with:
           github_token: ${{ github.token }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Prefer OAuth (subscription) when available; fall back to the billed
+          # API key only when no OAuth token is set. ANTHROPIC_API_KEY otherwise
+          # takes CLI precedence and bills the API
+          # (docs: code.claude.com/docs/en/authentication).
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: '--model ${{ vars.CLAUDE_MODEL || ''claude-sonnet-4-6'' }} --allowedTools "Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)"'
           prompt: ${{ env.CLAUDE_PROMPT }}

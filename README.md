@@ -42,7 +42,7 @@ The Claude reviewer runs through `anthropics/claude-code-action`, which accepts 
 | Billing | Against the subscription | Against your Anthropic API account (usage-based) |
 | Generate via | `claude setup-token` locally | Anthropic Console |
 
-**Precedence when both are set:** the action documents the two as **mutually exclusive** and does NOT define which wins — both are exported to the Claude process and the runtime resolves one, so the outcome is not contractual. Provide the single credential you want to authenticate and bill against; do not rely on a particular one taking priority. This repo's workflow wires both inputs through, so a consumer supplies only the secret for the method it uses. (The `consumer-health` check reports all four so a misconfigured repo surfaces early — that is a health signal, not a hard requirement to set both Claude secrets.)
+**Precedence when both are set:** the CLI gives `ANTHROPIC_API_KEY` higher precedence, so passing both would bill the API even when an OAuth token exists. To avoid that, this repo's workflow now passes **only** the OAuth token when `CLAUDE_CODE_OAUTH_TOKEN` is set, so the subscription is used; `ANTHROPIC_API_KEY` is a fallback wired through only when no OAuth token is present (docs: code.claude.com/docs/en/authentication). Provide the single credential you want to authenticate and bill against. (The `consumer-health` check reports all four so a misconfigured repo surfaces early — that is a health signal, not a hard requirement to set both Claude secrets.)
 
 ## Minimal consumer thin trigger
 
