@@ -1,0 +1,61 @@
+name: claude-model-restore
+
+# Restore half of the Claude model auto-scaling loop (AT-1512). When a claude
+# review run hits a usage-limit event, its post-step downgrades CLAUDE_MODEL
+# to sonnet everywhere and stores the reset epoch in the ignite-corp org var
+# CLAUDE_MODEL_RESTORE_AT. This hourly cron restores CLAUDE_MODEL to
+# vars.CLAUDE_MODEL_DEFAULT on the org var and every pilot repo var once the
+# epoch has passed, then deletes CLAUDE_MODEL_RESTORE_AT. A premature restore
+# (session epoch passed but weekly bucket still exhausted) is self-correcting:
+# the next limited review re-triggers the downgrade.
+#
+# PUBLIC-repo constraint: pilot repo names must never appear in Actions logs.
+# The pilot list lives only in the private org var MODEL_SCALE_REPOS and
+# progress is reported by index only (same convention as ruleset-sync.yml).
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-model-restore
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+
+      # Two App installation tokens: the Reviewer App is installed on both
+      # orgs, so one private key mints an owner-scoped token for each.
+      - name: Mint corp App token
+        id: token_corp
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+
+      - name: Mint pilot App token
+        id: token_pilot
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-pilot-org
+
+      - name: Restore Claude model if due
+        env:
+          GH_TOKEN_CORP: ${{ steps.token_corp.outputs.token }}
+          GH_TOKEN_PILOT: ${{ steps.token_pilot.outputs.token }}
+          MODEL_SCALE_REPOS: ${{ vars.MODEL_SCALE_REPOS }}
+        run: python3 .github/scripts/scale_claude_model.py restore-if-due
