@@ -466,6 +466,8 @@ def format_summary(
         icon, label = "[OK]", "Aggregate verdict (comment only -- auto-approve disabled)"
     elif verdict == "approve":
         icon, label = "[OK]", "Approved"
+    elif verdict == "request_changes" and comment_only:
+        icon, label = "[!]", "Changes recommended (comment only -- auto-approve disabled)"
     elif verdict == "request_changes":
         icon, label = "[X]", "Changes Requested"
     else:
@@ -661,8 +663,8 @@ def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
 
     _minimize_stale_bot_items(pr_number, repo)
 
-    # Downgrade approve to comment when killswitch is off.
-    if verdict == "approve" and comment_only:
+    # Downgrade formal review verdicts to comment when killswitch is off.
+    if verdict in ("approve", "request_changes") and comment_only:
         if not _post_comment(pr_number, repo, comment):
             print("Failed to post comment", file=sys.stderr)
             sys.exit(1)

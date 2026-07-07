@@ -10,8 +10,10 @@ import pytest
 
 from aggregate_reviews import (
     _normalize_severity,
+    _is_comment_only,
     _is_valid_review,
     apply_verdict_rules,
+    format_summary,
     main,
     post_verdict,
     REVIEWER_NAMES,
@@ -391,3 +393,95 @@ class TestReviewerToken:
         env = self._run(monkeypatch, "request_changes")
         assert env is not None
         assert env["GH_TOKEN"] == "default-token"
+
+
+class TestCommentOnlyGating:
+    """ALLOW_AUTO_APPROVE gates ALL formal review events (approve + request_changes)."""
+
+    def _run(
+        self, monkeypatch: pytest.MonkeyPatch, verdict: str, *, comment_only: bool
+    ) -> list[list[str]]:
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("GH_TOKEN", "default-token")
+
+        commands: list[list[str]] = []
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            commands.append(cmd)
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+        with (
+            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+        ):
+            post_verdict("body", verdict, comment_only=comment_only)
+
+        return commands
+
+    def _has_review_request_changes(self, commands: list[list[str]]) -> bool:
+        return any(
+            "review" in cmd and "--request-changes" in cmd for cmd in commands
+        )
+
+    def _has_pr_comment(self, commands: list[list[str]]) -> bool:
+        return any("comment" in cmd for cmd in commands)
+
+    def test_request_changes_comment_only_downgrades_to_comment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = self._run(monkeypatch, "request_changes", comment_only=True)
+        assert not self._has_review_request_changes(commands)
+        assert self._has_pr_comment(commands)
+
+    def test_request_changes_not_comment_only_submits_review(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = self._run(monkeypatch, "request_changes", comment_only=False)
+        assert self._has_review_request_changes(commands)
+
+    def test_approve_comment_only_downgrades_to_comment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = self._run(monkeypatch, "approve", comment_only=True)
+        assert not any("review" in cmd for cmd in commands)
+        assert self._has_pr_comment(commands)
+
+
+class TestCommentOnlyToggle:
+    """_is_comment_only maps ALLOW_AUTO_APPROVE to the comment-only killswitch."""
+
+    def test_default_is_comment_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ALLOW_AUTO_APPROVE", raising=False)
+        assert _is_comment_only() is True
+
+    def test_false_is_comment_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALLOW_AUTO_APPROVE", "false")
+        assert _is_comment_only() is True
+
+    def test_true_disables_comment_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
+        assert _is_comment_only() is False
+
+
+class TestSummaryLabels:
+    """format_summary header reflects the comment-only killswitch."""
+
+    def test_request_changes_comment_only_label(self) -> None:
+        summary = format_summary(
+            {}, "request_changes", "reason", {}, comment_only=True
+        )
+        assert "Changes recommended (comment only -- auto-approve disabled)" in summary
+        assert "Changes Requested" not in summary
+
+    def test_request_changes_active_label(self) -> None:
+        summary = format_summary(
+            {}, "request_changes", "reason", {}, comment_only=False
+        )
+        assert "Changes Requested" in summary
+
+    def test_approve_comment_only_label(self) -> None:
+        summary = format_summary({}, "approve", "reason", {}, comment_only=True)
+        assert "comment only -- auto-approve disabled" in summary
