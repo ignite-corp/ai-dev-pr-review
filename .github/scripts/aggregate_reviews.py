@@ -338,7 +338,7 @@ def _check_insufficient(
 def _check_criticals(all_issues: list[dict[str, Any]]) -> tuple[str, str] | None:
     criticals = [i for i in all_issues if i.get("severity") == "critical"]
     if len(criticals) >= CRITICAL_THRESHOLD:
-        reviewers = sorted({i.get("reviewer") for i in criticals if i.get("reviewer")})
+        reviewers = sorted({str(r) for i in criticals if (r := i.get("reviewer"))})
         desc = criticals[0].get("description", "")[:DESC_TRUNCATE_LEN]
         return (
             "request_changes",
