@@ -32,6 +32,9 @@ jobs:
   review:
     name: "${{ inputs.reviewer }} review"
     runs-on: ubuntu-latest
+    # Upper bound for the whole job: the claude composite's inner step is not
+    # bounded by the caller step's timeout-minutes (actions/runner#1979).
+    timeout-minutes: 15
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
     steps:
@@ -63,7 +66,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
-          ref: v1.0.18
+          ref: v1.0.21
           path: .ai-dev-pr-review
           fetch-depth: 1
 
@@ -181,16 +184,12 @@ jobs:
         id: claude-review
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464  # v1.0.159
+        uses: ./.ai-dev-pr-review/.github/actions/claude-review
         with:
           github_token: ${{ github.token }}
-          # Prefer OAuth (subscription) when available; fall back to the billed
-          # API key only when no OAuth token is set. ANTHROPIC_API_KEY otherwise
-          # takes CLI precedence and bills the API
-          # (docs: code.claude.com/docs/en/authentication).
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--model ${{ vars.CLAUDE_MODEL || ''claude-sonnet-4-6'' }} --allowedTools "Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)"'
+          model: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-4-6' }}
           prompt: ${{ env.CLAUDE_PROMPT }}
 
       - name: Extract Claude review from execution log (fallback)
