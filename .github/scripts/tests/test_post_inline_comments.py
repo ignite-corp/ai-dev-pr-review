@@ -1,8 +1,9 @@
 """Tests for post_inline_comments fuzzy dedup logic.
 
-Covers the seven scenarios that the previous exact-match dedup missed,
+Covers the scenarios that the previous exact-match dedup missed,
 including paraphrases that share token vocabulary, line-distance gating
-on the same path, and backward compatibility when no line is supplied.
+on the same path, strong-similarity dedup across force-push line shifts,
+and backward compatibility when no line is supplied.
 """
 
 from __future__ import annotations
@@ -55,14 +56,58 @@ class TestIsDuplicate:
             line=10,
         )
 
-    def test_distant_lines_no_dedup(self) -> None:
+    def test_identical_text_distant_lines_dedups(self) -> None:
+        # Force-push/rebase shifts lines far beyond the window; identical
+        # text (Jaccard 1.0 >= strong threshold) must dedup regardless.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        # Line 100 is well outside the default window of 5.
-        assert not _is_duplicate(
+        assert _is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,
+            line=16,  # delta 6, just past the +/-5 window
+        )
+
+    def test_identical_text_large_line_shift_dedups(self) -> None:
+        # Real-world case: the same finding moved from line 271 to 162
+        # (delta 109) after a force-push and was reposted 8 times.
+        existing = [_thread("tf/sg.tf", "Egress open to 0.0.0.0/0", line=271)]
+        assert _is_duplicate(
+            "tf/sg.tf",
+            "Egress open to 0.0.0.0/0",
+            existing,
+            line=162,
+        )
+
+    def test_moderate_similarity_distant_lines_no_dedup(self) -> None:
+        # Jaccard 4/6 = 0.67 sits in the moderate band (0.6-0.8), which
+        # still requires the line window -- distant lines must NOT dedup.
+        existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
+        assert not _is_duplicate(
+            "a.py",
+            "Missing input validation user_id parameter",
+            existing,
             line=100,
+        )
+
+    def test_moderate_similarity_within_window_dedups(self) -> None:
+        # Same moderate-band pair (Jaccard 0.67) within +/-5 lines dedups.
+        existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
+        assert _is_duplicate(
+            "a.py",
+            "Missing input validation user_id parameter",
+            existing,
+            line=12,
+        )
+
+    def test_identical_text_different_file_no_dedup(self) -> None:
+        # The strong-similarity path skips the line window but never the
+        # path check.
+        existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
+        assert not _is_duplicate(
+            "b.py",
+            "Missing input validation on user_id",
+            existing,
+            line=200,
         )
 
     def test_empty_tokens_no_dedup(self) -> None:
@@ -116,3 +161,13 @@ def test_jaccard_threshold_env_override(monkeypatch: Any) -> None:
     mod = importlib.import_module("post_inline_comments")
     # The module-level _JACCARD_THRESHOLD should reflect the env value
     assert getattr(mod, "_JACCARD_THRESHOLD", None) == 0.95
+
+
+def test_strong_jaccard_env_override(monkeypatch: Any) -> None:
+    """Setting DEDUP_STRONG_JACCARD via env should tune the strong threshold."""
+    # Force a fresh import with the env set
+    monkeypatch.setenv("DEDUP_STRONG_JACCARD", "0.9")
+    sys.modules.pop("post_inline_comments", None)
+    mod = importlib.import_module("post_inline_comments")
+    # The module-level DEDUP_STRONG_JACCARD should reflect the env value
+    assert getattr(mod, "DEDUP_STRONG_JACCARD", None) == 0.9

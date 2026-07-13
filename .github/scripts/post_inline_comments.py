@@ -8,9 +8,11 @@ Falls back to a plain PR comment if the API call fails.
 Dedup strategy (fuzzy):
   1. Fetch ALL existing threads (resolved + unresolved)
   2. Normalise each thread's first comment body via _normalize_body
-  3. For each new issue, check whether a thread on the same file and
-     within DEDUP_LINE_WINDOW lines exists whose normalised body has
-     Jaccard token-set similarity >= _JACCARD_THRESHOLD. This
+  3. For each new issue, check whether a thread on the same file exists
+     whose normalised body has Jaccard token-set similarity
+     >= DEDUP_STRONG_JACCARD (duplicate regardless of line distance --
+     force-push/rebase can shift lines far beyond any window), or
+     >= _JACCARD_THRESHOLD when within DEDUP_LINE_WINDOW lines. This
      survives both force-push line shifts and small wording changes
      (paraphrases, added punctuation, reworded suggestions).
 
@@ -54,6 +56,15 @@ _JACCARD_THRESHOLD = float(
     os.environ.get("JACCARD_THRESHOLD", _DEFAULT_JACCARD_THRESHOLD)
 )
 DEDUP_LINE_WINDOW = 5
+# When similarity is at least this strong, the line-distance check is
+# skipped entirely: force-push/rebase shifts line numbers far beyond any
+# sensible window (observed delta of 109 lines), so near-identical text on
+# the same file is a duplicate no matter how far it moved. Tunable at
+# runtime via the DEDUP_STRONG_JACCARD environment variable.
+_DEFAULT_STRONG_JACCARD = 0.8
+DEDUP_STRONG_JACCARD = float(
+    os.environ.get("DEDUP_STRONG_JACCARD", _DEFAULT_STRONG_JACCARD)
+)
 
 # Pre-compiled patterns for _normalize_body
 _ICON_RE = re.compile("[" + "".join(SEVERITY_ICONS.values()) + "*]")
@@ -177,13 +188,18 @@ def _is_duplicate(
     line: int | None = None,
     threshold: float = _JACCARD_THRESHOLD,
     line_window: int = DEDUP_LINE_WINDOW,
+    strong_threshold: float = DEDUP_STRONG_JACCARD,
 ) -> bool:
     """Check if a fuzzy duplicate exists.
 
-    A thread is considered a duplicate when it is on the same file, its
-    line is within ``line_window`` of ``line`` (when both lines are
-    known), and its normalised body has Jaccard token-set similarity
-    >= ``threshold`` with the new description.
+    A thread on the same file is considered a duplicate when either:
+
+    * its normalised body has Jaccard token-set similarity
+      >= ``strong_threshold`` with the new description -- line distance
+      is ignored because force-push/rebase moves lines far beyond any
+      window while the finding text stays the same; or
+    * its line is within ``line_window`` of ``line`` (when both lines
+      are known) and the similarity is >= ``threshold``.
 
     ``line=None`` skips the line-distance check, preserving backward
     compatibility for callers that lack a right-side line number.
@@ -195,10 +211,6 @@ def _is_duplicate(
     for thread in existing_threads:
         if thread["path"] != file_path:
             continue
-        other_line = thread.get("line")
-        if line is not None and other_line is not None:
-            if abs(line - other_line) > line_window:
-                continue
         other_tokens = set((thread.get("body") or "").split())
         if not other_tokens:
             continue
@@ -206,6 +218,12 @@ def _is_duplicate(
         if not union:
             continue
         jaccard = len(tokens & other_tokens) / len(union)
+        if jaccard >= strong_threshold:
+            return True
+        other_line = thread.get("line")
+        if line is not None and other_line is not None:
+            if abs(line - other_line) > line_window:
+                continue
         if jaccard >= threshold:
             return True
     return False
