@@ -172,6 +172,12 @@ jobs:
             echo "IMPORTANT: Focus on NEW issues only. If the context includes previously"
             echo "resolved review threads, check their responses before re-raising the same"
             echo "issue -- only re-raise if the current code has materially changed."
+            echo ""
+            echo "EVIDENCE RULE: Raise a finding ONLY if you can point to the exact line(s) in"
+            echo "THIS diff that exhibit it. Any existence or correctness claim (e.g., \"X does"
+            echo "not exist\", \"Y is undefined\") MUST quote the diff line(s) that prove it. If a"
+            echo "claim depends on runtime, library, or environment facts you are not certain"
+            echo "of, downgrade it to \"suggestion\" or omit it."
           } >> "$PROMPT_FILE"
           {
             echo "CLAUDE_PROMPT<<CLAUDE_PROMPT_EOF"
