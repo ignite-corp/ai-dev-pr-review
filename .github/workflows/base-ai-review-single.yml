@@ -440,6 +440,12 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           REVIEWER: ${{ inputs.reviewer }}
           JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
+          # Round-cutoff convergence backstop (RC-5): at round N or later,
+          # when this reviewer's findings have no critical/major issue,
+          # minor/suggestion findings are folded into a single summary
+          # comment instead of individual inline threads.
+          ROUND_CUTOFF_N: ${{ vars.ROUND_CUTOFF_N || '5' }}
+          ROUND_CUTOFF_ENABLED: ${{ vars.ROUND_CUTOFF_ENABLED || 'true' }}
         run: |
           REVIEW_FILE="review-${REVIEWER}.json"
           if [ -f "$REVIEW_FILE" ]; then

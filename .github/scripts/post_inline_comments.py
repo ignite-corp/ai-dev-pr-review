@@ -20,6 +20,12 @@ Dedup strategy (fuzzy):
      twice in a round posts once -- at the highest severity seen.
 
 Issues outside the diff range are not posted -- they appear in aggregate summary.
+
+Round-cutoff convergence backstop (RC-5): at review round ROUND_CUTOFF_N
+(default 5) or later, when THIS reviewer's findings contain no
+critical/major issue, minor/suggestion findings are folded into a single
+summary comment instead of individual inline threads. No auto-merge and
+no auto-ticket creation -- a human decides merge timing and follow-up.
 """
 
 from __future__ import annotations
@@ -37,16 +43,35 @@ from github_pr_support import (
     DIFF_FILE_PREFIX,
     DIFF_FILE_PREFIX_LEN,
     DIFF_SIDE_RIGHT,
+    REVIEW_MARKER,
     REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     fetch_paginated_nodes,
     get_pr_head_sha,
+    int_env,
 )
 
 # Page size per GraphQL request for thread pagination.
 THREAD_PAGE_SIZE = 100
 _FALLBACK_HEADER = "## [bot] {} Inline Review (fallback)"
+
+# Round-cutoff convergence backstop (RC-5, issue #37). Tunable via the
+# ROUND_CUTOFF_N env var; ROUND_CUTOFF_ENABLED=false disables the gate.
+DEFAULT_ROUND_CUTOFF_N = 5
+_CUTOFF_MARKER = "<!-- round-cutoff-{reviewer}-r{round} -->"
+_CUTOFF_HEADER = "## [bot] {} Round Cutoff Summary (R{})"
+_CUTOFF_LEAD = (
+    "R{} convergence cutoff -- the following minor items are recommended for follow-up:"
+)
+
+# A completed round leaves exactly one aggregate verdict post carrying
+# REVIEW_MARKER: a PR review when auto-approve is enabled, or an issue
+# comment in comment-only mode (the default killswitch state).
+_ROUND_COUNT_ENDPOINTS = (
+    "repos/{repo}/pulls/{pr}/reviews",
+    "repos/{repo}/issues/{pr}/comments",
+)
 
 # Fuzzy-dedup thresholds. Two comments on the same path are considered
 # duplicates when their normalised token sets overlap by at least
@@ -326,6 +351,80 @@ def build_comments(
     return comments, no_location, out_of_range
 
 
+def fetch_round_count(repo: str, pr_number: str) -> int:
+    """Count completed review rounds on the PR.
+
+    Every completed round ends with exactly one bot-authored aggregate
+    verdict post carrying ``REVIEW_MARKER`` (see _ROUND_COUNT_ENDPOINTS).
+    Counting marker posts rather than raw bot reviews avoids overcounting:
+    each single reviewer job also submits a COMMENT review per round for
+    its inline comment batch.
+
+    Fails open: a gh error yields a partial (possibly zero) count so the
+    cutoff never suppresses findings because of an API failure.
+    """
+    jq_filter = (
+        'map(select((.user.type // "") == "Bot"'
+        f' and ((.body // "") | contains("{REVIEW_MARKER}")))) | length'
+    )
+    total = 0
+    for template in _ROUND_COUNT_ENDPOINTS:
+        endpoint = template.format(repo=repo, pr=pr_number)
+        try:
+            result = subprocess.run(
+                ["gh", "api", "--paginate", endpoint, "--jq", jq_filter],
+                capture_output=True,
+                text=True,
+                timeout=GH_TIMEOUT_SEC,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Warning: round count timed out for {endpoint}", file=sys.stderr)
+            continue
+        if result.returncode != 0:
+            print(
+                f"Warning: round count failed for {endpoint}: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            continue
+        # --paginate emits one jq result per page; sum them.
+        for token in result.stdout.split():
+            try:
+                total += int(token)
+            except ValueError:
+                print(
+                    f"Warning: unexpected round count output: {token!r}",
+                    file=sys.stderr,
+                )
+    return total
+
+
+def round_cutoff_round(
+    repo: str,
+    pr_number: str,
+    issues: list[dict[str, Any]],
+) -> int | None:
+    """Return the current round number when the convergence cutoff applies.
+
+    The cutoff applies when it is enabled, every finding in this
+    reviewer's payload is non-blocking (minor/suggestion -- unknown
+    severities count as blocking so unexpected payloads fail open to
+    normal posting), and the current round number (completed rounds + 1)
+    has reached ``ROUND_CUTOFF_N``.
+    """
+    enabled = os.environ.get("ROUND_CUTOFF_ENABLED", "true").strip().lower()
+    if enabled == "false":
+        return None
+    for issue in issues:
+        rank = _SEVERITY_RANK.get(str(issue.get("severity", "")).lower())
+        if rank is None or rank >= _SEVERITY_RANK["major"]:
+            return None
+    cutoff_n = int_env("ROUND_CUTOFF_N", DEFAULT_ROUND_CUTOFF_N)
+    round_number = fetch_round_count(repo, pr_number) + 1
+    if round_number >= cutoff_n:
+        return round_number
+    return None
+
+
 def post_inline_review(
     repo: str,
     pr_number: str,
@@ -360,16 +459,19 @@ def post_inline_review(
     return False
 
 
-def post_fallback(
-    repo: str, pr_number: str, reviewer: str, comments: list[dict[str, Any]]
+def _post_folded_comment(
+    repo: str,
+    pr_number: str,
+    reviewer: str,
+    marker: str,
+    header_lines: list[str],
+    comments: list[dict[str, Any]],
+    label: str,
 ) -> None:
-    """Fallback: post all issues as a single PR comment.
+    """Post all comment payloads as a single PR comment.
 
-    Uses a marker comment to prevent duplicate fallback posts on reruns.
+    Uses a marker comment to prevent duplicate posts on reruns.
     """
-    marker = f"<!-- inline-fallback-{reviewer} -->"
-
-    # Check for existing fallback comment to avoid duplicates
     check = subprocess.run(
         [
             "gh",
@@ -386,10 +488,10 @@ def post_fallback(
         timeout=GH_TIMEOUT_SEC,
     )
     if check.returncode == 0 and check.stdout.strip() not in ("", "0"):
-        print(f"{reviewer}: fallback comment already exists, skipping")
+        print(f"{reviewer}: {label} comment already exists, skipping")
         return
 
-    lines = [marker, _FALLBACK_HEADER.format(reviewer), ""]
+    lines = [marker, *header_lines, ""]
     for c in comments:
         lines.append(f"- **{c.get('path')}:{c.get('line')}** -- {c.get('body', '')}")
     body = "\n".join(lines)
@@ -411,11 +513,53 @@ def post_fallback(
             timeout=GH_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:
-        print(f"{reviewer}: fallback comment timed out", file=sys.stderr)
+        print(f"{reviewer}: {label} comment timed out", file=sys.stderr)
         sys.exit(1)
     if result.returncode != 0:
-        print(f"{reviewer}: fallback comment failed: {result.stderr}", file=sys.stderr)
+        print(f"{reviewer}: {label} comment failed: {result.stderr}", file=sys.stderr)
         sys.exit(1)
+
+
+def post_fallback(
+    repo: str, pr_number: str, reviewer: str, comments: list[dict[str, Any]]
+) -> None:
+    """Fallback: post all issues as a single PR comment."""
+    _post_folded_comment(
+        repo,
+        pr_number,
+        reviewer,
+        f"<!-- inline-fallback-{reviewer} -->",
+        [_FALLBACK_HEADER.format(reviewer)],
+        comments,
+        "fallback",
+    )
+
+
+def post_cutoff_summary(
+    repo: str,
+    pr_number: str,
+    reviewer: str,
+    round_number: int,
+    comments: list[dict[str, Any]],
+) -> None:
+    """Fold suppressed non-blocking findings into one summary comment.
+
+    The round-scoped marker prevents duplicate summaries on reruns while
+    still allowing one summary per later round.
+    """
+    _post_folded_comment(
+        repo,
+        pr_number,
+        reviewer,
+        _CUTOFF_MARKER.format(reviewer=reviewer, round=round_number),
+        [
+            _CUTOFF_HEADER.format(reviewer, round_number),
+            "",
+            _CUTOFF_LEAD.format(round_number),
+        ],
+        comments,
+        "cutoff summary",
+    )
 
 
 def main() -> None:
@@ -470,6 +614,15 @@ def main() -> None:
 
     if not comments:
         print(f"{args.reviewer}: no inline comments to post")
+        return
+
+    cutoff_round = round_cutoff_round(repo, pr_number, issues)
+    if cutoff_round is not None:
+        print(
+            f"{args.reviewer}: round cutoff active (round {cutoff_round}) --"
+            f" folding {len(comments)} finding(s) into a summary comment"
+        )
+        post_cutoff_summary(repo, pr_number, args.reviewer, cutoff_round, comments)
         return
 
     try:
