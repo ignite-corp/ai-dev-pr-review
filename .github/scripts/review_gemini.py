@@ -222,7 +222,7 @@ issue -- only re-raise if the current code has materially changed.
 
 EVIDENCE RULE: Raise a finding ONLY if you can point to the exact line(s) in
 THIS diff that exhibit it. Any existence or correctness claim (e.g., "X does
-not exist", "Y is undefined") MUST quote the diff line(s) that prove it. If a
+not exist", "Y is undefined") MUST quote the diff line(s) where the reference is used. If a
 claim depends on runtime, library, or environment facts you are not certain
 of, downgrade it to "suggestion" or omit it.
 

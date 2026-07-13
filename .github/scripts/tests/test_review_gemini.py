@@ -72,7 +72,7 @@ def test_call_gemini_with_retry_raises_after_exhaustion(monkeypatch):
         review_gemini._call_gemini_with_retry(MockClient(), "m", "c", "cfg")
 
 
-_EVIDENCE_RULE_MARKER = "MUST quote the diff line(s) that prove it"
+_EVIDENCE_RULE_MARKER = "MUST quote the diff line(s) where the reference is used"
 
 
 def test_build_user_prompt_includes_evidence_rule(monkeypatch):
