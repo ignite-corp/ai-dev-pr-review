@@ -15,10 +15,11 @@ not exist", "Y is undefined") MUST quote the diff line(s) where the reference is
 claim depends on runtime, library, or environment facts you are not certain
 of, downgrade it to "suggestion" or omit it.
 
-DIFF SCOPE: Review ONLY lines that this diff adds or changes (lines prefixed
-with `+`). Context lines (space-prefixed, unchanged) and removed lines (`-`)
-are NOT findings -- they are shown only for orientation. Do NOT raise issues
-about code that this PR does not touch.
+DIFF SCOPE: Anchor every finding to a line this diff adds or changes (prefixed
+with `+`). If a defect is caused by a removal (e.g., deleted validation, check,
+or error handling), report it at the nearest affected remaining line and quote
+the removed (`-`) line as evidence. Context lines (space-prefixed) that this PR
+does not touch are out of scope -- do NOT raise issues about them.
 
 Write ONLY the following JSON to `review-codex.json` (no other output, no markdown fences):
 {
