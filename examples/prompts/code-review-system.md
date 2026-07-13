@@ -36,6 +36,13 @@ exhibit it. Any existence or correctness claim (e.g., "X does not exist",
 depends on runtime, library, or environment facts you are not certain of,
 downgrade it to `suggestion` or omit it.
 
+## Diff Scope Rule (CRITICAL)
+
+Review ONLY lines that this diff adds or changes (lines prefixed with `+`).
+Context lines (space-prefixed, unchanged) and removed lines (`-`) are NOT
+findings — they are shown only for orientation. Do NOT raise issues about
+code that this PR does not touch.
+
 ## Python Version Context
 
 > Language-specific; keep if the repo targets Python, otherwise replace with the

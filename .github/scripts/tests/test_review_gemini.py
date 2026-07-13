@@ -96,6 +96,29 @@ def test_evidence_rule_present_on_all_prompt_surfaces():
         assert _EVIDENCE_RULE_MARKER in surface.read_text(encoding="utf-8"), surface
 
 
+_DIFF_SCOPE_MARKER = "they are shown only for orientation"
+
+
+def test_build_user_prompt_includes_diff_scope_rule(monkeypatch):
+    """AT-1528 prompt contract: findings must target added/changed lines only."""
+    monkeypatch.delenv("EXISTING_COMMENTS", raising=False)
+    prompt = review_gemini.build_user_prompt("dummy diff")
+    assert "DIFF SCOPE:" in prompt
+    assert _DIFF_SCOPE_MARKER in prompt
+
+
+def test_diff_scope_rule_present_on_all_prompt_surfaces():
+    """AT-1528: the diff-scope rule must sit beside the evidence rule on every surface."""
+    repo_root = SCRIPT_DIR.parent.parent
+    surfaces = [
+        SCRIPT_DIR / "review_prompt.md",
+        repo_root / ".github" / "workflows" / "base-ai-review-single.yml",
+        repo_root / "examples" / "prompts" / "code-review-system.md",
+    ]
+    for surface in surfaces:
+        assert _DIFF_SCOPE_MARKER in surface.read_text(encoding="utf-8"), surface
+
+
 def test_existing_threads_prefix_caps_each_body(monkeypatch):
     """Per-body cap must match the Claude/Codex jq truncation (200 chars)."""
     long_body = "x" * 300
