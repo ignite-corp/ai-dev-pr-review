@@ -15,6 +15,9 @@ Dedup strategy (fuzzy):
      >= _JACCARD_THRESHOLD when within DEDUP_LINE_WINDOW lines. This
      survives both force-push line shifts and small wording changes
      (paraphrases, added punctuation, reworded suggestions).
+  4. New issues are also checked against the CURRENT batch (same
+     _is_duplicate semantics), so one reviewer emitting the same finding
+     twice in a round posts once -- at the highest severity seen.
 
 Issues outside the diff range are not posted -- they appear in aggregate summary.
 """
@@ -65,6 +68,13 @@ _DEFAULT_STRONG_JACCARD = 0.8
 DEDUP_STRONG_JACCARD = float(
     os.environ.get("DEDUP_STRONG_JACCARD", _DEFAULT_STRONG_JACCARD)
 )
+
+# Severity precedence for batch-internal dedup (higher rank wins when the
+# same finding is emitted at two severities in one round). Order matches
+# the review-schema severity enum.
+_SEVERITY_RANK: dict[str, int] = {
+    sev: rank for rank, sev in enumerate(("suggestion", "minor", "major", "critical"))
+}
 
 # Pre-compiled patterns for _normalize_body
 _ICON_RE = re.compile("[" + "".join(SEVERITY_ICONS.values()) + "*]")
@@ -237,9 +247,17 @@ def build_comments(
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Filter issues and build comment payloads.
 
+    Besides deduping against existing threads, each issue is checked
+    against the comments already accepted in this batch (same
+    ``_is_duplicate`` semantics): a batch-internal duplicate replaces the
+    earlier comment when its severity is higher and is skipped otherwise.
+
     Returns (comments, no_location, out_of_range).
     """
     comments: list[dict[str, Any]] = []
+    # Dedup-shaped mirror of `comments` (path/line/normalised body plus
+    # severity) so batch entries can feed _is_duplicate directly.
+    batch_entries: list[dict[str, Any]] = []
     no_location = 0
     out_of_range = 0
 
@@ -263,13 +281,47 @@ def build_comments(
             continue
 
         sev = issue.get("severity", "suggestion")
+        dup_idx = next(
+            (
+                i
+                for i, entry in enumerate(batch_entries)
+                if _is_duplicate(file_path, desc, [entry], line=line_num)
+            ),
+            None,
+        )
+        if dup_idx is not None and _SEVERITY_RANK.get(sev, 0) <= _SEVERITY_RANK.get(
+            batch_entries[dup_idx]["severity"], 0
+        ):
+            print(f"{reviewer}: skip {file_path}:{line_num} (duplicate in batch)")
+            continue
+
         icon = SEVERITY_ICONS.get(sev, "*")
         body = f"{icon} **{sev}** ({reviewer}): {desc}"
         if issue.get("suggestion"):
             body += f"\n\n> {SEVERITY_ICONS['suggestion']} {issue['suggestion']}"
-        comments.append(
-            {"path": file_path, "line": line_num, "side": DIFF_SIDE_RIGHT, "body": body}
-        )
+        comment = {
+            "path": file_path,
+            "line": line_num,
+            "side": DIFF_SIDE_RIGHT,
+            "body": body,
+        }
+        entry = {
+            "path": file_path,
+            "line": line_num,
+            "body": _normalize_body(desc or ""),
+            "severity": sev,
+        }
+        if dup_idx is not None:
+            dup = comments[dup_idx]
+            print(
+                f"{reviewer}: replace {dup['path']}:{dup['line']} "
+                f"(higher-severity duplicate in batch)"
+            )
+            comments[dup_idx] = comment
+            batch_entries[dup_idx] = entry
+        else:
+            comments.append(comment)
+            batch_entries.append(entry)
 
     return comments, no_location, out_of_range
 
