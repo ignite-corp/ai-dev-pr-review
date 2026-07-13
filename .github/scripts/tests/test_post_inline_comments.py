@@ -12,12 +12,24 @@ import importlib
 import sys
 from typing import Any
 
-from post_inline_comments import _is_duplicate, _normalize_body
+from post_inline_comments import _is_duplicate, _normalize_body, build_comments
 
 
 def _thread(path: str, body: str, line: int | None = None) -> dict[str, Any]:
     """Build a thread dict matching fetch_existing_threads output."""
     return {"path": path, "line": line, "body": _normalize_body(body)}
+
+
+def _issue(
+    file: str, line: int, description: str, severity: str = "minor"
+) -> dict[str, Any]:
+    """Build an issue dict matching the review JSON schema."""
+    return {
+        "file": file,
+        "line": line,
+        "description": description,
+        "severity": severity,
+    }
 
 
 class TestIsDuplicate:
@@ -151,6 +163,69 @@ class TestIsDuplicate:
             existing,
             line=10,
         )
+
+
+class TestBuildCommentsBatchDedup:
+    """Batch-internal dedup (RC-4): one reviewer emitting the same finding
+    twice in a single round must post once, at the highest severity."""
+
+    VALID_LINES = {"a.py": set(range(1, 100)), "b.py": set(range(1, 100))}
+
+    def test_same_finding_two_severities_keeps_higher_when_higher_first(self) -> None:
+        issues = [
+            _issue("a.py", 10, "Missing input validation on user_id", "major"),
+            _issue("a.py", 12, "Missing input validation on user_id", "minor"),
+        ]
+        comments, no_location, out_of_range = build_comments(
+            issues, self.VALID_LINES, [], "claude"
+        )
+        assert len(comments) == 1
+        assert "**major**" in comments[0]["body"]
+        assert comments[0]["line"] == 10
+        assert (no_location, out_of_range) == (0, 0)
+
+    def test_same_finding_two_severities_replaces_with_higher(self) -> None:
+        issues = [
+            _issue("a.py", 10, "Missing input validation on user_id", "minor"),
+            _issue("a.py", 12, "Missing input validation on user_id", "critical"),
+        ]
+        comments, _, _ = build_comments(issues, self.VALID_LINES, [], "claude")
+        assert len(comments) == 1
+        assert "**critical**" in comments[0]["body"]
+        assert comments[0]["line"] == 12
+
+    def test_equal_severity_duplicate_keeps_first(self) -> None:
+        issues = [
+            _issue("a.py", 10, "Missing input validation on user_id", "minor"),
+            _issue("a.py", 12, "Missing input validation on user_id", "minor"),
+        ]
+        comments, _, _ = build_comments(issues, self.VALID_LINES, [], "claude")
+        assert len(comments) == 1
+        assert comments[0]["line"] == 10
+
+    def test_distinct_findings_both_posted(self) -> None:
+        issues = [
+            _issue("a.py", 10, "Missing input validation on user_id", "major"),
+            _issue("a.py", 50, "Hardcoded credentials in config loader", "major"),
+        ]
+        comments, _, _ = build_comments(issues, self.VALID_LINES, [], "claude")
+        assert len(comments) == 2
+
+    def test_same_finding_different_files_both_posted(self) -> None:
+        issues = [
+            _issue("a.py", 10, "Missing input validation on user_id", "major"),
+            _issue("b.py", 10, "Missing input validation on user_id", "major"),
+        ]
+        comments, _, _ = build_comments(issues, self.VALID_LINES, [], "claude")
+        assert len(comments) == 2
+
+    def test_existing_thread_dedup_still_applies(self) -> None:
+        existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
+        issues = [
+            _issue("a.py", 10, "Missing input validation on user_id", "critical"),
+        ]
+        comments, _, _ = build_comments(issues, self.VALID_LINES, existing, "claude")
+        assert comments == []
 
 
 def test_jaccard_threshold_env_override(monkeypatch: Any) -> None:

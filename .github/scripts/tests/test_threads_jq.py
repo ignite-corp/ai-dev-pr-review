@@ -115,3 +115,37 @@ class TestThreadsJq:
         ]
         output = _run_threads_jq(nodes)
         assert output[0]["body"] == "x" * 500 + "...(truncated)"
+
+    def test_duplicate_path_body_entries_collapse_to_one(self) -> None:
+        # The same finding repeated across rounds must occupy one slot, not
+        # three -- normalisation ignores case and punctuation differences.
+        nodes = [
+            _node("claude", "a.py", 10, "Missing check.", resolved=False, outdated=True),
+            _node("claude", "a.py", 12, "missing check", resolved=False, outdated=False),
+            _node("codex", "a.py", 14, "Missing  check!", resolved=False, outdated=False),
+        ]
+        output = _run_threads_jq(nodes)
+        assert len(output) == 1
+
+    def test_unresolved_duplicate_survives_resolved_copy(self) -> None:
+        # When a resolved and an unresolved copy of the same finding collide,
+        # the unresolved entry must be the one kept.
+        nodes = [
+            _node("claude", "a.py", 10, "missing check", resolved=True, outdated=True),
+            _node("codex", "a.py", 12, "missing check", resolved=False, outdated=False),
+        ]
+        output = _run_threads_jq(nodes)
+        assert len(output) == 1
+        assert output[0]["status"] == "unresolved"
+        assert output[0]["author"] == "codex"
+
+    def test_distinct_findings_are_not_deduped(self) -> None:
+        # Same body on different paths and different bodies on the same path
+        # are distinct findings and must all survive.
+        nodes = [
+            _node("claude", "a.py", 10, "missing check", resolved=False, outdated=False),
+            _node("claude", "b.py", 10, "missing check", resolved=False, outdated=False),
+            _node("claude", "a.py", 20, "other finding", resolved=False, outdated=False),
+        ]
+        output = _run_threads_jq(nodes)
+        assert len(output) == 3

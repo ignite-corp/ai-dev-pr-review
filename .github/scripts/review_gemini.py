@@ -150,13 +150,26 @@ def _load_schema() -> str:
 
 
 _MAX_EXISTING_THREADS = 50
+# Per-body cap matching the Claude/Codex jq truncation in
+# base-ai-review-single.yml so every reviewer sees the same
+# token budget per thread.
+_MAX_THREAD_BODY_CHARS = 200
+
+
+def _cap_body(thread: dict[str, object]) -> dict[str, object]:
+    """Truncate a thread's body to _MAX_THREAD_BODY_CHARS."""
+    body = thread.get("body")
+    if isinstance(body, str) and len(body) > _MAX_THREAD_BODY_CHARS:
+        return {**thread, "body": body[:_MAX_THREAD_BODY_CHARS] + "..."}
+    return thread
 
 
 def _existing_threads_prefix() -> str:
     """Build a prompt prefix from EXISTING_COMMENTS env var if present.
 
-    Truncates to the first MAX_EXISTING_THREADS entries to avoid blowing up
-    reviewer context when the artifact is large.
+    Truncates to the first MAX_EXISTING_THREADS entries (and each body to
+    _MAX_THREAD_BODY_CHARS) to avoid blowing up reviewer context when the
+    artifact is large.
     """
     raw = os.environ.get("EXISTING_COMMENTS", "").strip()
     thread_count = os.environ.get("THREAD_COUNT", "0")
@@ -169,7 +182,7 @@ def _existing_threads_prefix() -> str:
         threads = cast(list[dict[str, object]], parsed)
         if len(threads) == 0:
             return ""
-        truncated = threads[:_MAX_EXISTING_THREADS]
+        truncated = [_cap_body(t) for t in threads[:_MAX_EXISTING_THREADS]]
         suffix = " (truncated)" if len(threads) > _MAX_EXISTING_THREADS else ""
         formatted = json.dumps(truncated, ensure_ascii=False)
         return (

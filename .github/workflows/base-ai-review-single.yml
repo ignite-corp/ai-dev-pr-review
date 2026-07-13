@@ -307,7 +307,18 @@ jobs:
           fi
           # Inject unresolved review threads so Codex avoids re-raising prior findings
           if [ -n "$EXISTING_COMMENTS" ]; then
-            TRUNCATED=$(echo "$EXISTING_COMMENTS" | jq 'if length > 50 then .[:50] else . end' )
+            # Cap list to 50 items AND each body to 200 chars, matching the
+            # Claude block above and review_gemini.py:_existing_threads_prefix,
+            # so every reviewer sees the same token budget per thread.
+            TRUNCATED=$(echo "$EXISTING_COMMENTS" | jq '
+              (if length > 50 then .[:50] else . end)
+              | map(
+                  if (.body | type) == "string" and (.body | length) > 200
+                  then .body |= (.[:200] + "...")
+                  else .
+                  end
+                )
+            ')
             SUFFIX=$(echo "$EXISTING_COMMENTS" | jq -r 'if length > 50 then " (truncated)" else "" end')
             {
               echo "## Existing review threads (${THREAD_COUNT} thread(s)${SUFFIX})"
