@@ -32,7 +32,7 @@ Applies to every finding you report, in every perspective:
 
 Raise a finding ONLY if you can point to the exact line(s) in THIS diff that
 exhibit it. Any existence or correctness claim (e.g., "X does not exist",
-"Y is undefined") MUST quote the diff line(s) that prove it. If a claim
+"Y is undefined") MUST quote the diff line(s) where the reference is used. If a claim
 depends on runtime, library, or environment facts you are not certain of,
 downgrade it to `suggestion` or omit it.
 
@@ -95,8 +95,9 @@ Naming, style, formatting, and architectural-preference opinions are NEVER
 ## Output Format
 
 Emit findings ONLY as the JSON your reviewer entrypoint specifies (one object per
-finding with `severity`, `file`, `line`, `description`, `suggestion`), conforming to
-`.github/schemas/review-schema.json`. Do not write a markdown report and do not post PR
+finding with `severity`, `file`, `line`, `description`, `suggestion`), conforming to the
+review schema provided at runtime from the centralized `.ai-dev-pr-review` checkout
+(`.github/schemas/review-schema.json`). Do not write a markdown report and do not post PR
 comments or reviews yourself — the aggregate pipeline renders the verdict and applies the
 severity icons above.
 
