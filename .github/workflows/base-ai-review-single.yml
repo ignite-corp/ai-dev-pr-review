@@ -178,6 +178,11 @@ jobs:
             echo "not exist\", \"Y is undefined\") MUST quote the diff line(s) where the reference is used. If a"
             echo "claim depends on runtime, library, or environment facts you are not certain"
             echo "of, downgrade it to \"suggestion\" or omit it."
+            echo ""
+            echo "DIFF SCOPE: Review ONLY lines that this diff adds or changes (lines prefixed"
+            echo "with \"+\"). Context lines (space-prefixed, unchanged) and removed lines (\"-\")"
+            echo "are NOT findings -- they are shown only for orientation. Do NOT raise issues"
+            echo "about code that this PR does not touch."
           } >> "$PROMPT_FILE"
           {
             echo "CLAUDE_PROMPT<<CLAUDE_PROMPT_EOF"

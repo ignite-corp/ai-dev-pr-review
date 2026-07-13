@@ -239,6 +239,11 @@ not exist", "Y is undefined") MUST quote the diff line(s) where the reference is
 claim depends on runtime, library, or environment facts you are not certain
 of, downgrade it to "suggestion" or omit it.
 
+DIFF SCOPE: Review ONLY lines that this diff adds or changes (lines prefixed
+with `+`). Context lines (space-prefixed, unchanged) and removed lines (`-`)
+are NOT findings -- they are shown only for orientation. Do NOT raise issues
+about code that this PR does not touch.
+
 Respond ONLY with a valid JSON object -- no markdown fences, no explanation.
 
 The JSON schema is defined in .github/schemas/review-schema.json:
