@@ -20,3 +20,16 @@
 # is about to re-raise. Unresolved threads sort first so the downstream
 # 50-item prompt cap never crowds them out.
 | sort_by(.status != "unresolved")
+# Exact-match dedup on (path, normalized body): the same finding repeated
+# across review rounds otherwise consumes prompt-cap slots that could carry
+# distinct findings. Unresolved entries sort first, so keeping the first
+# occurrence preserves unresolved precedence when duplicates collide.
+| reduce .[] as $t ({seen: {}, out: []};
+    ((($t.path // "") + "\u001f"
+      + (($t.body // "") | ascii_downcase | [scan("\\w+")] | join(" "))))
+    as $key
+    | if .seen[$key] then .
+      else {seen: (.seen + {($key): true}), out: (.out + [$t])}
+      end
+  )
+| .out
