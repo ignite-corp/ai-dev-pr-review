@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -93,6 +94,23 @@ def test_evidence_rule_present_on_all_prompt_surfaces():
     ]
     for surface in surfaces:
         assert _EVIDENCE_RULE_MARKER in surface.read_text(encoding="utf-8"), surface
+
+
+def test_existing_threads_prefix_caps_each_body(monkeypatch):
+    """Per-body cap must match the Claude/Codex jq truncation (200 chars)."""
+    long_body = "x" * 300
+    short_body = "y" * 50
+    threads = [
+        {"author": "claude", "path": "a.py", "line": 1, "status": "unresolved", "body": long_body},
+        {"author": "codex", "path": "b.py", "line": 2, "status": "resolved", "body": short_body},
+    ]
+    monkeypatch.setenv("EXISTING_COMMENTS", json.dumps(threads))
+    monkeypatch.setenv("THREAD_COUNT", "2")
+    prefix = review_gemini._existing_threads_prefix()
+    capped = "x" * review_gemini._MAX_THREAD_BODY_CHARS + "..."
+    assert capped in prefix
+    assert long_body not in prefix
+    assert short_body in prefix
 
 
 def test_load_files_returns_empty_when_inputs_missing(tmp_path, monkeypatch):
