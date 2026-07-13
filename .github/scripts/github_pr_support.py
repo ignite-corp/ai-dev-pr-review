@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -11,6 +12,22 @@ from typing import Any
 REVIEWER_NAMES: tuple[str, ...] = ("claude", "codex", "gemini")
 GH_TIMEOUT_SEC = 60
 _DEFAULT_PAGE_SIZE = 50
+
+# Marker embedded in every aggregate verdict post (PR review or comment).
+# Shared so post_inline_comments can count completed review rounds by
+# looking for the exact same string the aggregate script emits.
+REVIEW_MARKER = "<!-- multi-llm-review -->"
+
+
+def int_env(name: str, default: int) -> int:
+    """Read an integer env var, falling back to default on missing/invalid."""
+    raw = os.environ.get(name, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"Invalid {name}={raw!r}, using default {default}", file=sys.stderr)
+        return default
+
 
 SEVERITY_ICONS: dict[str, str] = {
     "critical": "!",

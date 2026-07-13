@@ -21,10 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from github_pr_support import (
+    REVIEW_MARKER,
     REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     fetch_paginated_nodes,
+    int_env,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,19 +38,9 @@ REVIEWERS: dict[str, str] = {name: f"review-{name}.json" for name in REVIEWER_NA
 DESC_TRUNCATE_LEN = 80
 ERROR_TRUNCATE_LEN = 60
 MIN_REVIEWERS_FOR_VERDICT = 2
-_REVIEW_MARKER = "<!-- multi-llm-review -->"
 _DISMISS_MESSAGE = "Superseded by new review"
 _REVIEW_MODE_SEQUENTIAL = "sequential"
 _REVIEW_MODE_PARALLEL = "parallel"
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        return int(raw)
-    except ValueError:
-        print(f"Invalid {name}={raw!r}, using default {default}", file=sys.stderr)
-        return default
 
 
 def _is_comment_only() -> bool:
@@ -68,11 +60,11 @@ def _resolve_thresholds(
     """
     if is_dependabot:
         return (
-            _int_env("DEPENDABOT_CRITICAL_THRESHOLD", 2),
+            int_env("DEPENDABOT_CRITICAL_THRESHOLD", 2),
             float(os.environ.get("DEPENDABOT_MAJOR_CONSENSUS_OVERLAP", "0.5")),
         )
     return (
-        _int_env("CRITICAL_THRESHOLD", 1),
+        int_env("CRITICAL_THRESHOLD", 1),
         float(os.environ.get("MAJOR_CONSENSUS_OVERLAP", "0.3")),
     )
 
@@ -81,7 +73,7 @@ CRITICAL_THRESHOLD, MAJOR_CONSENSUS_OVERLAP = _resolve_thresholds(
     _PR_AUTHOR == "dependabot[bot]"
 )
 
-MAJOR_CONSENSUS_MIN = _int_env("MAJOR_CONSENSUS_MIN", 2)
+MAJOR_CONSENSUS_MIN = int_env("MAJOR_CONSENSUS_MIN", 2)
 BOT_LOGIN = os.environ.get("BOT_LOGIN", "github-actions[bot]")
 
 # Map job conclusion -> human-readable missing-verdict reason.
@@ -484,7 +476,7 @@ def format_summary(
     reason_suffix = f" ({', '.join(missing_notes)})" if missing_notes else ""
 
     lines = [
-        _REVIEW_MARKER,
+        REVIEW_MARKER,
         "## [bot] Multi-LLM Review Summary",
         "",
         f"**Result: {icon} {label}** -- {reason}{reason_suffix}",
@@ -633,7 +625,7 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         if (
             node.get("author", {}).get("login") == BOT_LOGIN
             and not node.get("isMinimized")
-            and _REVIEW_MARKER in node.get("body", "")
+            and REVIEW_MARKER in node.get("body", "")
         ):
             _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
 
@@ -648,7 +640,7 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         if (
             node.get("author", {}).get("login") == BOT_LOGIN
             and node.get("state") == "CHANGES_REQUESTED"
-            and _REVIEW_MARKER in node.get("body", "")
+            and REVIEW_MARKER in node.get("body", "")
         ):
             _run_gql_mutation(_DISMISS_QUERY, node["id"], "dismiss")
             _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
