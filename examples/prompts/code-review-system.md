@@ -38,10 +38,11 @@ downgrade it to `suggestion` or omit it.
 
 ## Diff Scope Rule (CRITICAL)
 
-Review ONLY lines that this diff adds or changes (lines prefixed with `+`).
-Context lines (space-prefixed, unchanged) and removed lines (`-`) are NOT
-findings — they are shown only for orientation. Do NOT raise issues about
-code that this PR does not touch.
+Anchor every finding to a line this diff adds or changes (prefixed with `+`).
+If a defect is caused by a removal (e.g., deleted validation, check, or error
+handling), report it at the nearest affected remaining line and quote the
+removed (`-`) line as evidence. Context lines (space-prefixed) that this PR
+does not touch are out of scope — do NOT raise issues about them.
 
 ## Python Version Context
 
