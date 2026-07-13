@@ -72,6 +72,29 @@ def test_call_gemini_with_retry_raises_after_exhaustion(monkeypatch):
         review_gemini._call_gemini_with_retry(MockClient(), "m", "c", "cfg")
 
 
+_EVIDENCE_RULE_MARKER = "MUST quote the diff line(s) that prove it"
+
+
+def test_build_user_prompt_includes_evidence_rule(monkeypatch):
+    """AT-1526 prompt contract: findings require diff-line evidence."""
+    monkeypatch.delenv("EXISTING_COMMENTS", raising=False)
+    prompt = review_gemini.build_user_prompt("dummy diff")
+    assert "EVIDENCE RULE:" in prompt
+    assert _EVIDENCE_RULE_MARKER in prompt
+
+
+def test_evidence_rule_present_on_all_prompt_surfaces():
+    """AT-1526: the diff-citation rule must exist on every prompt surface."""
+    repo_root = SCRIPT_DIR.parent.parent
+    surfaces = [
+        SCRIPT_DIR / "review_prompt.md",
+        repo_root / ".github" / "workflows" / "base-ai-review-single.yml",
+        repo_root / "examples" / "prompts" / "code-review-system.md",
+    ]
+    for surface in surfaces:
+        assert _EVIDENCE_RULE_MARKER in surface.read_text(encoding="utf-8"), surface
+
+
 def test_load_files_returns_empty_when_inputs_missing(tmp_path, monkeypatch):
     """load_files() must not raise when context.md / pr.diff are absent.
 

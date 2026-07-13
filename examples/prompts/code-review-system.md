@@ -28,6 +28,14 @@ Applies to every finding you report, in every perspective:
   low-value findings to seem thorough, and do not add positive-only notes (the output
   carries issues only).
 
+## Diff Evidence Rule (CRITICAL)
+
+Raise a finding ONLY if you can point to the exact line(s) in THIS diff that
+exhibit it. Any existence or correctness claim (e.g., "X does not exist",
+"Y is undefined") MUST quote the diff line(s) that prove it. If a claim
+depends on runtime, library, or environment facts you are not certain of,
+downgrade it to `suggestion` or omit it.
+
 ## Python Version Context
 
 > Language-specific; keep if the repo targets Python, otherwise replace with the
@@ -73,12 +81,16 @@ ruff 0.11.0+ normalizes the parenthesized form to the PEP 758 unparenthesized fo
 
 ## Severity Levels
 
-| Level | Icon | Meaning | Action Required |
-|-------|------|---------|-----------------|
-| critical | `!` | Blocks merge. Bug, security vulnerability, or architecture violation. | Must fix before merge |
-| major | `+` | Significant issue. Wrong pattern, missing validation, poor naming. | Should fix in this PR |
-| minor | `-` | Minor improvement. Style, redundancy, minor optimization. | Fix recommended |
-| suggestion | `?` | Optional enhancement. Alternative approach, documentation. | Consider for future |
+| Level | Icon | Meaning | Example | Action Required |
+|-------|------|---------|---------|-----------------|
+| critical | `!` | Blocks merge. Confirmed bug, security vulnerability, or architecture violation. | "JWT check removed from a protected endpoint" | Must fix before merge |
+| major | `+` | Incorrect behavior, missing validation with concrete impact, or resource leak. | "SQL built via f-string from user input" | Should fix in this PR |
+| minor | `-` | Low-impact defect: redundancy, minor optimization, violation of a documented convention. | "duplicates a constant already defined in config.py" | Fix recommended |
+| suggestion | `?` | Optional enhancement: naming, style, formatting, architectural preference, documentation. | "prefer dataclass over dict for this payload" | Consider for future |
+
+Naming, style, formatting, and architectural-preference opinions are NEVER
+`major` — classify them as `minor` (documented-convention violations) or
+`suggestion` (everything else), or omit them.
 
 ## Output Format
 
