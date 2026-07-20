@@ -25,6 +25,15 @@ inputs:
     description: --allowedTools value
     required: false
     default: 'Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)'
+  api_timeout_ms:
+    description: >-
+      Timeout in milliseconds applied to the Claude CLI's API request cap
+      (API_TIMEOUT_MS) and stream idle watchdog (CLAUDE_STREAM_IDLE_TIMEOUT_MS).
+      The CLI's byte-level watchdog defaults to 180000 ms on direct Anthropic
+      API connections and aborts slow billed-API reviews; 600000 matches the
+      caller job's 10-minute budget.
+    required: false
+    default: '600000'
   prompt:
     description: Review prompt
     required: true
@@ -41,6 +50,16 @@ runs:
       # execution_file output available for callers' fallback extraction.
       continue-on-error: true
       uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464  # v1.0.159
+      # Step-level env propagates into the inner composite's steps and reaches
+      # the Claude CLI subprocess via the action's process.env passthrough
+      # (base-action/src/parse-sdk-options.ts spreads process.env; the action
+      # documents this pattern for MCP_TIMEOUT). API_TIMEOUT_MS is the
+      # documented per-request cap; CLAUDE_STREAM_IDLE_TIMEOUT_MS raises the
+      # CLI's stream idle watchdogs, whose byte-level default of 180 s on
+      # direct API connections aborted billed-API reviews (AT-1601).
+      env:
+        API_TIMEOUT_MS: ${{ inputs.api_timeout_ms }}
+        CLAUDE_STREAM_IDLE_TIMEOUT_MS: ${{ inputs.api_timeout_ms }}
       with:
         github_token: ${{ inputs.github_token }}
         # Prefer OAuth (subscription); pass the billed API key only when no
