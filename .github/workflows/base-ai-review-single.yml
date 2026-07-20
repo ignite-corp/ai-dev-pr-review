@@ -19,6 +19,8 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
+      REVIEWER_APP_PRIVATE_KEY:
+        required: false
     outputs:
       early_exit:
         description: "Whether the reviewer recommends stopping further reviews"
@@ -223,6 +225,57 @@ jobs:
             exit 0
           fi
           python3 .ai-dev-pr-review/.github/scripts/extract_claude_review.py "$EXEC_FILE"
+
+      # --- Claude: auto auth switch on usage-limit events (AT-1606) ---
+      # When the review hits a subscription (OAuth) usage-limit error, set
+      # the ignite-corp org vars CLAUDE_FORCE_API=true and
+      # CLAUDE_FORCE_API_UNTIL=<reset epoch> so subsequent reviews use the
+      # billed ANTHROPIC_API_KEY path; claude-auth-restore.yml (hourly cron
+      # in the base repo) deletes both vars once the epoch passes, reverting
+      # to the subscription. Fail-safe: skipped silently when the App key is
+      # not forwarded, and the script itself never fails the review job.
+      # Secrets cannot be read in an `if:` condition, so the key's presence
+      # is surfaced via a step output (mirrors base-ai-review-aggregate.yml).
+      - name: Check reviewer App key present (auth switch)
+        id: auth_key
+        if: inputs.reviewer == 'claude' && always()
+        env:
+          REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$REVIEWER_APP_PRIVATE_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint corp App token (auth switch)
+        id: auth_token_corp
+        if: >-
+          inputs.reviewer == 'claude' && always() &&
+          vars.REVIEWER_APP_ID != '' &&
+          steps.auth_key.outputs.present == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+
+      - name: Switch Claude auth on usage limit
+        if: >-
+          inputs.reviewer == 'claude' && always() &&
+          steps.auth_token_corp.outputs.token != ''
+        continue-on-error: true
+        env:
+          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          GH_TOKEN: ${{ steps.auth_token_corp.outputs.token }}
+        run: |
+          SCRIPT=".ai-dev-pr-review/.github/scripts/switch_claude_auth.py"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "switch_claude_auth.py not in pinned checkout, skipping"
+            exit 0
+          fi
+          python3 "$SCRIPT" detect-and-switch
 
       # --- Gemini ---
       - name: Setup Python (Gemini)
