@@ -80,6 +80,6 @@ runs:
         # non-'true'/unset force_api leaves both lines at today's behavior
         # (feature-off invariant): OAuth when present, API only as the fallback.
         anthropic_api_key: ${{ (inputs.claude_code_oauth_token == '' || inputs.force_api == 'true') && inputs.anthropic_api_key || '' }}
-        claude_code_oauth_token: ${{ inputs.force_api == 'true' && '' || inputs.claude_code_oauth_token }}
+        claude_code_oauth_token: ${{ inputs.force_api != 'true' && inputs.claude_code_oauth_token || '' }}
         claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed_tools }}"'
         prompt: ${{ inputs.prompt }}
