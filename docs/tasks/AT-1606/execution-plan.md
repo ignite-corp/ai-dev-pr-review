@@ -35,6 +35,24 @@ claude_code_oauth_token: ${{ inputs.force_api == 'true' && '' || inputs.claude_c
 
 The second line is the symmetric half: when `force_api == 'true'`, the OAuth token is blanked so the CLI does not prefer it (per AT-1499, `ANTHROPIC_API_KEY` takes CLI precedence only when OAuth is absent). Passing the API key alone is not sufficient if OAuth is still passed — both must be handled.
 
+Caller-side input (the gate is collapsed to a boolean string in the caller, so the composite only ever sees `'true'`/`'false'`):
+
+```yaml
+force_api: ${{ vars.CLAUDE_FORCE_API == 'true' }}
+```
+
+### 0-1a. INVARIANT — var-absent = no-op / backward-compatible (hard constraint)
+
+**The feature MUST behave exactly like today when `CLAUDE_FORCE_API` does not exist. Zero behavior change until the var is explicitly set to the literal `'true'`.**
+
+- GitHub Actions resolves an **unset** `vars.CLAUDE_FORCE_API` to the empty string `''` (not an error). So `vars.CLAUDE_FORCE_API == 'true'` is `false` when the var is unset, empty, or any non-`'true'` value. Only the literal string `'true'` flips to the API path. The caller expression above therefore yields `force_api: 'false'` for every state except an explicit `'true'`.
+- **No seeding required.** Normal/off repos simply never have the var. The detection automation (Phase 2) CREATES `CLAUDE_FORCE_API=true` only on a real limit event; the revert cron (Phase 3) DELETES it. **Steady state for a healthy repo = both `CLAUDE_FORCE_API` and `CLAUDE_FORCE_API_UNTIL` absent.**
+- **Nothing declares the var.** The composite has an input default (`force_api: 'false'`); the caller passes a comparison that is `false` when the var is absent. No `env:` block, no workflow-level `vars:` declaration, and no repo-var pre-creation is required anywhere. A consumer that never opts in, never grants Variables:write, and never runs the detection post-step sees byte-for-byte today's behavior.
+- The existing manual empty-`CLAUDE_CODE_OAUTH_TOKEN` toggle is orthogonal and unchanged: `inputs.claude_code_oauth_token == ''` still forces the API path independently of `force_api`. The two OR-ed terms never conflict.
+- `CLAUDE_FORCE_API_UNTIL` follows the same rule: absent is the normal state; the cron only acts on repos where it exists and has a passed epoch.
+
+This invariant is a Done-criterion and has a dedicated test (see Test strategy: "unset-var keeps OAuth-preferred behavior").
+
 ### 0-2. Callers of the composite
 
 - Only in-repo caller: `base-ai-review-single.yml:194-205` (`uses: ./.ai-dev-pr-review/.github/actions/claude-review`). `ci.yml`, `orchestrator`, and `aggregate` do not call the composite directly.
@@ -81,12 +99,13 @@ Files:
   - Add input `force_api` (`required: false`, `default: 'false'`).
   - Change the auth expression per §0-1 (both the `anthropic_api_key` and `claude_code_oauth_token` lines).
 - `.github/workflows/base-ai-review-single.yml`
-  - In the `Run Claude review` step (`:194-205`) add `force_api: ${{ vars.CLAUDE_FORCE_API || 'false' }}`.
+  - In the `Run Claude review` step (`:194-205`) add `force_api: ${{ vars.CLAUDE_FORCE_API == 'true' }}`. The `== 'true'` comparison collapses unset/empty/any-non-`'true'` var to `'false'` at the caller (per the §0-1a invariant), so the composite only ever receives `'true'`/`'false'`.
 - Tests: an expression-matrix test (unit or a documented actionlint-verified table) covering:
   - OAuth set + `force_api=false` → OAuth (no API key passed).
   - OAuth set + `force_api=true` → API (API key passed, OAuth blanked).
   - OAuth empty (+ any `force_api`) → API (existing empty-secret path, unchanged).
-  - `force_api` unset → OAuth (backward compatible default).
+  - **`CLAUDE_FORCE_API` var UNSET → `force_api` resolves `'false'` → OAuth path, byte-for-byte today's behavior** (the §0-1a invariant; required Done-criterion).
+  - `CLAUDE_FORCE_API` set to a non-`'true'` value (e.g. `'True'`, `'1'`, `'yes'`) → `'false'` → OAuth (only literal `'true'` flips).
 
 Release: bump the `ref:` literal in `single.yml` (and `aggregate` if co-released) to the new tag, tag it, then move `v1` via `move-major-tag.yml`. This activates the input plumbing. Until any caller sets `CLAUDE_FORCE_API=true`, behavior is identical to today.
 
@@ -131,7 +150,7 @@ Rollout: land Phase 1-3 PRs and release; complete the manual grants; observe a r
 
 ## Sequencing (which release activates what)
 
-1. **Release A (Phase 1):** composite `force_api` input + `single.yml` forwards `vars.CLAUDE_FORCE_API`. Safe no-op until a `CLAUDE_FORCE_API=true` var exists anywhere. Ship first so the gate exists before anything writes to it.
+1. **Release A (Phase 1):** composite `force_api` input + `single.yml` forwards `vars.CLAUDE_FORCE_API == 'true'`. Safe no-op until a `CLAUDE_FORCE_API=true` var exists anywhere — an unset var resolves to `force_api: 'false'` (§0-1a invariant), so this release is behavior-identical to today for every consumer. Ship first so the gate exists before anything writes to it.
 2. **Release B (Phase 2 + 3):** detection post-step + `switch_claude_auth.py` + `orchestrator` secret forward + cron. Detection writes `CLAUDE_FORCE_API` only after the App has Variables:write; before the grant, the mint/PATCH fail-safes to a no-op (the review still runs on OAuth). The cron similarly no-ops until the grant + `AUTH_SWITCH_REPOS` exist.
 3. **Manual (Phase 4):** grant Variables:write + create `AUTH_SWITCH_REPOS` + verify `ANTHROPIC_API_KEY` enabled. This is the switch that makes the loop live end-to-end.
 4. **Wrapper release:** add `force_api` + detection post-step to the pilot `wrapper.yml`, released from its own repo pinned to the new upstream tag.
@@ -143,7 +162,7 @@ Rationale for A-before-B: the gate input must exist and be released before any a
 ## Test strategy
 
 - Unit (`.github/scripts/tests/test_switch_claude_auth.py`): `_parse_limit_epoch` cases — `…reached|<epoch>` → epoch; epoch-less variant → `now+5h`; no-limit log → None; multi-message log → last match wins. Follow `test_scale_claude_model.py` / `test_extract_codex_json.py` style.
-- Composite auth-expression matrix (Phase 1 §): four combinations of OAuth-present × `force_api`.
+- Composite auth-expression matrix (Phase 1 §): combinations of OAuth-present × `force_api`, **including the var-unset case as an explicit assertion** — `CLAUDE_FORCE_API` absent → `force_api: 'false'` → OAuth-preferred path unchanged (§0-1a invariant). Also assert a non-`'true'` var value (`'True'`/`'1'`) stays on OAuth.
 - `actionlint` on all changed/new workflows.
 - Index-only logging check: assert no pilot repo name is echoed by the new script/cron (only `entry i/total`), matching `ruleset-sync.yml` / `ruleset-audit.yml`.
 - `DRY_RUN=true` mode logs intended PATCH/DELETE targets (by index) without calling the API.
