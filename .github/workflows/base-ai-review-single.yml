@@ -202,6 +202,10 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-4-6' }}
+          # vars is only readable in the caller, not the composite; collapse it
+          # to 'true'/'false' here so an unset/empty/non-'true' var yields
+          # 'false' -> OAuth path unchanged (AT-1606 feature-off invariant).
+          force_api: ${{ vars.CLAUDE_FORCE_API == 'true' }}
           prompt: ${{ env.CLAUDE_PROMPT }}
 
       - name: Extract Claude review from execution log (fallback)

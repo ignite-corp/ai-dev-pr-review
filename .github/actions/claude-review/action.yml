@@ -17,6 +17,15 @@ inputs:
     description: Claude Code OAuth (subscription) token; preferred when set
     required: false
     default: ''
+  force_api:
+    description: >-
+      When 'true', force the billed Anthropic API path by passing
+      anthropic_api_key and blanking claude_code_oauth_token so the CLI cannot
+      prefer OAuth (AT-1499 precedence). Any non-'true'/unset value keeps the
+      OAuth-preferred behavior (feature-off invariant, AT-1606). The caller
+      collapses vars.CLAUDE_FORCE_API to 'true'/'false' before forwarding it.
+    required: false
+    default: 'false'
   model:
     description: Model passed via --model
     required: false
@@ -65,7 +74,12 @@ runs:
         # Prefer OAuth (subscription); pass the billed API key only when no
         # OAuth token is set. ANTHROPIC_API_KEY otherwise takes CLI precedence
         # and bills the API (docs: code.claude.com/docs/en/authentication).
-        anthropic_api_key: ${{ inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key || '' }}
-        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        # force_api == 'true' additionally forces the billed API path: it passes
+        # the API key AND blanks the OAuth token so the CLI cannot prefer OAuth
+        # (AT-1499), handing the review off to the billed API (AT-1606). Any
+        # non-'true'/unset force_api leaves both lines at today's behavior
+        # (feature-off invariant): OAuth when present, API only as the fallback.
+        anthropic_api_key: ${{ (inputs.claude_code_oauth_token == '' || inputs.force_api == 'true') && inputs.anthropic_api_key || '' }}
+        claude_code_oauth_token: ${{ inputs.force_api == 'true' && '' || inputs.claude_code_oauth_token }}
         claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed_tools }}"'
         prompt: ${{ inputs.prompt }}
