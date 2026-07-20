@@ -1,0 +1,49 @@
+name: claude-auth-restore
+
+# Restore half of the Claude auth auto-switch loop (AT-1606). When a claude
+# review run hits a subscription (OAuth) usage-limit event, its post-step
+# sets the ignite-corp org vars CLAUDE_FORCE_API=true and
+# CLAUDE_FORCE_API_UNTIL=<reset epoch>, forcing subsequent reviews onto the
+# billed ANTHROPIC_API_KEY path. This hourly cron deletes both vars once the
+# epoch has passed, reverting to the subscription. A premature restore
+# (session epoch passed but weekly bucket still exhausted) is self-correcting:
+# the next limited review re-triggers the switch.
+#
+# Scope is a single pair of ignite-corp org vars (no repo-list input, no
+# pilot fan-out -- pilot has no org vars and keeps its manual empty-secret
+# toggle). Logs carry no repo/org identifiers.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-auth-restore
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Mint corp App token
+        id: token_corp
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+
+      - name: Restore Claude auth if due
+        env:
+          GH_TOKEN: ${{ steps.token_corp.outputs.token }}
+        run: python3 .github/scripts/switch_claude_auth.py restore-if-due
