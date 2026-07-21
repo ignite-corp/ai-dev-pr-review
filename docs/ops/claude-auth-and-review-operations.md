@@ -85,6 +85,58 @@ the fleet SHA pin + auth ternary + timeout env. (AT-1602.)
   `dismissal_restriction`) which trips byte-exact audits. Re-sync
   `RULESET_CONFIG` when the audit flags such drift.
 
+## GHA expression pitfall - `A && '' || B` cannot yield empty
+
+The `${{ X && A || B }}` ternary idiom **breaks whenever the value you want to
+select (A) is falsy in GHA** (empty string, `'0'`, `'false'`, `0`). GHA
+evaluates left-to-right: when `A` is falsy, `X && A` is falsy, so `|| B` falls
+through to the right operand and you get `B` instead of `A`.
+
+Real defect (AT-1606, v1.1.4 -> v1.1.5): to blank the OAuth token when forcing
+the billed API, the composite used
+
+```yaml
+claude_code_oauth_token: ${{ inputs.force_api == 'true' && '' || inputs.claude_code_oauth_token }}
+```
+
+This could NEVER blank the token. With `force_api == 'true'`, the expression is
+`true && '' || oauth` -> `'' || oauth` -> `oauth`, because the empty string is
+falsy so `||` falls through. So `force_api=true` returned the non-empty OAuth
+token. A runtime dry-run confirmed the inner `claude-code-action` received
+`claude_code_oauth_token: "***"` (present), not empty.
+
+Fix - **invert the condition so the empty/falsy result lands on the `|| ''`
+side**:
+
+```yaml
+claude_code_oauth_token: ${{ inputs.force_api != 'true' && inputs.claude_code_oauth_token || '' }}
+```
+
+Truth table: `force_api == 'true'` -> `false && oauth` = false -> `false || ''`
+= `''` (blanked); otherwise the OAuth token passes through.
+
+- To select an empty/falsy value on a condition, restructure so the falsy
+  result is the `|| ''` default (invert the condition), or drop the idiom.
+- The auth line `${{ ... && api || '' }}` is safe ONLY because `api` is
+  non-empty when selected - the same bug would bite if that operand could ever
+  be empty.
+- **Meta-lesson**: workflow expression changes that gate credentials/behavior
+  must be verified by a **runtime dry-run**, not by reading the truth table - a
+  hand-derived table missed this defect (the author "verified" it on paper).
+  Dry-run method: set the gate var briefly, dispatch a real review, grep the
+  INNER action's resolved inputs in the job log for the credential value
+  (masked `"***"` = present, `""` = blank), then delete the var.
+
+## Op hazard - release-op hygiene
+
+Complements the merge-then-delete hazard below.
+
+- Pin-bump / release-prep edits are **code changes** - delegate them to a
+  teammate / worktree; don't edit them from the coordinating context.
+- Commit messages must carry **NO AI attribution** - no `Co-Authored-By`, no
+  `Generated with`. If a tooling default injects one, `git commit --amend` to
+  strip it before the PR is reviewed.
+
 ## Op hazard - merge then delete, never chained
 
 NEVER chain `gh pr merge && gh api ...delete-branch`. A piped merge
