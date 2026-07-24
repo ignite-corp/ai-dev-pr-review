@@ -2,11 +2,12 @@ name: ruleset-audit
 
 # Consumer ruleset config lives ONLY in the private org variable RULESET_CONFIG,
 # never in this public repo. This workflow runs in a PUBLIC repo, so its Actions
-# logs are public -- it must NOT print consumer repo names, ruleset IDs, or drift
-# diffs (which contain ruleset bodies). Results are reported by index only;
-# correlate an index to a repo via the private RULESET_CONFIG var. A failing run
-# signals drift/footgun; investigate details privately (re-run the sync, or diff
-# the live ruleset against the var locally).
+# logs are public -- it must NOT print consumer repo names, ruleset IDs, ruleset
+# bodies, or status-check context strings. Results are reported by INDEX only:
+# on drift it names which top-level ruleset fields differ (generic GitHub schema
+# keys) and the required_status_checks count delta -- never the values. Correlate
+# an index to a repo via the private RULESET_CONFIG var, then diff the live
+# ruleset against the var locally. A failing run signals drift/footgun.
 
 on:
   schedule:
@@ -20,6 +21,8 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
       - name: Mint App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -38,6 +41,22 @@ jobs:
             echo "::error::RULESET_CONFIG variable is empty or unset"
             exit 1
           fi
+
+          # PyYAML backs the PR-reachability footgun; degrade gracefully if absent.
+          if python3 -c "import yaml" 2>/dev/null; then
+            have_yaml=1
+          elif python3 -m pip install --quiet --disable-pip-version-check pyyaml 2>/dev/null; then
+            have_yaml=1
+          else
+            have_yaml=0
+            echo "::notice::PR-reachability footgun skipped (PyYAML unavailable)"
+          fi
+
+          # Count required_status_checks entries in a normalized ruleset doc.
+          count_checks() {
+            jq '[.rules[]? | select(.type=="required_status_checks")
+                 | .parameters.required_status_checks[]?] | length' "$1"
+          }
 
           total=$(jq -r 'keys | length' <<< "$RULESET_CONFIG")
           i=0
@@ -59,10 +78,27 @@ jobs:
             if diff -q /tmp/stored.norm.json /tmp/live.norm.json > /dev/null; then
               echo "OK: entry ${i}/${total} matches stored"
             else
-              echo "::error::entry ${i}/${total}: drift detected"
+              # Report WHICH schema fields drifted (keys only -- never the values,
+              # which are private ruleset bodies).
+              drift_fields=""
+              for f in name target enforcement conditions rules bypass_actors; do
+                if ! diff -q \
+                    <(jq -cS --arg f "$f" '.[$f]' /tmp/stored.norm.json) \
+                    <(jq -cS --arg f "$f" '.[$f]' /tmp/live.norm.json) > /dev/null; then
+                  drift_fields="${drift_fields:+$drift_fields, }$f"
+                fi
+              done
+              echo "::error::entry ${i}/${total}: drift in [${drift_fields}]"
+              sc_stored=$(count_checks /tmp/stored.norm.json)
+              sc_live=$(count_checks /tmp/live.norm.json)
+              if [ "$sc_stored" != "$sc_live" ]; then
+                echo "  required_status_checks: stored=${sc_stored} live=${sc_live}"
+              fi
               drifted=1
             fi
 
+            # Footgun 1: a required check missing integration_id can be satisfied
+            # by any app, so it is spoofable.
             footgun_hits=$(jq -r '
               .rules[]? | select(.type=="required_status_checks")
               | .parameters.required_status_checks[]
@@ -72,6 +108,28 @@ jobs:
             if [ -n "$footgun_hits" ]; then
               echo "[FOOTGUN] entry ${i}/${total}: required status check(s) missing integration_id"
               footgun=1
+            fi
+
+            # Footgun 2: a required check whose workflow never triggers on a PR is
+            # a permanent merge gate -- it can never report on the PR that needs it.
+            if [ "$have_yaml" -eq 1 ]; then
+              wfdir="/tmp/wf-${i}"
+              rm -rf "$wfdir"; mkdir -p "$wfdir"
+              if gh api "repos/ignite-corp/${name}/contents/.github/workflows" \
+                   --jq '.[] | select(.name | test("\\.ya?ml$")) | .name' > /tmp/wflist 2>/dev/null; then
+                while IFS= read -r wf; do
+                  gh api "repos/ignite-corp/${name}/contents/.github/workflows/${wf}" \
+                    --jq '.content' 2>/dev/null | base64 -d > "${wfdir}/${wf}" 2>/dev/null || true
+                done < /tmp/wflist
+                unreach=$(jq -r '
+                  .rules[]? | select(.type=="required_status_checks")
+                  | .parameters.required_status_checks[].context
+                ' /tmp/live.json | python3 "${GITHUB_WORKSPACE}/.github/scripts/pr_reachable_checks.py" "$wfdir")
+                if [ "${unreach:-0}" -gt 0 ]; then
+                  echo "[FOOTGUN] entry ${i}/${total}: ${unreach} required check(s) not reachable on pull_request events"
+                  footgun=1
+                fi
+              fi
             fi
           done < <(jq -r 'keys[]' <<< "$RULESET_CONFIG")
 
