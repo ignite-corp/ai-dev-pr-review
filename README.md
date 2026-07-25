@@ -301,7 +301,7 @@ If the repo already has a `.claude/settings.json`, merge these two keys into it 
 
 ### Org-wide auto-update (admins)
 
-Options A and A2 still leave third-party marketplace auto-update OFF by default, so each user has to enable it once (see the per-user toggle in Option A). An org admin can make auto-update automatic for the whole fleet - with no per-user toggle - and force-enable the plugin org-wide through **enterprise-managed settings** (the org-deployed `managed-settings.json`). The complete block:
+Options A and A2 still leave third-party marketplace auto-update OFF by default, so each user has to enable it once (see the per-user toggle in Option A). An org admin can make auto-update automatic for the whole fleet - with no per-user toggle - and force-enable the plugin org-wide through **enterprise-managed settings** (the org-deployed `managed-settings.json`). The canonical deployable file is [`examples/managed-settings.json`](examples/managed-settings.json) — fetch it directly in MDM/configuration-management scripts instead of copy-pasting. The complete block:
 
 ```json
 {
@@ -322,7 +322,7 @@ What each key does:
 
 - `autoUpdate: true` makes upstream updates arrive automatically for the whole fleet with no per-user toggle. It is only honored on an `extraKnownMarketplaces.<name>` entry in managed settings; it is **silently ignored** in a project-scoped `.claude/settings.json` (the Option A2 file), so do NOT add it there.
 - `enabledPlugins` force-enables the plugin org-wide. It does NOT auto-install: the first install still happens on folder-trust via the committed project `.claude/settings.json` (Option A2), so this key does not by itself eliminate that step.
-- `strictKnownMarketplaces` is an allowlist of the marketplaces users may add, restricting plugin sources to the entries listed here.
+- `strictKnownMarketplaces` is an allowlist of the marketplaces users may add, restricting plugin sources to the entries listed here. **Before deploying, inventory every marketplace the org already uses and add each one to this list** — any marketplace not listed becomes un-addable for all users the moment the managed settings land.
 
 The folder-trust prompt cannot be pre-approved or suppressed by any of these keys - trust pre-approval is not a supported managed setting (see the Option A2 caveat above).
 
