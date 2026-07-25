@@ -279,6 +279,55 @@ cp -R .claude/skills/pr-response-cycle ~/.claude/skills/
 
 이후 Claude Code에서 `/pr-response-cycle`을 호출하거나, PR 번호와 함께 "PR 리뷰 처리" / "process the review"라고 말하면 됩니다. repo의 `~/.claude/projects/<cwd>/memory/` 프로젝트 정책이 스킬 기본값과 충돌하면 정책이 우선합니다. 이 사본을 source of truth로 유지하고, 변경 시 다시 복사하세요.
 
+### 조직 전체 자동 업데이트 (관리자용)
+
+수동 복사 대신, 이 레포는 Claude Code **플러그인 마켓플레이스**를 겸하므로 소비자 레포에 커밋된 `.claude/settings.json`([`examples/consumer-claude-settings.json`](examples/consumer-claude-settings.json))으로 스킬을 참조 설치할 수 있습니다. 다만 서드파티 마켓플레이스 auto-update는 기본 OFF라 사용자마다 1회 토글이 필요합니다. 조직 관리자는 **enterprise-managed settings**(조직 배포 `managed-settings.json`)로 이 토글을 없애고, fleet 전체에 auto-update + 플러그인 강제 enable을 적용할 수 있습니다.
+
+배포 정본 파일은 [`examples/managed-settings.json`](examples/managed-settings.json)입니다 — MDM/구성관리 스크립트에서 복붙 대신 이 파일을 직접 가져다 쓰세요. 전체 블록:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "ai-dev-pr-review": {
+      "source": { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": { "pr-response-cycle@ai-dev-pr-review": true },
+  "strictKnownMarketplaces": [
+    { "source": "github", "repo": "ignite-corp/ai-dev-pr-review" }
+  ]
+}
+```
+
+각 키의 역할:
+
+- `autoUpdate: true` — fleet 전체에 상류 업데이트를 사용자 토글 없이 자동 반영. managed settings의 `extraKnownMarketplaces.<name>` 항목에서만 유효하며, 프로젝트 스코프 `.claude/settings.json`에서는 **조용히 무시**되므로 거기에 넣지 마세요.
+- `enabledPlugins` — 조직 전체 강제 enable. 자동 설치는 아님: 최초 설치는 소비자 레포에 커밋된 project `.claude/settings.json`이 folder-trust 시점에 처리합니다.
+- `strictKnownMarketplaces` — 사용자가 추가할 수 있는 마켓플레이스 허용목록. **배포 전에 조직에서 이미 쓰는 마켓플레이스를 전수 조사해 목록에 모두 추가하세요** — 목록에 없는 마켓플레이스는 배포 즉시 전 사용자에게 추가 불가가 됩니다.
+
+**배포 방식:**
+
+- **Server-managed (권장)** — claude.ai 관리자 콘솔에서 블록을 푸시하면 각 머신 파일시스템을 건드리지 않고 fleet에 배포됩니다. Claude Code Teams v2.1.38+ 또는 Enterprise v2.1.30+ 필요.
+- **파일 기반** — 아래 OS별 시스템 경로에 `managed-settings.json` 작성.
+- **MDM** — 장치 관리로 파일 전달(macOS 구성 프로파일/plist, Windows HKLM 레지스트리). Anthropic이 완성된 MDM 프로파일을 제공하지 않으므로 payload는 직접 작성해야 합니다.
+
+| OS | 경로 |
+|---|---|
+| macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` |
+| Linux / WSL | `/etc/claude-code/managed-settings.json` |
+| Windows | `C:\Program Files\ClaudeCode\managed-settings.json` |
+
+**이걸로도 제거할 수 없는 잔여 수동 스텝:**
+
+1. repo/머신당 folder-trust 프롬프트 1회(인터랙티브 사용 시) — 어떤 managed setting으로도 사전승인 불가(`-p` 비인터랙티브 모드만 스킵).
+2. 최초 플러그인 설치는 커밋된 project `.claude/settings.json`이 folder-trust 시 처리 — managed settings가 하지 않음.
+3. 각 사용자의 조직 인증(로그인).
+
+**보안 노트:** 폴더를 신뢰하면 그 repo의 settings/hooks/MCP 서버/skills가 자동 로드·실행됩니다(코드 실행 표면). 신뢰 프롬프트를 사람 게이트로 유지하고, `strictKnownMarketplaces`(출처 허용목록)와 `permissions.deny`를 계층 방어로 두세요.
+
+배포 추적: AT-1476.
+
 ## 기여
 
 이 레포에 이슈와 PR을 여세요. 공개 레포의 CI / 테스트는 v1.0.0 범위 밖입니다. `CONTRIBUTING.md`(예정)가 생기면 참고하세요.
