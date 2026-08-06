@@ -4,6 +4,8 @@
 
 Reusable GitHub Actions workflows for multi-LLM pull request review (Claude + Codex + Gemini, parallel or sequential), with inline comment posting, deduplication against prior rounds, and a rule-based aggregate verdict.
 
+> **Code Factory codename: LENS.** This repo is the implementation of the ③ PR System module in the Code Factory whitepaper (§4.1). Multiple LLM reviewers act as distinct *lenses* on the same code — each contributing a different review dimension that the aggregator combines into a single verdict.
+
 ## What this repo provides
 
 Four `workflow_call` workflows under `.github/workflows/`:

@@ -4,6 +4,8 @@
 
 다중 LLM 풀 리퀘스트 리뷰(Claude + Codex + Gemini, 병렬 또는 순차)를 위한 재사용 가능한 GitHub Actions 워크플로우입니다. 인라인 코멘트 게시, 이전 라운드 대비 중복 제거, 규칙 기반 통합 판정을 제공합니다.
 
+> **Code Factory 코드네임: LENS.** 이 레포는 Code Factory 백서 §4.1 ③ PR 시스템 모듈의 실제 구현체입니다. 여러 LLM 리뷰어가 같은 코드를 서로 다른 *렌즈*(리뷰 차원)로 보고, 취합기가 이를 하나의 판정으로 결합합니다.
+
 ## 이 레포가 제공하는 것
 
 `.github/workflows/` 아래 4개의 `workflow_call` 워크플로우:
