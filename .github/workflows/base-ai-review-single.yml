@@ -409,6 +409,15 @@ jobs:
             2>&1 | tee "${RUNNER_TEMP}/codex-run.log"
           EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          # Last meaningful run-log line for fallback verdicts: strip ANSI
+          # escapes and blank lines, keep one line, cap at 200 chars. Always
+          # embedded via jq --arg so untrusted log text cannot break the JSON.
+          LOG_TAIL=$(tail -n 20 "${RUNNER_TEMP}/codex-run.log" 2>/dev/null \
+            | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/[[:space:]]*$//' \
+            | grep -v '^[[:space:]]*$' \
+            | tail -n 1 \
+            | cut -c1-200 \
+            || true)
           if [ -s review-codex.json ]; then
             echo "::notice::Codex verdict file written directly"
           elif [ "$EXIT_CODE" -eq 0 ]; then
@@ -419,13 +428,25 @@ jobs:
             && echo "::notice::Extracted Codex verdict JSON from stdout" \
             || {
               echo "::warning::Codex emitted output but no parseable verdict JSON found"
-              echo '{"summary":"Codex output unparseable.","early_exit":false,"issues":[]}' \
-                > review-codex.json
+              jq -n --arg detail "$LOG_TAIL" '{
+                summary: ("Codex review failed: no parseable verdict JSON in output"
+                          + (if $detail == "" then "" else " -- " + $detail end)),
+                early_exit: false,
+                issues: [],
+                error: "output_unparseable",
+                error_detail: $detail
+              }' > review-codex.json
             }
           else
-            echo "::warning::Codex review failed (exit=${EXIT_CODE}) -- emitting empty verdict"
-            echo '{"summary":"Codex unavailable (quota/auth error).","early_exit":false,"issues":[]}' \
-              > review-codex.json
+            echo "::warning::Codex review failed (exit=${EXIT_CODE}) -- emitting error verdict"
+            jq -n --arg detail "$LOG_TAIL" --arg code "$EXIT_CODE" '{
+              summary: ("Codex review failed: CLI exited " + $code
+                        + (if $detail == "" then "" else " -- " + $detail end)),
+              early_exit: false,
+              issues: [],
+              error: "cli_invocation_failed",
+              error_detail: $detail
+            }' > review-codex.json
           fi
 
       - name: Upload Codex logs

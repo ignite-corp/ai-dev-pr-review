@@ -302,8 +302,21 @@ def _all_reviewer_jobs_succeeded(total: int) -> bool:
     )
 
 
+def _artifacts_entirely_absent(
+    reviews: dict[str, dict[str, Any] | None],
+) -> bool:
+    """True when no reviewer wrote any artifact at all.
+
+    Error-bearing fallback payloads (e.g. the codex CLI-failure verdict)
+    are artifacts: their presence marks an infrastructure failure, never a
+    benign trivial-diff early-exit.
+    """
+    return all(v is None for v in reviews.values())
+
+
 def _check_insufficient(
     available: dict[str, dict[str, Any]],
+    reviews: dict[str, dict[str, Any] | None],
     total: int,
 ) -> tuple[str, str] | None:
     if len(available) < MIN_REVIEWERS_FOR_VERDICT:
@@ -313,7 +326,9 @@ def _check_insufficient(
         if review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(available):
             return None
         if len(available) == 0:
-            if _all_reviewer_jobs_succeeded(total):
+            if _artifacts_entirely_absent(reviews) and _all_reviewer_jobs_succeeded(
+                total
+            ):
                 return (
                     "approve",
                     f"0/{total} LLM responses -- all early-exit (benign skip)",
@@ -392,7 +407,7 @@ def apply_verdict_rules(
     available = _get_available(reviews)
     total = len(REVIEWERS)
 
-    result = _check_insufficient(available, total)
+    result = _check_insufficient(available, reviews, total)
     if result:
         return (*result, available)
 
@@ -741,10 +756,13 @@ def main() -> None:
     sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
         available
     )
-    # Parallel mode: all jobs succeeded but produced no payload (benign trivial-diff
-    # early-exit). The verdict was already posted as "approve" -- do not fail CI.
+    # Parallel mode: all jobs succeeded AND no reviewer wrote any artifact
+    # (benign trivial-diff early-exit). Error-bearing fallback payloads
+    # disqualify the bypass -- provider failures must fail CI.
     parallel_benign_bypass = (
-        _all_reviewer_jobs_succeeded(len(REVIEWERS)) and verdict == "approve"
+        _artifacts_entirely_absent(reviews)
+        and _all_reviewer_jobs_succeeded(len(REVIEWERS))
+        and verdict == "approve"
     )
     if (
         len(available) < MIN_REVIEWERS_FOR_VERDICT
