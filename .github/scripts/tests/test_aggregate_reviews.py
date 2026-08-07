@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from aggregate_reviews import (
+    _get_available,
     _normalize_severity,
     _is_comment_only,
     _is_valid_review,
@@ -312,6 +313,91 @@ class TestDependabotThresholdScoping:
                 self._two_reviewer_reviews_with_critical()
             )
         assert verdict == "request_changes"
+
+
+def _error_payloads() -> dict[str, dict[str, Any] | None]:
+    """One error-bearing fallback payload per reviewer (no issues)."""
+    return {
+        name: _make_review(
+            summary=f"{name.title()} review failed: CLI exited 2",
+            error="cli_invocation_failed",
+            error_detail="error: unexpected argument '--full-auto' found",
+        )
+        for name in REVIEWER_NAMES
+    }
+
+
+class TestErrorPayloadExclusion:
+    """Error-bearing fallback payloads must not count as live reviewers."""
+
+    def test_error_payload_without_issues_excluded(self) -> None:
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(
+                summary="Codex review failed: CLI exited 2",
+                error="cli_invocation_failed",
+            )
+        }
+        assert _get_available(reviews) == {}
+
+    def test_error_payload_with_issues_still_included(self) -> None:
+        # Partial failures that produced issues keep contributing (existing rule).
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(error="truncated", issues=[_make_issue()])
+        }
+        assert "codex" in _get_available(reviews)
+
+    def test_all_error_payloads_yield_comment_not_benign_approve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Jobs conclude "success" (continue-on-error) but every reviewer wrote
+        # an error payload -> must NOT be treated as a benign skip.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        verdict, reason, _ = apply_verdict_rules(_error_payloads())
+        assert verdict == "comment"
+        assert "all failed" in reason
+        assert "benign skip" not in reason
+
+
+class TestNormalFullResponses:
+    """Regression: three live reviewers with no issues still approve."""
+
+    def test_three_reviewers_no_issues_approves(self) -> None:
+        reviews: dict[str, dict[str, Any] | None] = {
+            name: _make_named_review(name, []) for name in REVIEWER_NAMES
+        }
+        verdict, reason, _ = apply_verdict_rules(reviews)
+        assert verdict == "approve"
+        assert "3/3" in reason
+        assert "no issues" in reason
+
+
+class TestMainAllErrorPayloadsFail:
+    """main() must exit 1 when every reviewer produced an error payload."""
+
+    def test_main_all_error_payloads_exits_nonzero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # All job conclusions "success" (reviewer steps are continue-on-error),
+        # but error payloads exist -> no benign bypass, CI must fail.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value=_error_payloads(),
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+
+        assert excinfo.value.code == 1
+        posted_verdict = mock_post.call_args[0][1]
+        assert posted_verdict == "comment"
 
 
 class TestMainAllEarlyExitBenign:
