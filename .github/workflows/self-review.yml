@@ -1,0 +1,57 @@
+# Self-review (dogfooding): run this repo's own multi-LLM AI review pipeline
+# on its own PRs, mirroring the consumer thin trigger
+# (examples/consumer-thin-trigger.yml) but calling the orchestrator via a
+# LOCAL path so the workflow YAML under review is the YAML that runs.
+#
+# What a PR exercises here:
+#   - EXERCISED: all four base-ai-review-*.yml reusable workflows run from the
+#     PR's merge commit, so YAML changes are tested pre-merge.
+#   - NOT EXERCISED: the Python/bash helper scripts. prepare/single/aggregate
+#     check out ignite-corp/ai-dev-pr-review at hardcoded release tags
+#     (base-ai-review-single.yml pins ref v1.1.5, base-ai-review-aggregate.yml
+#     pins ref v1.1.2), and no input exists to override that ref. Script
+#     changes only take effect on self-review after they ship in a release tag.
+#
+# Auto-approve: the org var ALLOW_AUTO_APPROVE is `true`, but this repo sets a
+# repo-level var ALLOW_AUTO_APPROVE=false to override it. This repo is the
+# review tool itself; letting the pipeline approve its own PRs would defeat
+# review integrity, so verdicts here are posted as plain comments only.
+name: AI Code Review (self)
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review (required for manual trigger)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # This is a public repo: fork PRs cannot read the org secrets, so skip
+    # instead of failing the required check machinery with empty credentials.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/base-ai-review-orchestrator.yml
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      # This repo has no .github/prompts; reuse the starter templates that
+      # consumers copy from examples/prompts.
+      code-review-system-prompt-path: examples/prompts/code-review-system.md
+      code-review-checklist-path: examples/prompts/code-review-checklist.md
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Used by the claude job's usage-limit auth-switch post-step (AT-1606);
+      # never leads to an approval here because ALLOW_AUTO_APPROVE is false.
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
