@@ -41,6 +41,14 @@ jobs:
           # Stale cutoff for known-bad startup_failure runs
           STALE_BEFORE="2026-06-09T00:00:00Z"
 
+          # Reviewer-error streak detection: flag a consumer when one reviewer
+          # shows an error verdict in this many consecutive recent PRs.
+          CONSECUTIVE_ERROR_THRESHOLD="${CONSECUTIVE_ERROR_THRESHOLD:-5}"
+          # Number of most recent PRs to inspect per consumer (keep cheap).
+          RECENT_PR_COUNT=10
+          # Reviews/comments fetched per PR when locating the aggregate verdict.
+          TIMELINE_ITEM_COUNT=10
+
           any_flag=0
 
           check_org_secret_grants_repo() {
@@ -211,7 +219,60 @@ jobs:
               fi
             done
 
-            # 4. Recent Dependabot PRs (informational, non-failing, count only)
+            # 4. Consecutive reviewer error verdicts in recent aggregate reviews.
+            # A reviewer that keeps emitting error fallback verdicts while the
+            # aggregate still passes (e.g. a broken codex CLI) is a silent
+            # coverage loss. Matches the AT-1792 error markers plus the legacy
+            # fallback wording so the check also works retroactively.
+            owner="${slug%%/*}"
+            repo_name="${slug#*/}"
+            prs_json=$(gh api graphql \
+              -f query='query($owner: String!, $name: String!, $count: Int!, $timelineCount: Int!) {
+                repository(owner: $owner, name: $name) {
+                  pullRequests(first: $count, orderBy: {field: CREATED_AT, direction: DESC}) {
+                    nodes {
+                      reviews(last: $timelineCount) { nodes { body submittedAt } }
+                      comments(last: $timelineCount) { nodes { body createdAt } }
+                    }
+                  }
+                }
+              }' \
+              -f owner="$owner" -f name="$repo_name" -F count="$RECENT_PR_COUNT" \
+              -F timelineCount="$TIMELINE_ITEM_COUNT" 2>/dev/null \
+              || echo '{}')
+            for reviewer in claude codex gemini; do
+              # Per PR: newest aggregate verdict body (review or comment carrying
+              # the multi-llm marker); PRs without one are skipped, not counted.
+              # Streak = leading run of PRs whose section for this reviewer
+              # matches an error marker, newest first.
+              streak=$(jq -r --arg r "$reviewer" '
+                def section($body):
+                  ($body | split("\n### ")
+                   | map(select(ascii_downcase | startswith($r)))
+                   | first) // "";
+                def is_error($body):
+                  # Only the section header + summary line carry error markers;
+                  # issue bullets may legitimately quote error-like phrases.
+                  section($body)
+                  | (split("\n") | .[:2] | join("\n"))
+                  | test("cli_invocation_failed|output[ _]unparseable|review failed:|unavailable \\(quota/auth error\\)"; "i");
+                [ .data.repository.pullRequests.nodes[]?
+                  | [ (.reviews.nodes[]?, .comments.nodes[]?)
+                      | select(.body | contains("<!-- multi-llm-review -->")) ]
+                  | sort_by(.submittedAt // .createdAt)
+                  | last
+                  | select(. != null)
+                  | .body ]
+                | map(if is_error(.) then 1 else 0 end)
+                | (index(0) // length)
+              ' <<<"$prs_json" 2>/dev/null || echo 0)
+              if [ "${streak:-0}" -ge "$CONSECUTIVE_ERROR_THRESHOLD" ]; then
+                echo "  [FLAG] entry ${i}/${total}: reviewer ${reviewer} error verdict in ${streak} consecutive recent PRs"
+                consumer_flags=$((consumer_flags + 1))
+              fi
+            done
+
+            # 5. Recent Dependabot PRs (informational, non-failing, count only)
             dependabot_count=$(gh pr list --repo "$slug" --author "app/dependabot" --state all --limit 3 \
               --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
             echo "  dependabot PRs (recent): ${dependabot_count}"
