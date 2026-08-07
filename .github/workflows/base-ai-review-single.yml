@@ -302,7 +302,10 @@ jobs:
       # --- Codex ---
       - name: Install Codex CLI
         if: inputs.reviewer == 'codex'
-        run: npm install -g @openai/codex
+        # Pinned: unpinned installs pulled releases that dropped `codex exec
+        # --full-auto`, breaking every codex review. Bump deliberately after
+        # verifying `codex exec --help` for the new version.
+        run: npm install -g @openai/codex@0.147.0
 
       - name: Authenticate Codex CLI with API key
         if: inputs.reviewer == 'codex'
@@ -401,10 +404,11 @@ jobs:
             } >> "$COMBINED"
           fi
           cat "${RUNNER_TEMP}/review_prompt.md" >> "$COMBINED"
+          # `codex exec` 0.147.0 rejects `--full-auto` (removed upstream);
+          # `--sandbox workspace-write` alone preserves the prior behavior.
           codex exec \
             --sandbox workspace-write \
             --model "$CODEX_MODEL" \
-            --full-auto \
             "$(cat "$COMBINED")" \
             2>&1 | tee "${RUNNER_TEMP}/codex-run.log"
           EXIT_CODE=${PIPESTATUS[0]}
