@@ -534,6 +534,96 @@ class TestCommentOnlyGating:
         assert self._has_pr_comment(commands)
 
 
+class TestApproveQuorumGate:
+    """Formal approval requires a minimum quorum of available reviewers."""
+
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        verdict: str,
+        *,
+        approve_quorum: bool,
+    ) -> list[list[str]]:
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("GH_TOKEN", "default-token")
+
+        commands: list[list[str]] = []
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            commands.append(cmd)
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+        with (
+            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+        ):
+            post_verdict(
+                "body", verdict, comment_only=False, approve_quorum=approve_quorum
+            )
+
+        return commands
+
+    def test_approve_without_quorum_posts_comment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = self._run(monkeypatch, "approve", approve_quorum=False)
+        assert not any("review" in cmd for cmd in commands)
+        assert any("comment" in cmd for cmd in commands)
+
+    def test_approve_with_quorum_submits_review(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = self._run(monkeypatch, "approve", approve_quorum=True)
+        assert any("review" in cmd and "--approve" in cmd for cmd in commands)
+
+    def test_request_changes_unaffected_by_quorum(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = self._run(monkeypatch, "request_changes", approve_quorum=False)
+        assert any("review" in cmd and "--request-changes" in cmd for cmd in commands)
+
+    def test_main_benign_skip_withholds_formal_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Benign skip: verdict "approve" with 0 available payloads -> main()
+        # must request the comment downgrade (approve_quorum=False).
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is False
+
+    def test_main_full_quorum_allows_formal_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+        reviews: dict[str, dict[str, Any] | None] = {
+            name: _make_named_review(name, []) for name in REVIEWER_NAMES
+        }
+        with (
+            patch("aggregate_reviews.load_reviews", return_value=reviews),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is True
+
+
 class TestCommentOnlyToggle:
     """_is_comment_only maps ALLOW_AUTO_APPROVE to the comment-only killswitch."""
 
