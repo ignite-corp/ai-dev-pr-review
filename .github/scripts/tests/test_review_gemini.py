@@ -202,6 +202,59 @@ def test_main_raises_on_max_tokens_finish_reason(tmp_path, monkeypatch, capsys):
     assert "truncated at MAX_OUTPUT_TOKENS" in captured.err
 
 
+def _fake_success_client(monkeypatch, response_text):
+    """Wire genai.Client + _call_gemini_with_retry to a canned response."""
+    fake_response = MagicMock()
+    fake_response.candidates = []
+    fake_response.usage_metadata = None
+    fake_response.text = response_text
+    monkeypatch.setattr(
+        review_gemini,
+        "_call_gemini_with_retry",
+        lambda *args, **kwargs: fake_response,
+    )
+    monkeypatch.setattr(review_gemini.genai, "Client", lambda api_key=None: MagicMock())
+
+
+def test_main_success_payload_stamped_status_ok(tmp_path, monkeypatch):
+    """AT-1799: success path must stamp status 'ok' when the model omits it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "test-key")
+    _fake_success_client(
+        monkeypatch, '{"summary": "fine", "early_exit": false, "issues": []}'
+    )
+    review_gemini.main()
+    data = json.loads((tmp_path / review_gemini.REVIEW_FILE).read_text())
+    assert data["status"] == "ok"
+
+
+def test_main_success_payload_stamped_status_early_exit(tmp_path, monkeypatch):
+    """AT-1799: early_exit true derives status 'early_exit'."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "test-key")
+    _fake_success_client(
+        monkeypatch, '{"summary": "flawed", "early_exit": true, "issues": []}'
+    )
+    review_gemini.main()
+    data = json.loads((tmp_path / review_gemini.REVIEW_FILE).read_text())
+    assert data["status"] == "early_exit"
+
+
+def test_main_exception_payload_has_status_failed(tmp_path, monkeypatch):
+    """AT-1799: the exception fallback payload must carry status 'failed'."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "test-key")
+
+    def _raise(api_key=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(review_gemini.genai, "Client", _raise)
+    review_gemini.main()
+    data = json.loads((tmp_path / review_gemini.REVIEW_FILE).read_text())
+    assert data["status"] == "failed"
+    assert data["error"] == "boom"
+
+
 def test_max_output_tokens_env_override(monkeypatch):
     """GEMINI_MAX_OUTPUT_TOKENS env var must override the default at import time."""
     original = os.environ.get("GEMINI_MAX_OUTPUT_TOKENS")
