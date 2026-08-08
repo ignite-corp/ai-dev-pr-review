@@ -2,14 +2,221 @@ name: consumer-health
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * *'  # daily: health job
+    - cron: '0 0 * * 5'  # weekly (Friday 00:00 UTC = 09:00 KST): credential-probe job
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Weekly proactive credential-validity probe (AT-1796). A replaced/expired
+  # provider key must surface to humans within a week, independent of PR
+  # flow: a red cron run alone reaches nobody, so any auth failure also
+  # opens or updates a GitHub issue in this repo (closed automatically on
+  # recovery). Runs Friday morning KST (Friday 00:00 UTC) so an invalid
+  # credential surfaces before the weekend while it can still be acted on,
+  # independently of the per-consumer loop in the health job below; each
+  # schedule string drives exactly one job.
+  credential-probe:
+    if: github.event.schedule == '0 0 * * 5' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A workflow_dispatch run must not overlap the Friday cron and
+    # double-create the alert issue.
+    concurrency:
+      group: credential-probe
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Probe provider credentials
+        id: probe
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -u
+          # PUBLIC repo: logs carry secret NAMES and HTTP status codes only.
+          # Never echo response bodies or secret values.
+          ANTHROPIC_API_VERSION="2023-06-01"
+          flagged_lines=()
+          warn_count=0
+
+          # classify <http_code> [extra flag codes...]
+          # 200 -> ok; 401/403 (+ per-provider extras) -> flag (credential
+          # invalid); 5xx/timeout(000)/anything else -> warn (provider outage
+          # or transient error, not a credential problem -- no alarm).
+          classify() {
+            local code="$1"
+            shift
+            local c
+            case "$code" in
+              200) echo ok; return ;;
+              401|403) echo flag; return ;;
+            esac
+            for c in "$@"; do
+              if [ "$code" = "$c" ]; then
+                echo flag
+                return
+              fi
+            done
+            echo warn
+          }
+
+          # probe <secret name> <secret value> <extra flag codes> <url> <header lines...>
+          # Auth headers are piped to curl on stdin (-H @-) so the secret is
+          # never an expanded argument on an external command line; printf is
+          # a shell builtin and probe is a shell function, so no process's
+          # argv ever carries the value.
+          probe() {
+            local name="$1" value="$2" extra="$3" url="$4"
+            shift 4
+            if [ -z "$value" ]; then
+              echo "${name}: EMPTY -- INVALID (secret unset or empty)"
+              flagged_lines+=("${name}: secret unset or empty")
+              return
+            fi
+            local code verdict
+            code=$(printf '%s\n' "$@" \
+              | curl -s -o /dev/null -w '%{http_code}' --max-time 30 -H @- "$url") || code=000
+            # shellcheck disable=SC2086 # extra is a space-separated code list
+            verdict=$(classify "$code" $extra)
+            case "$verdict" in
+              ok)
+                echo "${name}: ${code} -- OK"
+                ;;
+              flag)
+                echo "${name}: ${code} -- INVALID"
+                flagged_lines+=("${name}: HTTP ${code}")
+                ;;
+              warn)
+                echo "::warning::${name}: HTTP ${code} -- provider unreachable or erroring (not treated as a credential failure)"
+                warn_count=$((warn_count + 1))
+                ;;
+            esac
+          }
+
+          # Per-provider invalid-key status mapping (verified against the
+          # live endpoints):
+          #   OpenAI    -> 401 on a bad/revoked key
+          #   Anthropic -> 401 on a bad/revoked key
+          #   Google    -> 400 (API_KEY_INVALID) on a bad key, 403 on denial;
+          #                the key travels in a header, never in the URL, so
+          #                it cannot leak into any request log.
+          # 429/5xx/timeouts warn instead of flag: rate limits and provider
+          # outages are not credential problems, and alarming on them would
+          # teach humans to ignore the alert.
+          probe OPENAI_API_KEY "${OPENAI_API_KEY:-}" "" \
+            https://api.openai.com/v1/models \
+            "Authorization: Bearer ${OPENAI_API_KEY:-}"
+
+          probe GOOGLE_AI_API_KEY "${GOOGLE_AI_API_KEY:-}" "400" \
+            "https://generativelanguage.googleapis.com/v1beta/models" \
+            "x-goog-api-key: ${GOOGLE_AI_API_KEY:-}"
+
+          probe ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}" "" \
+            https://api.anthropic.com/v1/models \
+            "x-api-key: ${ANTHROPIC_API_KEY:-}" \
+            "anthropic-version: ${ANTHROPIC_API_VERSION}"
+
+          # CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT probed. No documented
+          # endpoint validates a Claude Code OAuth token outside the Claude
+          # Code CLI (the Bearer + anthropic-beta shape is undocumented, so a
+          # healthy token cannot be assumed to return 200) -- a curl probe
+          # would be a false-alarm source. The OAuth path is managed by
+          # claude-auth-restore.yml (usage-limit auto-switch to the probed
+          # ANTHROPIC_API_KEY); a dead OAuth token additionally surfaces via
+          # the reviewer error-streak check in the health job below.
+
+          flagged=0
+          if [ "${#flagged_lines[@]}" -gt 0 ]; then
+            flagged=1
+          fi
+          # all_ok=1 only when every probe classified ok: a warn is a check
+          # that was NOT performed to completion, so it must not count as a
+          # confirmed recovery (never report success for a check not done).
+          all_ok=0
+          if [ "$flagged" = "0" ] && [ "$warn_count" -eq 0 ]; then
+            all_ok=1
+          fi
+          if [ "$flagged" = "0" ] && [ "$warn_count" -gt 0 ]; then
+            echo "::notice::recovery not confirmed -- ${warn_count} probe(s) warned"
+          fi
+          {
+            echo "flagged=${flagged}"
+            echo "all_ok=${all_ok}"
+            echo "summary<<PROBE_EOF"
+            if [ "$flagged" = "1" ]; then
+              printf -- '- %s\n' "${flagged_lines[@]}"
+            fi
+            echo "PROBE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update credential alert issue
+        if: steps.probe.outputs.flagged == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY: ${{ steps.probe.outputs.summary }}
+        run: |
+          set -u
+          TITLE='[credential-probe] reviewer provider credential invalid'
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search 'credential-probe in:title' --json number,title \
+            --jq 'map(select(.title | startswith("[credential-probe]"))) | .[0].number // empty')
+          body=$(cat <<BODY_EOF
+          <!-- credential-probe -->
+          Weekly credential probe failed at ${NOW} ([run](${RUN_URL})).
+
+          Failed checks (secret name: result):
+          ${SUMMARY}
+
+          Runbook:
+          - Validate the replacement key with curl (expect HTTP 200) BEFORE storing it.
+          - When updating the org secret, preserve scoping: \`--visibility selected --repos ...\`.
+          - Re-run consumer-health (workflow_dispatch) to confirm; this issue closes automatically on the next all-green probe.
+          BODY_EOF
+          )
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi
+
+      - name: Close credential alert issue on recovery
+        # Gate on all_ok, not merely flagged==0: a warned probe (429/5xx/
+        # timeout) leaves the credential unconfirmed, so the issue stays open.
+        if: steps.probe.outputs.all_ok == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search 'credential-probe in:title' --json number,title \
+            --jq 'map(select(.title | startswith("[credential-probe]"))) | .[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+              --comment "All credential probes returned HTTP 200 at ${NOW} ([run](${RUN_URL})). Recovered."
+          else
+            echo "No open credential-probe issue; nothing to close."
+          fi
+
+      - name: Fail run on flagged credentials
+        if: steps.probe.outputs.flagged == '1'
+        run: |
+          echo "::error::One or more reviewer provider credentials failed the probe"
+          exit 1
+
   health:
+    # Daily cron only: without this gate the weekly Friday cron event would
+    # run the consumer loop a second time on Fridays.
+    if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Mint App token
