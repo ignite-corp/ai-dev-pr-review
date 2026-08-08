@@ -302,8 +302,21 @@ def _all_reviewer_jobs_succeeded(total: int) -> bool:
     )
 
 
+def _artifacts_entirely_absent(
+    reviews: dict[str, dict[str, Any] | None],
+) -> bool:
+    """True when no reviewer wrote any artifact at all.
+
+    Error-bearing fallback payloads (e.g. the codex CLI-failure verdict)
+    are artifacts: their presence marks an infrastructure failure, never a
+    benign trivial-diff early-exit.
+    """
+    return all(v is None for v in reviews.values())
+
+
 def _check_insufficient(
     available: dict[str, dict[str, Any]],
+    reviews: dict[str, dict[str, Any] | None],
     total: int,
 ) -> tuple[str, str] | None:
     if len(available) < MIN_REVIEWERS_FOR_VERDICT:
@@ -313,7 +326,9 @@ def _check_insufficient(
         if review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(available):
             return None
         if len(available) == 0:
-            if _all_reviewer_jobs_succeeded(total):
+            if _artifacts_entirely_absent(reviews) and _all_reviewer_jobs_succeeded(
+                total
+            ):
                 return (
                     "approve",
                     f"0/{total} LLM responses -- all early-exit (benign skip)",
@@ -392,7 +407,7 @@ def apply_verdict_rules(
     available = _get_available(reviews)
     total = len(REVIEWERS)
 
-    result = _check_insufficient(available, total)
+    result = _check_insufficient(available, reviews, total)
     if result:
         return (*result, available)
 
@@ -646,7 +661,13 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
             _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
 
 
-def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
+def post_verdict(
+    comment: str,
+    verdict: str,
+    *,
+    comment_only: bool,
+    approve_quorum: bool = True,
+) -> None:
     pr_number = os.environ.get("PR_NUMBER", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not pr_number or not pr_number.isdigit():
@@ -654,6 +675,27 @@ def post_verdict(comment: str, verdict: str, *, comment_only: bool) -> None:
         sys.exit(1)
 
     _minimize_stale_bot_items(pr_number, repo)
+
+    # Never send a formal APPROVED review without a minimum quorum of live
+    # reviewer payloads: an approval would assert coverage that never
+    # happened. The verdict (and thus the merge-gate exit code) is
+    # unchanged; only the posted event is downgraded to a comment.
+    if verdict == "approve" and not approve_quorum:
+        print(
+            "::notice::Auto-approve withheld -- fewer than"
+            f" {MIN_REVIEWERS_FOR_VERDICT} reviewer responses available;"
+            " posting comment instead of approval.",
+            file=sys.stderr,
+        )
+        note = (
+            "\n\n> [!] Auto-approve withheld: fewer than"
+            f" {MIN_REVIEWERS_FOR_VERDICT} reviewer responses available;"
+            " posted as comment."
+        )
+        if not _post_comment(pr_number, repo, comment + note):
+            print("Failed to post comment", file=sys.stderr)
+            sys.exit(1)
+        return
 
     # Downgrade formal review verdicts to comment when killswitch is off.
     if verdict in ("approve", "request_changes") and comment_only:
@@ -734,17 +776,25 @@ def main() -> None:
     comment = format_summary(
         reviews, verdict, reason, available, conclusions, comment_only=comment_only
     )
-    post_verdict(comment, verdict, comment_only=comment_only)
+    post_verdict(
+        comment,
+        verdict,
+        comment_only=comment_only,
+        approve_quorum=len(available) >= MIN_REVIEWERS_FOR_VERDICT,
+    )
     print(f"Final verdict: {verdict} -- {reason}")
 
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
     sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
         available
     )
-    # Parallel mode: all jobs succeeded but produced no payload (benign trivial-diff
-    # early-exit). The verdict was already posted as "approve" -- do not fail CI.
+    # Parallel mode: all jobs succeeded AND no reviewer wrote any artifact
+    # (benign trivial-diff early-exit). Error-bearing fallback payloads
+    # disqualify the bypass -- provider failures must fail CI.
     parallel_benign_bypass = (
-        _all_reviewer_jobs_succeeded(len(REVIEWERS)) and verdict == "approve"
+        _artifacts_entirely_absent(reviews)
+        and _all_reviewer_jobs_succeeded(len(REVIEWERS))
+        and verdict == "approve"
     )
     if (
         len(available) < MIN_REVIEWERS_FOR_VERDICT
