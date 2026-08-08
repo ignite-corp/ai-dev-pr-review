@@ -154,6 +154,7 @@ jobs:
             echo "Write ONLY the following JSON to \`review-claude.json\` (no other output):"
             echo "{"
             echo "  \"summary\": \"<summary>\","
+            echo "  \"status\": \"<ok | early_exit>\","
             echo "  \"early_exit\": <bool>,"
             echo "  \"issues\": ["
             echo "    {"
@@ -170,6 +171,11 @@ jobs:
             echo "- true ONLY for fundamental flaws that make further review pointless (e.g., entire design must be scrapped, critical data loss bug)"
             echo "- false for normal critical/major issues that other reviewers should still evaluate"
             echo "- false for documented/acknowledged technical constraints (e.g., sandbox bypass with mitigations)"
+            echo ""
+            echo "status rules:"
+            echo "- \"ok\" when the review completed normally"
+            echo "- \"early_exit\" when early_exit is true"
+            echo "- never emit \"failed\" -- it is reserved for reviewer infrastructure failures"
             echo ""
             echo "IMPORTANT: Focus on NEW issues only. If the context includes previously"
             echo "resolved review threads, check their responses before re-raising the same"
@@ -423,7 +429,31 @@ jobs:
             | cut -c1-200 \
             || true)
           if [ -s review-codex.json ]; then
-            echo "::notice::Codex verdict file written directly"
+            # Fail-closed: a direct write is only trusted if it parses as
+            # JSON. Malformed model output becomes an honest failed verdict
+            # instead of crashing downstream jq consumers.
+            if jq empty review-codex.json 2>/dev/null; then
+              echo "::notice::Codex verdict file written directly"
+              # Direct writes skip the extract path, so mirror
+              # review_status.stamp_model_status here: keep a model-emitted
+              # ok/early_exit, otherwise re-derive from the early_exit flag
+              # ("failed" is reserved for infrastructure paths).
+              jq 'if (.status == "ok" or .status == "early_exit") then .
+                  else (.status = (if .early_exit == true then "early_exit" else "ok" end)) end' \
+                review-codex.json > review-codex.json.tmp \
+                && mv review-codex.json.tmp review-codex.json
+            else
+              echo "::warning::Codex wrote malformed verdict JSON -- replacing with error verdict"
+              jq -n --arg detail "$LOG_TAIL" '{
+                summary: ("Codex review failed: no parseable verdict JSON in output"
+                          + (if $detail == "" then "" else " -- " + $detail end)),
+                status: "failed",
+                early_exit: false,
+                issues: [],
+                error: "output_unparseable",
+                error_detail: $detail
+              }' > review-codex.json
+            fi
           elif [ "$EXIT_CODE" -eq 0 ]; then
             # gpt-5-mini / low-reasoning models don't use sandbox tools -- extract JSON from stdout
             python3 .ai-dev-pr-review/.github/scripts/extract_codex_json.py \
@@ -435,6 +465,7 @@ jobs:
               jq -n --arg detail "$LOG_TAIL" '{
                 summary: ("Codex review failed: no parseable verdict JSON in output"
                           + (if $detail == "" then "" else " -- " + $detail end)),
+                status: "failed",
                 early_exit: false,
                 issues: [],
                 error: "output_unparseable",
@@ -446,6 +477,7 @@ jobs:
             jq -n --arg detail "$LOG_TAIL" --arg code "$EXIT_CODE" '{
               summary: ("Codex review failed: CLI exited " + $code
                         + (if $detail == "" then "" else " -- " + $detail end)),
+              status: "failed",
               early_exit: false,
               issues: [],
               error: "cli_invocation_failed",

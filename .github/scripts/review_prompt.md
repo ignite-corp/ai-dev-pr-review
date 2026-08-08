@@ -24,6 +24,7 @@ does not touch are out of scope -- do NOT raise issues about them.
 Write ONLY the following JSON to `review-codex.json` (no other output, no markdown fences):
 {
   "summary": "<1-2 sentence summary>",
+  "status": "ok" | "early_exit",
   "early_exit": <bool>,
   "issues": [
     {
@@ -41,6 +42,11 @@ early_exit rules:
 - false for normal critical/major issues that other reviewers should still evaluate
 - false for documented/acknowledged technical constraints
 
-If no issues found, write {"summary": "No issues found.", "early_exit": false, "issues": []}.
+status rules:
+- "ok" when the review completed normally
+- "early_exit" when early_exit is true
+- never emit "failed" -- it is reserved for reviewer infrastructure failures
+
+If no issues found, write {"summary": "No issues found.", "status": "ok", "early_exit": false, "issues": []}.
 
 Do NOT post any PR comments or reviews. Only write review-codex.json.
