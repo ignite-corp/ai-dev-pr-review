@@ -7,10 +7,11 @@
 #   - EXERCISED: all four base-ai-review-*.yml reusable workflows run from the
 #     PR's merge commit, so YAML changes are tested pre-merge.
 #   - NOT EXERCISED: the Python/bash helper scripts. prepare/single/aggregate
-#     check out ignite-corp/ai-dev-pr-review at hardcoded release tags
-#     (base-ai-review-single.yml pins ref v1.1.5, base-ai-review-aggregate.yml
-#     pins ref v1.1.2), and no input exists to override that ref. Script
-#     changes only take effect on self-review after they ship in a release tag.
+#     (base-ai-review-prepare.yml, base-ai-review-single.yml,
+#     base-ai-review-aggregate.yml) check out ignite-corp/ai-dev-pr-review
+#     pinned to the release tag (currently v1.2.0), and no input exists to
+#     override that ref. Script changes only take effect on self-review after
+#     they ship in a release tag.
 #
 # Auto-approve: the org var ALLOW_AUTO_APPROVE is `true`, but this repo sets a
 # repo-level var ALLOW_AUTO_APPROVE=false to override it. This repo is the
