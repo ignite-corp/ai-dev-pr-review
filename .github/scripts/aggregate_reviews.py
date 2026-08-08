@@ -6,6 +6,25 @@ applies severity-based rules, and posts a consolidated PR review.
 
 Inline comments are posted by each reviewer job -- this script
 handles only the summary verdict.
+
+Reviewer payload contract (AT-1799):
+    Every reviewer payload carries a first-class ``status`` field with one
+    of three values:
+      - "ok"          -- review completed normally; counts toward verdict
+      - "early_exit"  -- reviewer stopped early on a fundamental flaw;
+                         counts and drives the sequential early-exit bypass
+      - "failed"      -- reviewer infrastructure failed; NEVER counted as
+                         a performed review
+    Parsing is fail-closed: a present-but-unknown ``status`` value is
+    normalized to "failed" (with a ::warning) so a malformed payload can
+    never masquerade as a healthy review. ``status``, when present, takes
+    precedence over legacy key inference.
+
+    Legacy payloads without ``status`` derive it from key presence
+    (``error`` set with no ``issues`` -> failed; ``early_exit`` true ->
+    early_exit; otherwise ok). This legacy inference path exists for
+    emitters pinned to older releases and can be removed once all emitters
+    (base + wrapper) ship ``status`` (contract introduced 2026-08-08).
 """
 
 from __future__ import annotations
@@ -86,6 +105,44 @@ _CONCLUSION_REASON: dict[str, str] = {
 }
 _CONCLUSION_REASON_UNKNOWN = "no verdict (unknown)"
 
+STATUS_OK = "ok"
+STATUS_EARLY_EXIT = "early_exit"
+STATUS_FAILED = "failed"
+_VALID_STATUSES = frozenset({STATUS_OK, STATUS_EARLY_EXIT, STATUS_FAILED})
+
+
+def _normalize_status(name: str, review: dict[str, Any]) -> str:
+    """Normalize and stamp ``status`` on the payload, returning it.
+
+    ``status``, when present and valid, takes precedence over legacy key
+    inference. Unknown values are fail-closed to "failed" so a malformed
+    payload can never count as a performed review. Idempotent: downstream
+    logic reads the stamped field as the single source of truth.
+    """
+    raw = review.get("status")
+    if isinstance(raw, str) and raw in _VALID_STATUSES:
+        return raw
+    if "status" in review:
+        print(
+            f"::warning title={name.title()} unknown status::"
+            f"status={raw!r} not in {sorted(_VALID_STATUSES)};"
+            " treating as failed (fail-closed)",
+            file=sys.stderr,
+        )
+        review["status"] = STATUS_FAILED
+        return STATUS_FAILED
+    # Legacy inference for payloads without `status` -- remove once all
+    # emitters (base + wrapper) ship `status` (see module docstring,
+    # contract introduced 2026-08-08).
+    if review.get("error") and not review.get("issues"):
+        status = STATUS_FAILED
+    elif review.get("early_exit") is True:
+        status = STATUS_EARLY_EXIT
+    else:
+        status = STATUS_OK
+    review["status"] = status
+    return status
+
 
 def load_reviewer_conclusions() -> dict[str, str]:
     """Read per-reviewer job conclusions from env vars set by the workflow.
@@ -109,17 +166,18 @@ def _get_available(
 ) -> dict[str, dict[str, Any]]:
     """Filter reviews to only those with valid responses.
 
-    Partial-failure reviews (both 'error' and 'issues' present) are
-    included so their issues still contribute to verdict calculation.
-    Reviews with errors but no issues are excluded entirely.
+    Reads the normalized ``status``: anything except "failed" counts.
+    Legacy partial-failure reviews (both 'error' and 'issues' present)
+    normalize to "ok" and stay included so their issues still contribute
+    to verdict calculation; legacy error-with-no-issues payloads normalize
+    to "failed" and are excluded entirely.
     """
     return {
         k: v
         for k, v in reviews.items()
         if v is not None
         and "summary" in v  # must have summary key (rejects empty {})
-        # Allow reviews with non-fatal errors if they still produced issues
-        and not (v.get("error") and not v.get("issues"))
+        and _normalize_status(k, v) != STATUS_FAILED
     }
 
 
@@ -195,6 +253,7 @@ def load_reviews() -> dict[str, dict[str, Any] | None]:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 _normalize_severity(data)
                 if _is_valid_review(data):
+                    _normalize_status(name, data)
                     reviews[name] = data
                 else:
                     print(f"Malformed review payload: {name}", file=sys.stderr)
@@ -207,8 +266,10 @@ def load_reviews() -> dict[str, dict[str, Any] | None]:
 
 
 def _has_early_exit(available: dict[str, dict[str, Any]]) -> bool:
-    """Check if any reviewer triggered early_exit."""
-    return any(v.get("early_exit") is True for v in available.values())
+    """Check if any reviewer's normalized status is early_exit."""
+    return any(
+        _normalize_status(k, v) == STATUS_EARLY_EXIT for k, v in available.items()
+    )
 
 
 _PARTIAL_SUMMARY_PREFIX = "partial:"
@@ -217,14 +278,17 @@ _PARTIAL_SUMMARY_PREFIX = "partial:"
 def _is_partial(review: dict[str, Any] | None) -> bool:
     """Return True if the reviewer hit a partial failure.
 
-    Partial means: missing payload, an ``error`` field, or a summary that
-    starts with ``partial:`` (case-insensitive). These signals are emitted
+    Partial means: missing payload, an ``error`` field, a normalized
+    ``status`` of "failed", or a summary that starts with ``partial:``
+    (case-insensitive). These signals are emitted
     by ``review_gemini.py`` / ``review_codex.py`` / ``review_claude.py``
     when the underlying API call raised or returned a truncated response.
     """
     if review is None:
         return True
     if review.get("error"):
+        return True
+    if review.get("status") == STATUS_FAILED:
         return True
     summary = review.get("summary", "")
     return isinstance(summary, str) and summary.strip().lower().startswith(
@@ -527,9 +591,12 @@ def format_summary(
 
         issues = review.get("issues", [])
         summary = review.get("summary", "")
+        status = _normalize_status(name, review)
         header = f"### {name.title()} -- {len(issues)} issue(s)"
         if review.get("error"):
             header += f" [!] (partial: {review['error'][:ERROR_TRUNCATE_LEN]})"
+        elif status == STATUS_FAILED:
+            header += " [!] (failed: reviewer reported status=failed)"
         lines += ["", header, summary]
         for issue in issues:
             lines.append(_format_issue_line(issue))

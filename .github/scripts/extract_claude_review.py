@@ -14,6 +14,8 @@ import json
 import sys
 from typing import Any
 
+from review_status import stamp_model_status
+
 
 _MAX_SCAN_BYTES = 50_000
 _OUTPUT_FILE = "review-claude.json"
@@ -67,6 +69,7 @@ def extract_review(exec_path: str) -> bool:
             )
             obj = _try_parse_review(text)
             if obj is not None:
+                stamp_model_status(obj)
                 with open(_OUTPUT_FILE, "w", encoding="utf-8") as out:
                     json.dump(obj, out, indent=2, ensure_ascii=False)
                 count = len(obj.get("issues", []))

@@ -18,6 +18,8 @@ import json
 import sys
 from pathlib import Path
 
+from review_status import stamp_model_status
+
 
 def _find_balanced_blocks(text: str) -> list[str]:
     """Return all top-level balanced {...} blocks, in source order."""
@@ -66,6 +68,7 @@ def main(argv: list[str]) -> int:
     obj = extract(log_path.read_text(encoding="utf-8", errors="replace"))
     if obj is None:
         return 1
+    stamp_model_status(obj)
     out_path.write_text(json.dumps(obj), encoding="utf-8")
     return 0
 

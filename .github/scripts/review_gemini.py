@@ -18,6 +18,8 @@ from typing import cast
 from google import genai
 from google.genai import types as genai_types
 
+from review_status import stamp_model_status
+
 REVIEW_FILE = "review-gemini.json"
 REVIEW_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "review-schema.json"
 # Defaults to gemini-2.5-pro (current latest stable). Override via vars.GEMINI_MODEL
@@ -117,9 +119,10 @@ def _load_schema() -> str:
     return json.dumps(
         {
             "type": "object",
-            "required": ["summary", "early_exit", "issues"],
+            "required": ["summary", "status", "early_exit", "issues"],
             "properties": {
                 "summary": {"type": "string"},
+                "status": {"type": "string", "enum": ["ok", "early_exit"]},
                 "early_exit": {"type": "boolean"},
                 "issues": {
                     "type": "array",
@@ -225,7 +228,10 @@ def build_user_prompt(diff: str) -> str:
         " should still evaluate\n"
         "- false for documented/acknowledged technical constraints"
     )
-    empty_result = '{"summary": "No issues found.", "early_exit": false, "issues": []}'
+    empty_result = (
+        '{"summary": "No issues found.", "status": "ok",'
+        ' "early_exit": false, "issues": []}'
+    )
     return f"""{existing_prefix}Review the following PR diff from three perspectives:
 {perspectives}
 
@@ -323,6 +329,9 @@ def main() -> None:
         if not text:
             raise ValueError("Gemini returned empty response (filtered or no candidates)")
         review = extract_json(text)  # type: ignore[reportUnknownVariableType]
+        # Stamp explicit status (AT-1799 contract): keep a valid model-emitted
+        # value, otherwise derive from the early_exit flag.
+        stamp_model_status(review)
     except Exception as exc:
         print(
             f"::warning title=Gemini reviewer partial::Gemini reviewer hit"
@@ -332,6 +341,7 @@ def main() -> None:
         print(f"Gemini review failed: {exc}", file=sys.stderr)
         review = {
             "summary": f"Review failed: {exc}",
+            "status": "failed",
             "early_exit": False,
             "issues": [],
             "error": str(exc),

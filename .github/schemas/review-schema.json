@@ -5,6 +5,11 @@
       "type": "string",
       "description": "1-2 sentence overall review summary"
     },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "early_exit"],
+      "description": "Explicit review outcome: 'ok' when the review completed normally, 'early_exit' when early_exit is true. Never emit 'failed' -- it is reserved for reviewer infrastructure failures."
+    },
     "early_exit": {
       "type": "boolean",
       "description": "true only when the PR has fundamental flaws that make further review unnecessary (e.g., security vulnerability that must be redesigned). false for normal critical issues that other reviewers should still evaluate."
@@ -38,5 +43,5 @@
       }
     }
   },
-  "required": ["summary", "early_exit", "issues"]
+  "required": ["summary", "status", "early_exit", "issues"]
 }

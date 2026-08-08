@@ -10,8 +10,11 @@ import pytest
 
 from aggregate_reviews import (
     _get_available,
+    _has_early_exit,
     _normalize_severity,
+    _normalize_status,
     _is_comment_only,
+    _is_partial,
     _is_valid_review,
     apply_verdict_rules,
     format_summary,
@@ -640,6 +643,124 @@ class TestCommentOnlyToggle:
     ) -> None:
         monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
         assert _is_comment_only() is False
+
+
+class TestStatusContract:
+    """AT-1799: explicit `status` is the single source of truth."""
+
+    def test_status_failed_excluded_without_error_key(self) -> None:
+        # Fail-closed even when the legacy `error` signal is absent.
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(status="failed")
+        }
+        assert _get_available(reviews) == {}
+
+    def test_status_ok_counted(self) -> None:
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(status="ok")
+        }
+        assert "codex" in _get_available(reviews)
+
+    def test_status_takes_precedence_over_legacy_error_inference(self) -> None:
+        # status "ok" wins over the legacy error-with-no-issues inference.
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(status="ok", error="transient")
+        }
+        assert "codex" in _get_available(reviews)
+
+    def test_status_early_exit_counted_and_drives_early_exit(self) -> None:
+        review = _make_review(status="early_exit")
+        reviews: dict[str, dict[str, Any] | None] = {"codex": review}
+        available = _get_available(reviews)
+        assert "codex" in available
+        assert _has_early_exit(available)
+
+    def test_status_ok_overrides_legacy_early_exit_flag(self) -> None:
+        review = _make_review(status="ok", early_exit=True)
+        assert not _has_early_exit({"codex": review})
+
+    def test_status_early_exit_enables_sequential_bypass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEW_MODE", "sequential")
+        names = list(REVIEWER_NAMES)
+        reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
+        reviews[names[0]] = _make_review(status="early_exit")
+        verdict, reason, _ = apply_verdict_rules(reviews)
+        assert verdict == "approve"
+        assert "no issues" in reason
+
+    def test_status_failed_counts_as_partial(self) -> None:
+        assert _is_partial(_make_review(status="failed"))
+        assert not _is_partial(_make_review(status="ok"))
+
+    def test_status_failed_labeled_in_summary(self) -> None:
+        reviews: dict[str, dict[str, Any] | None] = {
+            n: None for n in REVIEWER_NAMES
+        }
+        reviews[list(REVIEWER_NAMES)[0]] = _make_review(status="failed")
+        summary = format_summary(reviews, "comment", "reason", {}, comment_only=True)
+        assert "status=failed" in summary
+
+
+class TestUnknownStatusFailClosed:
+    """AT-1799: unknown status values must never count as a performed review."""
+
+    def test_unknown_status_excluded_and_warns(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(status="weird")
+        }
+        assert _get_available(reviews) == {}
+        captured = capsys.readouterr()
+        assert "::warning" in captured.err
+        assert "weird" in captured.err
+
+    def test_unknown_status_normalized_to_failed(self) -> None:
+        review = _make_review(status="weird")
+        assert _normalize_status("codex", review) == "failed"
+        assert review["status"] == "failed"
+
+    def test_unknown_status_disqualifies_benign_skip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # All jobs "success" but one artifact carries an unknown status:
+        # the payload exists, so the benign trivial-diff skip must not fire.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
+        reviews[list(REVIEWER_NAMES)[0]] = _make_review(status="weird")
+        verdict, reason, _ = apply_verdict_rules(reviews)
+        assert verdict == "comment"
+        assert "benign skip" not in reason
+        assert "all failed" in reason
+
+
+class TestLegacyStatusInference:
+    """AT-1799: payloads without `status` keep today's inferred behavior."""
+
+    def test_legacy_error_without_issues_infers_failed(self) -> None:
+        review = _make_review(error="boom")
+        assert _normalize_status("codex", review) == "failed"
+
+    def test_legacy_error_with_issues_infers_ok(self) -> None:
+        review = _make_review(error="truncated", issues=[_make_issue()])
+        assert _normalize_status("codex", review) == "ok"
+
+    def test_legacy_early_exit_true_infers_early_exit(self) -> None:
+        review = _make_review(early_exit=True)
+        assert _normalize_status("codex", review) == "early_exit"
+
+    def test_legacy_plain_payload_infers_ok(self) -> None:
+        review = _make_review()
+        assert _normalize_status("codex", review) == "ok"
+
+    def test_normalization_is_idempotent_and_stamped(self) -> None:
+        review = _make_review(error="boom")
+        first = _normalize_status("codex", review)
+        assert review["status"] == first
+        assert _normalize_status("codex", review) == first
 
 
 class TestSummaryLabels:
