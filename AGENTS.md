@@ -16,7 +16,7 @@ GitHub Rulesets for the tracked consumers are stored in the PRIVATE org secret `
 - New tracked repo: add a `<repo>: {id, ruleset}` entry to `RULESET_CONFIG` (full-value rewrite, as above). No workflow code change needed.
 
 ### Daily consumer health
-`consumer-health.yml` runs daily (00:00 UTC) checking the 5 tracked consumers:
+`consumer-health.yml` runs daily (00:00 UTC) checking the tracked consumers:
 - recent ai-review.yml run conclusions
 - reusable workflow pin freshness
 - org/repo-level secret accessibility
