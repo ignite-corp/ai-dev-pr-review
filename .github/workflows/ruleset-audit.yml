@@ -84,9 +84,11 @@ jobs:
               # a change such as a new rule parameter backfilled by GitHub.
               drift_paths=$(python3 "${GITHUB_WORKSPACE}/.github/scripts/ruleset_drift_paths.py" \
                 /tmp/stored.norm.json /tmp/live.norm.json | paste -sd, -)
-              # No differing path means the two docs hold the same values in a
-              # different array order (jq -S sorts keys, not arrays).
-              echo "::error::entry ${i}/${total}: drift in [${drift_paths:-array order only}]"
+              # No differing path means the per-path value multisets match while
+              # the documents do not: either a benign array reordering (jq -S
+              # sorts keys, not arrays) or a change that permutes values between
+              # elements of the same path. Investigate before dismissing it.
+              echo "::error::entry ${i}/${total}: drift in [${drift_paths:-array order or correlated element change}]"
               sc_stored=$(count_checks /tmp/stored.norm.json)
               sc_live=$(count_checks /tmp/live.norm.json)
               if [ "$sc_stored" != "$sc_live" ]; then

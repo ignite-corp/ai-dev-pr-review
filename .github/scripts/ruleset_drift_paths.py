@@ -10,8 +10,11 @@ one document.
 
 Array indices are normalized to ``[]`` so paths aggregate across elements
 (``rules[].parameters.foo``). Values under such a path are compared as a
-multiset, so reordering an array is not drift while adding, removing or
-changing an element is.
+multiset. Reordering an array is therefore not reported, but neither is a
+change that merely permutes values between elements of the same path -- two
+array entries swapping a field cancel out in that field's multiset. An empty
+result is NOT proof that the documents match: the caller decides drift from
+its own comparison and must not read silence here as agreement.
 
 Only KEYS are printed, never values: a path segment is always a JSON object key
 or ``[]``. That is what makes the output safe for this public repo's Actions

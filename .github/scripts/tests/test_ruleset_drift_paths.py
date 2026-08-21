@@ -86,6 +86,28 @@ def test_array_reordering_is_not_drift() -> None:
     assert drifted_paths(stored, live) == []
 
 
+def test_known_limitation_correlated_swap_between_elements_is_invisible() -> None:
+    # KNOWN LIMITATION, pinned so it cannot regress silently: values are bucketed
+    # per normalized path, so two array elements swapping a field leave both
+    # multisets unchanged and no path is reported. Here two required checks trade
+    # their integration_id -- a real AT-1270-class change. The audit does not rely
+    # on this function to detect drift (its own diff does that), which is why the
+    # caller must not report an empty result as a benign reordering.
+    stored = {
+        "rules": [
+            {"context": "check-one", "integration_id": 1},
+            {"context": "check-two", "integration_id": 2},
+        ]
+    }
+    live = {
+        "rules": [
+            {"context": "check-one", "integration_id": 2},
+            {"context": "check-two", "integration_id": 1},
+        ]
+    }
+    assert drifted_paths(stored, live) == []
+
+
 def test_output_is_sorted_and_deduplicated() -> None:
     stored = {"b": 1, "a": 1, "items": [{"x": 1}, {"x": 2}]}
     live = {"b": 2, "a": 2, "items": [{"x": 3}, {"x": 4}]}
