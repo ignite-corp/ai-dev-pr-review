@@ -6,10 +6,9 @@ name: ruleset-audit
 # wherever it would otherwise be echoed (including the step env listing).
 # Results are still reported by INDEX only, and this workflow must NOT print
 # consumer repo names, ruleset IDs, ruleset bodies, or status-check context
-# strings. On drift it names which top-level ruleset fields differ (generic
-# GitHub schema keys) and the required_status_checks count delta -- never the
-# values, so the log itself is the diagnostic. A failing run signals
-# drift/footgun.
+# strings. On drift it names which ruleset key paths differ (generic GitHub
+# schema keys) and the required_status_checks count delta -- never the values,
+# so the log itself is the diagnostic. A failing run signals drift/footgun.
 
 on:
   schedule:
@@ -80,17 +79,14 @@ jobs:
             if diff -q /tmp/stored.norm.json /tmp/live.norm.json > /dev/null; then
               echo "OK: entry ${i}/${total} matches stored"
             else
-              # Report WHICH schema fields drifted (keys only -- never the values,
-              # which are private ruleset bodies).
-              drift_fields=""
-              for f in name target enforcement conditions rules bypass_actors; do
-                if ! diff -q \
-                    <(jq -cS --arg f "$f" '.[$f]' /tmp/stored.norm.json) \
-                    <(jq -cS --arg f "$f" '.[$f]' /tmp/live.norm.json) > /dev/null; then
-                  drift_fields="${drift_fields:+$drift_fields, }$f"
-                fi
-              done
-              echo "::error::entry ${i}/${total}: drift in [${drift_fields}]"
+              # Report WHICH schema key paths drifted (keys only -- never the
+              # values, which are private ruleset bodies). Nested paths localise
+              # a change such as a new rule parameter backfilled by GitHub.
+              drift_paths=$(python3 "${GITHUB_WORKSPACE}/.github/scripts/ruleset_drift_paths.py" \
+                /tmp/stored.norm.json /tmp/live.norm.json | paste -sd, -)
+              # No differing path means the two docs hold the same values in a
+              # different array order (jq -S sorts keys, not arrays).
+              echo "::error::entry ${i}/${total}: drift in [${drift_paths:-array order only}]"
               sc_stored=$(count_checks /tmp/stored.norm.json)
               sc_live=$(count_checks /tmp/live.norm.json)
               if [ "$sc_stored" != "$sc_live" ]; then
