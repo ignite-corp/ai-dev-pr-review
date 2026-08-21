@@ -1,14 +1,15 @@
 name: ruleset-sync
 
 # Consumer ruleset config (repo names, ruleset IDs, per-repo ruleset bodies)
-# lives ONLY in the private org variable RULESET_CONFIG, never in this public
-# repo. This workflow runs in a PUBLIC repo, so its Actions logs are public --
-# it must NOT print consumer repo names or ruleset IDs. Progress is reported by
-# index only; correlate an index to a repo via the private RULESET_CONFIG var.
+# lives ONLY in the private org secret RULESET_CONFIG, never in this public
+# repo. This workflow runs in a PUBLIC repo, so its Actions logs are public;
+# because the config is a secret, Actions masks its value wherever it would
+# otherwise be echoed (including the step env listing). Progress is still
+# reported by index only, so no consumer repo names or ruleset IDs reach the log.
 #
 # RULESET_CONFIG shape: {"<repo>": {"id": <int>, "ruleset": {<ruleset body>}}, ...}
-# Config changes do not auto-trigger a sync (a var change fires no event); run
-# this workflow manually after updating the variable. ruleset-audit.yml catches
+# Config changes do not auto-trigger a sync (a secret change fires no event); run
+# this workflow manually after updating the secret. ruleset-audit.yml catches
 # any resulting drift nightly.
 
 on:
@@ -38,12 +39,12 @@ jobs:
       - name: Sync rulesets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          RULESET_CONFIG: ${{ vars.RULESET_CONFIG }}
+          RULESET_CONFIG: ${{ secrets.RULESET_CONFIG }}
           REVIEW_COUNT_OVERRIDE: ${{ vars.RULESET_REVIEW_COUNT_OVERRIDE || inputs.review_count_override }}
         run: |
           set -u
           if [ -z "${RULESET_CONFIG:-}" ]; then
-            echo "::error::RULESET_CONFIG variable is empty or unset"
+            echo "::error::RULESET_CONFIG secret is empty or unset"
             exit 1
           fi
           if [ -n "${REVIEW_COUNT_OVERRIDE:-}" ] && ! [[ "$REVIEW_COUNT_OVERRIDE" =~ ^[0-9]+$ ]]; then

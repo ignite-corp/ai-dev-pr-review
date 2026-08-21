@@ -1,13 +1,15 @@
 name: ruleset-audit
 
-# Consumer ruleset config lives ONLY in the private org variable RULESET_CONFIG,
+# Consumer ruleset config lives ONLY in the private org secret RULESET_CONFIG,
 # never in this public repo. This workflow runs in a PUBLIC repo, so its Actions
-# logs are public -- it must NOT print consumer repo names, ruleset IDs, ruleset
-# bodies, or status-check context strings. Results are reported by INDEX only:
-# on drift it names which top-level ruleset fields differ (generic GitHub schema
-# keys) and the required_status_checks count delta -- never the values. Correlate
-# an index to a repo via the private RULESET_CONFIG var, then diff the live
-# ruleset against the var locally. A failing run signals drift/footgun.
+# logs are public; because the config is a secret, Actions masks its value
+# wherever it would otherwise be echoed (including the step env listing).
+# Results are still reported by INDEX only, and this workflow must NOT print
+# consumer repo names, ruleset IDs, ruleset bodies, or status-check context
+# strings. On drift it names which top-level ruleset fields differ (generic
+# GitHub schema keys) and the required_status_checks count delta -- never the
+# values, so the log itself is the diagnostic. A failing run signals
+# drift/footgun.
 
 on:
   schedule:
@@ -34,11 +36,11 @@ jobs:
       - name: Audit rulesets
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          RULESET_CONFIG: ${{ vars.RULESET_CONFIG }}
+          RULESET_CONFIG: ${{ secrets.RULESET_CONFIG }}
         run: |
           set -u
           if [ -z "${RULESET_CONFIG:-}" ]; then
-            echo "::error::RULESET_CONFIG variable is empty or unset"
+            echo "::error::RULESET_CONFIG secret is empty or unset"
             exit 1
           fi
 

@@ -230,16 +230,17 @@ jobs:
       - name: Consumer health check
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          RULESET_CONFIG: ${{ vars.RULESET_CONFIG }}
+          RULESET_CONFIG: ${{ secrets.RULESET_CONFIG }}
         run: |
           set -u
           # This workflow runs in a PUBLIC repo, so its Actions logs are public.
           # It must NOT print consumer repo names, run ids, branches, or PR titles.
-          # The consumer list is derived from the private org variable RULESET_CONFIG
-          # (keys are the tracked repo names); progress is reported by index only.
-          # Correlate an index to a repo via the private RULESET_CONFIG var.
+          # The consumer list is derived from the private org secret RULESET_CONFIG
+          # (keys are the tracked repo names); because it is a secret, Actions masks
+          # its value wherever it would otherwise be echoed (including the step env
+          # listing), and progress is reported by index only.
           if [ -z "${RULESET_CONFIG:-}" ]; then
-            echo "::error::RULESET_CONFIG variable is empty or unset"
+            echo "::error::RULESET_CONFIG secret is empty or unset"
             exit 1
           fi
           mapfile -t CONSUMERS < <(jq -r 'keys[]' <<< "$RULESET_CONFIG")
