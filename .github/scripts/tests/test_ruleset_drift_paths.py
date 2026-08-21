@@ -10,9 +10,14 @@ safety property under test is that only schema KEYS ever reach the output.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
+
+# Add parent dir to path for import
+SCRIPT_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(SCRIPT_DIR))
 
 from ruleset_drift_paths import drifted_paths, main
 
