@@ -25,14 +25,26 @@ from aggregate_reviews import (
 
 
 def _make_review(**overrides: Any) -> dict[str, Any]:
-    """Create a minimal valid review payload."""
+    """Create a minimal valid review payload.
+
+    Carries ``status: "ok"`` because every emitter now ships ``status``;
+    use ``_make_status_less_review`` to build a contract-violating payload.
+    """
     base: dict[str, Any] = {
         "summary": "Test review",
+        "status": "ok",
         "early_exit": False,
         "issues": [],
     }
     base.update(overrides)
     return base
+
+
+def _make_status_less_review(**overrides: Any) -> dict[str, Any]:
+    """Create a payload that violates the contract by omitting ``status``."""
+    review = _make_review(**overrides)
+    review.pop("status", None)
+    return review
 
 
 def _make_issue(**overrides: Any) -> dict[str, Any]:
@@ -148,6 +160,7 @@ def _make_named_review(name: str, issues: list[dict[str, Any]]) -> dict[str, Any
     """Create a valid review payload tagged with reviewer name."""
     return {
         "summary": f"{name} review",
+        "status": "ok",
         "early_exit": False,
         "issues": [{**i, "reviewer": name} for i in issues],
     }
@@ -323,6 +336,7 @@ def _error_payloads() -> dict[str, dict[str, Any] | None]:
     return {
         name: _make_review(
             summary=f"{name.title()} review failed: CLI exited 2",
+            status="failed",
             error="cli_invocation_failed",
             error_detail="error: unexpected argument '--full-auto' found",
         )
@@ -337,6 +351,7 @@ class TestErrorPayloadExclusion:
         reviews: dict[str, dict[str, Any] | None] = {
             "codex": _make_review(
                 summary="Codex review failed: CLI exited 2",
+                status="failed",
                 error="cli_invocation_failed",
             )
         }
@@ -661,8 +676,8 @@ class TestStatusContract:
         }
         assert "codex" in _get_available(reviews)
 
-    def test_status_takes_precedence_over_legacy_error_inference(self) -> None:
-        # status "ok" wins over the legacy error-with-no-issues inference.
+    def test_status_ok_wins_over_error_key(self) -> None:
+        # A partial failure that still reports "ok" keeps counting.
         reviews: dict[str, dict[str, Any] | None] = {
             "codex": _make_review(status="ok", error="transient")
         }
@@ -675,7 +690,7 @@ class TestStatusContract:
         assert "codex" in available
         assert _has_early_exit(available)
 
-    def test_status_ok_overrides_legacy_early_exit_flag(self) -> None:
+    def test_status_ok_overrides_early_exit_flag(self) -> None:
         review = _make_review(status="ok", early_exit=True)
         assert not _has_early_exit({"codex": review})
 
@@ -737,27 +752,61 @@ class TestUnknownStatusFailClosed:
         assert "all failed" in reason
 
 
-class TestLegacyStatusInference:
-    """AT-1799: payloads without `status` keep today's inferred behavior."""
+class TestMissingStatusFailClosed:
+    """AT-1954: `status` is mandatory -- it is never inferred from other keys.
 
-    def test_legacy_error_without_issues_infers_failed(self) -> None:
-        review = _make_review(error="boom")
+    Every emitter now ships `status`, so a payload without it is a contract
+    violation and must fail closed rather than resolve to a passing review
+    (the AT-1792 failure mode: a dead reviewer counted as a clean pass).
+    """
+
+    def test_missing_status_normalized_to_failed_and_warns(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        review = _make_status_less_review()
         assert _normalize_status("codex", review) == "failed"
+        assert review["status"] == "failed"
+        captured = capsys.readouterr()
+        assert "::warning" in captured.err
+        assert "missing status" in captured.err
+        assert "fail-closed" in captured.err
 
-    def test_legacy_error_with_issues_infers_ok(self) -> None:
-        review = _make_review(error="truncated", issues=[_make_issue()])
-        assert _normalize_status("codex", review) == "ok"
+    def test_clean_payload_without_status_is_not_a_passing_review(self) -> None:
+        # issues == [] and no error: the shape that used to infer "ok".
+        review = _make_status_less_review()
+        reviews: dict[str, dict[str, Any] | None] = {"codex": review}
+        assert _get_available(reviews) == {}
+        # _get_available stamps the fail-closed status, as load_reviews does
+        # before _is_partial runs in main().
+        assert _is_partial(review)
 
-    def test_legacy_early_exit_true_infers_early_exit(self) -> None:
-        review = _make_review(early_exit=True)
-        assert _normalize_status("codex", review) == "early_exit"
+    def test_missing_status_not_inferred_from_error_key(self) -> None:
+        # error + issues used to infer "ok"; it must now fail closed.
+        review = _make_status_less_review(error="truncated", issues=[_make_issue()])
+        assert _normalize_status("codex", review) == "failed"
+        assert _get_available({"codex": review}) == {}
 
-    def test_legacy_plain_payload_infers_ok(self) -> None:
-        review = _make_review()
-        assert _normalize_status("codex", review) == "ok"
+    def test_missing_status_not_inferred_from_early_exit_flag(self) -> None:
+        review = _make_status_less_review(early_exit=True)
+        assert _normalize_status("codex", review) == "failed"
+        assert not _has_early_exit({"codex": review})
+
+    def test_missing_status_disqualifies_benign_skip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # All jobs "success" but one artifact omits status: the payload
+        # exists and fails closed, so the benign trivial-diff skip must not fire.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
+        reviews[list(REVIEWER_NAMES)[0]] = _make_status_less_review()
+        verdict, reason, _ = apply_verdict_rules(reviews)
+        assert verdict == "comment"
+        assert "benign skip" not in reason
+        assert "all failed" in reason
 
     def test_normalization_is_idempotent_and_stamped(self) -> None:
-        review = _make_review(error="boom")
+        review = _make_status_less_review()
         first = _normalize_status("codex", review)
         assert review["status"] == first
         assert _normalize_status("codex", review) == first

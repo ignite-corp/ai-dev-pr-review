@@ -15,16 +15,16 @@ Reviewer payload contract (AT-1799):
                          counts and drives the sequential early-exit bypass
       - "failed"      -- reviewer infrastructure failed; NEVER counted as
                          a performed review
-    Parsing is fail-closed: a present-but-unknown ``status`` value is
-    normalized to "failed" (with a ::warning) so a malformed payload can
-    never masquerade as a healthy review. ``status``, when present, takes
-    precedence over legacy key inference.
+    Parsing is fail-closed: a missing ``status`` field, or a
+    present-but-unknown value, is normalized to "failed" (with a
+    ::warning) so a payload that violates the contract can never
+    masquerade as a healthy review.
 
-    Legacy payloads without ``status`` derive it from key presence
-    (``error`` set with no ``issues`` -> failed; ``early_exit`` true ->
-    early_exit; otherwise ok). This legacy inference path exists for
-    emitters pinned to older releases and can be removed once all emitters
-    (base + wrapper) ship ``status`` (contract introduced 2026-08-08).
+    ``status`` is the single source of truth and is never inferred from
+    other keys such as ``error`` or ``early_exit``. The inference shim for
+    emitters pinned to pre-contract releases was removed once every
+    emitter (base + wrapper) shipped ``status`` (AT-1954; contract
+    introduced 2026-08-08).
 """
 
 from __future__ import annotations
@@ -114,10 +114,11 @@ _VALID_STATUSES = frozenset({STATUS_OK, STATUS_EARLY_EXIT, STATUS_FAILED})
 def _normalize_status(name: str, review: dict[str, Any]) -> str:
     """Normalize and stamp ``status`` on the payload, returning it.
 
-    ``status``, when present and valid, takes precedence over legacy key
-    inference. Unknown values are fail-closed to "failed" so a malformed
-    payload can never count as a performed review. Idempotent: downstream
-    logic reads the stamped field as the single source of truth.
+    A missing ``status`` field and a present-but-unknown value are both
+    fail-closed to "failed" so a payload that violates the contract can
+    never count as a performed review. Status is never inferred from
+    ``error`` or ``early_exit``. Idempotent: downstream logic reads the
+    stamped field as the single source of truth.
     """
     raw = review.get("status")
     if isinstance(raw, str) and raw in _VALID_STATUSES:
@@ -129,19 +130,15 @@ def _normalize_status(name: str, review: dict[str, Any]) -> str:
             " treating as failed (fail-closed)",
             file=sys.stderr,
         )
-        review["status"] = STATUS_FAILED
-        return STATUS_FAILED
-    # Legacy inference for payloads without `status` -- remove once all
-    # emitters (base + wrapper) ship `status` (see module docstring,
-    # contract introduced 2026-08-08).
-    if review.get("error") and not review.get("issues"):
-        status = STATUS_FAILED
-    elif review.get("early_exit") is True:
-        status = STATUS_EARLY_EXIT
     else:
-        status = STATUS_OK
-    review["status"] = status
-    return status
+        print(
+            f"::warning title={name.title()} missing status::"
+            f"status absent, expected one of {sorted(_VALID_STATUSES)};"
+            " treating as failed (fail-closed)",
+            file=sys.stderr,
+        )
+    review["status"] = STATUS_FAILED
+    return STATUS_FAILED
 
 
 def load_reviewer_conclusions() -> dict[str, str]:
@@ -167,10 +164,10 @@ def _get_available(
     """Filter reviews to only those with valid responses.
 
     Reads the normalized ``status``: anything except "failed" counts.
-    Legacy partial-failure reviews (both 'error' and 'issues' present)
-    normalize to "ok" and stay included so their issues still contribute
-    to verdict calculation; legacy error-with-no-issues payloads normalize
-    to "failed" and are excluded entirely.
+    A partial-failure review that still reports status "ok" (an 'error'
+    alongside 'issues') stays included so its issues contribute to verdict
+    calculation; payloads whose status is "failed" -- including those that
+    fail closed for a missing or unknown status -- are excluded entirely.
     """
     return {
         k: v
