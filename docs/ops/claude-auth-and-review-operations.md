@@ -64,7 +64,15 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
   - `post_inline_comments.py` / `review_gemini.py` / `review_prompt.md` /
     composite action -> single
 - The pinned tag will not exist until the release is cut, so **cut the release
-  immediately after the pin-bump merge**.
+  immediately after the pin-bump merge**. Until it exists, `self-review.yml`'s
+  `guard` job skips the pin-bump PR's own review (with a `::notice::` naming
+  the pin) instead of failing on the missing ref.
+- **After publishing the tag, dispatch self-review at the release PR** -
+  `gh workflow run self-review.yml -f pr_number=<release PR>`. Script changes
+  are exercised by no PR check until they ship in a tag (see the
+  `self-review.yml` header), so this single step both restores review coverage
+  for the release PR and verifies the new scripts actually run. Confirm the
+  checked-out ref in the aggregate job log.
 
 ## Standalone workflows = SSOT, not drift
 

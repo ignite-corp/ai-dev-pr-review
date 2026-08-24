@@ -13,6 +13,12 @@
 #     override that ref. Script changes only take effect on self-review after
 #     they ship in a release tag.
 #
+# Release pin-bump PRs: the bumped pin names a tag that is only created after
+# the merge, so prepare's pinned checkout would fail and skip the six reviewer
+# jobs plus aggregate. The `guard` job below detects that case and skips the
+# review with an explanatory notice instead of leaving a red X. Dispatch this
+# workflow against the release PR once the tag exists to get its review.
+#
 # Auto-approve: the org var ALLOW_AUTO_APPROVE is `true`, but this repo sets a
 # repo-level var ALLOW_AUTO_APPROVE=false to override it. This repo is the
 # review tool itself; letting the pipeline approve its own PRs would defeat
@@ -35,12 +41,46 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Gate on the release tag the script checkouts are pinned to actually
+  # existing. Keyed on the tag rather than on a branch-name convention: the tag
+  # is what defines a release, and it is the missing tag - not the branch name
+  # - that makes prepare fail.
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      skip: ${{ steps.pin.outputs.skip }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+      - name: Check the pinned release tag exists
+        id: pin
+        run: |
+          PIN="$(awk '/repository: ignite-corp\/ai-dev-pr-review/ { found = 1 }
+                      found && $1 == "ref:" { print $2; exit }' \
+                 .github/workflows/base-ai-review-prepare.yml)"
+          if [ -z "$PIN" ]; then
+            echo "::error::cannot parse the script checkout pin from base-ai-review-prepare.yml"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "$PIN" >/dev/null 2>&1; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "pinned tag $PIN exists; running self-review"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::self-review skipped -- pinned tag $PIN does not exist yet (expected during a release pin bump; unexpected otherwise)"
+          fi
+
   review:
+    needs: guard
     # This is a public repo: fork PRs cannot read the org secrets, so skip
     # instead of failing the required check machinery with empty credentials.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      needs.guard.outputs.skip != 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/base-ai-review-orchestrator.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
