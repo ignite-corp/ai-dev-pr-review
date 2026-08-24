@@ -82,11 +82,18 @@ runs:
         anthropic_api_key: ${{ (inputs.claude_code_oauth_token == '' || inputs.force_api == 'true') && inputs.anthropic_api_key || '' }}
         claude_code_oauth_token: ${{ inputs.force_api != 'true' && inputs.claude_code_oauth_token || '' }}
         # The action refuses to run for a non-human actor unless the actor is
-        # listed here (default ""), so every dependabot-triggered PR lost its
+        # listed here (default ""), so a bot-triggered PR silently lost its
         # Claude reviewer: "Workflow initiated by non-human actor: dependabot
-        # (type: Bot)" (AT-1837). Scoped to the one bot that authors PRs in the
-        # fleet -- '*' would admit any bot, including Apps that could reach this
-        # action with a prompt they control (upstream docs/security.md).
-        allowed_bots: 'dependabot[bot]'
+        # (type: Bot)" (AT-1837). Three bots author PRs in this fleet and all
+        # three hit the guard: dependabot, pilot-cd-dispatcher (onboard /
+        # pages-callback scaffolds in ai-dev-infra-common) and github-actions
+        # (age/KMS commits in ai-tf-t2a). Enumerated rather than '*', which
+        # would admit any bot, including Apps that could reach this action with
+        # a prompt they control (upstream docs/security.md).
+        # Format per the pinned action's src/github/validation/actor.ts:
+        # comma-separated, each entry trimmed, lowercased and stripped of a
+        # trailing "[bot]" -- so the suffix is optional and matching is
+        # case-insensitive, but comma is the only separator.
+        allowed_bots: 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot]'
         claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed_tools }}"'
         prompt: ${{ inputs.prompt }}
