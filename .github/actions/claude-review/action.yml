@@ -81,5 +81,12 @@ runs:
         # (feature-off invariant): OAuth when present, API only as the fallback.
         anthropic_api_key: ${{ (inputs.claude_code_oauth_token == '' || inputs.force_api == 'true') && inputs.anthropic_api_key || '' }}
         claude_code_oauth_token: ${{ inputs.force_api != 'true' && inputs.claude_code_oauth_token || '' }}
+        # The action refuses to run for a non-human actor unless the actor is
+        # listed here (default ""), so every dependabot-triggered PR lost its
+        # Claude reviewer: "Workflow initiated by non-human actor: dependabot
+        # (type: Bot)" (AT-1837). Scoped to the one bot that authors PRs in the
+        # fleet -- '*' would admit any bot, including Apps that could reach this
+        # action with a prompt they control (upstream docs/security.md).
+        allowed_bots: 'dependabot[bot]'
         claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed_tools }}"'
         prompt: ${{ inputs.prompt }}
