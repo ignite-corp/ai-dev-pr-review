@@ -541,14 +541,25 @@ def format_summary(
     else:
         icon, label = "[!]", "Comment Only"
 
-    # Append per-reviewer reason annotations for any missing verdicts.
+    # Append per-reviewer reason annotations for any missing verdicts, and for
+    # reviewers that did produce a payload but reported status "failed" -- an
+    # infrastructure failure has to be named on the headline too, not only in
+    # that reviewer's section further down (AT-1837).
     missing_notes: list[str] = []
-    if conclusions:
-        for name in REVIEWERS:
-            if reviews.get(name) is None or "summary" not in (reviews.get(name) or {}):
-                conclusion = conclusions.get(name, "")
-                if conclusion and conclusion != "skipped":
-                    missing_notes.append(f"{name}: {_missing_reason(conclusion)}")
+    for name in REVIEWERS:
+        review = reviews.get(name)
+        if review is None or "summary" not in review:
+            conclusion = (conclusions or {}).get(name, "")
+            if conclusion and conclusion != "skipped":
+                missing_notes.append(f"{name}: {_missing_reason(conclusion)}")
+        elif _normalize_status(name, review) == STATUS_FAILED:
+            err = review.get("error")
+            detail = (
+                err[:ERROR_TRUNCATE_LEN]
+                if isinstance(err, str) and err
+                else "reviewer reported status=failed"
+            )
+            missing_notes.append(f"{name}: {detail}")
     reason_suffix = f" ({', '.join(missing_notes)})" if missing_notes else ""
 
     lines = [

@@ -232,6 +232,45 @@ jobs:
           fi
           python3 .ai-dev-pr-review/.github/scripts/extract_claude_review.py "$EXEC_FILE"
 
+      # When the Claude action dies before writing a verdict (e.g. its
+      # non-human-actor guard rejecting a dependabot-triggered run), no
+      # artifact is uploaded at all, so the aggregate sees an ABSENT reviewer
+      # -- which only lowers the response count -- instead of a FAILED one,
+      # and reports the outage as a benign "early-exit or no-output"
+      # (AT-1837). Emit the same shape of error verdict the codex path emits
+      # so both reviewers fail the same, visible way. The prompt requires a
+      # verdict file even for early_exit, so a missing file here is always an
+      # infrastructure failure, never a benign skip. Not continue-on-error:
+      # if we cannot even record the failure, the job must not report success.
+      - name: Emit Claude error verdict (no verdict file)
+        if: inputs.reviewer == 'claude' && always()
+        env:
+          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          STEP_OUTCOME: ${{ steps.claude-review.outcome }}
+        run: |
+          set -euo pipefail
+          if [ -s review-claude.json ]; then
+            echo "::notice::Claude verdict file present"
+            exit 0
+          fi
+          if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+            ERROR_KIND="output_unparseable"
+            DETAIL="claude-code-action outcome=${STEP_OUTCOME}; execution log held no verdict JSON"
+          else
+            ERROR_KIND="action_invocation_failed"
+            DETAIL="claude-code-action outcome=${STEP_OUTCOME}; no execution log produced"
+          fi
+          echo "::warning::Claude review produced no verdict file -- emitting error verdict (${ERROR_KIND})"
+          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" '{
+            summary: ("Claude review failed: no verdict file produced -- " + $detail),
+            status: "failed",
+            early_exit: false,
+            issues: [],
+            error: $kind,
+            error_detail: $detail
+          }' > review-claude.json
+          jq empty review-claude.json
+
       # --- Claude: auto auth switch on usage-limit events (AT-1606) ---
       # When the review hits a subscription (OAuth) usage-limit error, set
       # the ignite-corp org vars CLAUDE_FORCE_API=true and

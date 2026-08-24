@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from aggregate_reviews import (
     _get_available,
@@ -18,6 +24,7 @@ from aggregate_reviews import (
     _is_valid_review,
     apply_verdict_rules,
     format_summary,
+    load_reviews,
     main,
     post_verdict,
     REVIEWER_NAMES,
@@ -831,3 +838,199 @@ class TestSummaryLabels:
     def test_approve_comment_only_label(self) -> None:
         summary = format_summary({}, "approve", "reason", {}, comment_only=True)
         assert "comment only -- auto-approve disabled" in summary
+
+
+class TestClaudeInfrastructureFailure:
+    """AT-1837: a dead Claude reviewer must be counted as failed, not absent.
+
+    A dependabot-triggered run had claude-code-action reject the actor
+    ("Workflow initiated by non-human actor"), so no artifact was produced.
+    The aggregate then saw an ABSENT reviewer, which only lowers the count,
+    and blamed a benign "early-exit or no-output" -- the AT-1792 shape.
+    """
+
+    @staticmethod
+    def _claude_failed() -> dict[str, Any]:
+        """The error verdict the claude path emits when it wrote nothing."""
+        detail = "claude-code-action outcome=success; no execution log produced"
+        return _make_review(
+            summary=f"Claude review failed: no verdict file produced -- {detail}",
+            status="failed",
+            error="action_invocation_failed",
+            error_detail=detail,
+        )
+
+    def _reviews_with_dead_claude(self) -> dict[str, dict[str, Any] | None]:
+        reviews: dict[str, dict[str, Any] | None] = {
+            name: _make_named_review(name, []) for name in REVIEWER_NAMES
+        }
+        reviews["claude"] = self._claude_failed()
+        return reviews
+
+    def test_absent_artifact_is_reported_as_benign_no_output(self) -> None:
+        # Baseline the pre-fix shape: an absent payload is indistinguishable
+        # from a benign skip, which is why the emitter must not leave one.
+        reviews: dict[str, dict[str, Any] | None] = {
+            name: _make_named_review(name, []) for name in REVIEWER_NAMES
+        }
+        reviews["claude"] = None
+        conclusions = {name: "success" for name in REVIEWER_NAMES}
+        verdict, reason, available = apply_verdict_rules(reviews)
+        summary = format_summary(reviews, verdict, reason, available, conclusions)
+        assert "claude: early-exit or no-output" in summary
+        assert "failed" not in summary
+
+    def test_failed_payload_excluded_but_verdict_still_reached(self) -> None:
+        verdict, reason, available = apply_verdict_rules(
+            self._reviews_with_dead_claude()
+        )
+        assert "claude" not in available
+        assert set(available) == {"codex", "gemini"}
+        assert verdict == "approve"
+        assert "2/3" in reason
+
+    def test_failed_payload_named_on_headline_and_in_section(self) -> None:
+        reviews = self._reviews_with_dead_claude()
+        conclusions = {name: "success" for name in REVIEWER_NAMES}
+        verdict, reason, available = apply_verdict_rules(reviews)
+        summary = format_summary(reviews, verdict, reason, available, conclusions)
+        assert "claude: action_invocation_failed" in summary
+        assert "(partial: action_invocation_failed)" in summary
+        assert "early-exit or no-output" not in summary
+
+    def test_failed_payload_counts_as_partial(self) -> None:
+        assert _is_partial(self._claude_failed())
+
+    def test_dead_claude_alone_does_not_fail_ci(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One reviewer down stays merge-non-blocking: the remaining two meet
+        # MIN_REVIEWERS_FOR_VERDICT, so the aggregate reports an honest 2/3.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "737")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value=self._reviews_with_dead_claude(),
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+        assert mock_post.call_args[0][1] == "approve"
+
+    def test_dead_claude_plus_one_more_fails_ci(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Zero margin made visible: a second outage drops below quorum.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "737")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        reviews = self._reviews_with_dead_claude()
+        reviews["codex"] = _make_review(
+            summary="Codex review failed: CLI exited 2",
+            status="failed",
+            error="cli_invocation_failed",
+        )
+        with (
+            patch("aggregate_reviews.load_reviews", return_value=reviews),
+            patch("aggregate_reviews.post_verdict"),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+
+    def test_failed_payload_disqualifies_benign_skip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Claude's error verdict is an artifact: all-jobs-success must not be
+        # read as a trivial-diff skip.
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
+        reviews["claude"] = self._claude_failed()
+        verdict, reason, _ = apply_verdict_rules(reviews)
+        assert verdict == "comment"
+        assert "benign skip" not in reason
+
+
+_SINGLE_WORKFLOW = (
+    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-single.yml"
+)
+_ERROR_VERDICT_STEP = "Emit Claude error verdict (no verdict file)"
+
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+
+
+def _error_verdict_step_script() -> str:
+    """Return the run: body of the claude error-verdict step."""
+    workflow = yaml.safe_load(_SINGLE_WORKFLOW.read_text(encoding="utf-8"))
+    for step in workflow["jobs"]["review"]["steps"]:
+        if step.get("name") == _ERROR_VERDICT_STEP:
+            return str(step["run"])
+    raise AssertionError(f"step not found: {_ERROR_VERDICT_STEP}")
+
+
+@requires_jq
+class TestClaudeErrorVerdictStep:
+    """The emitter and the aggregate must agree (AT-1837).
+
+    Runs the workflow step's own shell body, then feeds what it wrote to
+    the aggregate's loader -- the seam that silently produced nothing when
+    claude-code-action died.
+    """
+
+    @staticmethod
+    def _run(workdir: Path, exec_file: str, outcome: str = "success") -> None:
+        result = subprocess.run(
+            ["bash", "-c", _error_verdict_step_script()],
+            cwd=workdir,
+            env={
+                "PATH": os.environ["PATH"],
+                "EXEC_FILE": exec_file,
+                "STEP_OUTCOME": outcome,
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_no_execution_log_emits_failed_verdict(self, tmp_path: Path) -> None:
+        self._run(tmp_path, "")
+        payload = json.loads((tmp_path / "review-claude.json").read_text())
+        assert payload["status"] == "failed"
+        assert payload["error"] == "action_invocation_failed"
+        assert payload["early_exit"] is False
+        assert payload["issues"] == []
+        assert "no execution log" in payload["error_detail"]
+
+    def test_unparseable_execution_log_is_distinguished(self, tmp_path: Path) -> None:
+        exec_file = tmp_path / "execution.json"
+        exec_file.write_text("[]")
+        self._run(tmp_path, str(exec_file))
+        payload = json.loads((tmp_path / "review-claude.json").read_text())
+        assert payload["error"] == "output_unparseable"
+
+    def test_existing_verdict_file_is_left_untouched(self, tmp_path: Path) -> None:
+        original = _make_named_review("claude", [])
+        (tmp_path / "review-claude.json").write_text(json.dumps(original))
+        self._run(tmp_path, "")
+        assert json.loads((tmp_path / "review-claude.json").read_text()) == original
+
+    def test_emitted_verdict_is_excluded_by_the_aggregate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._run(tmp_path, "")
+        for name in ("codex", "gemini"):
+            (tmp_path / f"review-{name}.json").write_text(
+                json.dumps(_make_named_review(name, []))
+            )
+        monkeypatch.chdir(tmp_path)
+        reviews = load_reviews()
+        available = _get_available(reviews)
+        assert reviews["claude"] is not None
+        assert "claude" not in available
+        assert set(available) == {"codex", "gemini"}
