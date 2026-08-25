@@ -219,6 +219,9 @@ jobs:
     if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
+      # Needed for .github/scripts/pin_freshness.py (stdlib only, no install).
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
       - name: Mint App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -245,6 +248,34 @@ jobs:
           fi
           mapfile -t CONSUMERS < <(jq -r 'keys[]' <<< "$RULESET_CONFIG")
           REQUIRED_SECRETS=(OPENAI_API_KEY GOOGLE_AI_API_KEY CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY)
+
+          # This repo is itself a key in RULESET_CONFIG (AT-1967) so that the
+          # ruleset audit covers it, but it is not a consumer: self-review.yml
+          # calls the orchestrator through a LOCAL path, so it has no pin to
+          # the review pipeline and cannot go stale. Its own name is public.
+          BASE_REPO="${GITHUB_REPOSITORY#*/}"
+
+          # Release index for pin freshness (AT-2007). One paginated call to
+          # the tags endpoint covers every release (~30 refs today, 100 per
+          # page), and each tag carries its commit SHA, so a SHA pin resolves
+          # to its release without a request per pin. These are this public
+          # repo's own version numbers, so they are safe to log.
+          RELEASE_TAGS=$(mktemp)
+          # Fail closed on the fetch too: a mid-pagination error leaves a
+          # non-empty but truncated file, which would judge every pin against
+          # a "latest" that is not the latest. A check that silently stops
+          # judging is the bug being fixed.
+          if ! gh api --paginate "repos/${GITHUB_REPOSITORY}/tags?per_page=100" \
+            --jq '.[] | {name: .name, sha: .commit.sha}' > "$RELEASE_TAGS"; then
+            echo "::error::cannot fetch the release tag list; pin freshness unjudgeable"
+            exit 1
+          fi
+          PIN_FRESHNESS="${GITHUB_WORKSPACE}/.github/scripts/pin_freshness.py"
+          if ! LATEST_RELEASE=$(python3 "$PIN_FRESHNESS" --tags "$RELEASE_TAGS" --latest); then
+            echo "::error::cannot resolve the latest release tag; pin freshness unjudgeable"
+            exit 1
+          fi
+          echo "latest release: ${LATEST_RELEASE}"
 
           # Stale cutoff for known-bad startup_failure runs
           STALE_BEFORE="2026-06-09T00:00:00Z"
@@ -319,12 +350,23 @@ jobs:
             # Most consumers use review-ai.yml; some still use ai-review.yml.
             # The filename itself is not consumer-identifying, so it is safe to log.
             wf=""
-            for candidate in review-ai.yml ai-review.yml; do
-              if gh api "repos/${slug}/contents/.github/workflows/${candidate}" >/dev/null 2>&1; then
-                wf="$candidate"
-                break
-              fi
-            done
+            is_base_repo=0
+            if [ "$name" = "$BASE_REPO" ]; then
+              # Name it directly: the fallback scan below matches the first
+              # workflow mentioning the orchestrator, which in this repo is
+              # consumer-health.yml itself -- so the entry was flagging for a
+              # missing pin it is not supposed to have.
+              is_base_repo=1
+              wf="self-review.yml"
+            fi
+            if [ -z "$wf" ]; then
+              for candidate in review-ai.yml ai-review.yml; do
+                if gh api "repos/${slug}/contents/.github/workflows/${candidate}" >/dev/null 2>&1; then
+                  wf="$candidate"
+                  break
+                fi
+              done
+            fi
             if [ -z "$wf" ]; then
               # Fall back: pick the workflow file that references the reusable orchestrator.
               while read -r f; do
@@ -363,33 +405,35 @@ jobs:
               fi
 
               # 2. Workflow pin freshness
-              content_b64=$(gh api "repos/${slug}/contents/.github/workflows/${wf}" 2>/dev/null | jq -r '.content // empty')
-              if [ -z "$content_b64" ]; then
-                echo "  [FLAG] entry ${i}/${total}: no review workflow found"
-                consumer_flags=$((consumer_flags + 1))
+              #
+              # A SHA pin is immutable, which is why it is preferred over the
+              # floating v1 tag -- but immutable is not current. Until AT-2007
+              # any 40-hex SHA passed forever, and consumers rotted on the
+              # v1.3.0 commit while this check reported green. pin_freshness.py
+              # resolves a SHA back to its release tag and applies the same
+              # MINOR-tolerance rule to every pin form; the acceptable floor
+              # follows the newest release instead of a hardcoded constant.
+              # Its output names only this public repo's own pins and tags.
+              if [ "$is_base_repo" = 1 ]; then
+                echo "  pin: n/a (base repo calls the orchestrator by local path)"
               else
-                content=$(echo "$content_b64" | base64 -d 2>/dev/null || true)
-                pin=$(echo "$content" \
-                  | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
-                  | head -1 \
-                  | sed -E 's|.*@||')
-                echo "  pin=${pin:-<none>}"
-                if [ -z "$pin" ]; then
-                  echo "  [FLAG] entry ${i}/${total}: no reusable workflow pin found"
+                content_b64=$(gh api "repos/${slug}/contents/.github/workflows/${wf}" 2>/dev/null | jq -r '.content // empty')
+                if [ -z "$content_b64" ]; then
+                  echo "  [FLAG] entry ${i}/${total}: no review workflow found"
                   consumer_flags=$((consumer_flags + 1))
-                elif echo "$pin" | grep -Eiq '^[0-9a-f]{40}$'; then
-                  : # immutable SHA pin = OK
-                elif echo "$pin" | grep -Eq '^v1$'; then
-                  : # floating major tag = OK
-                elif echo "$pin" | grep -Eq '^v1\.0\.[6-9]$'; then
-                  :
-                elif echo "$pin" | grep -Eq '^v1\.[1-9][0-9]*(\..*)?$'; then
-                  :
-                elif echo "$pin" | grep -Eq '^v1\.0\.[1-9][0-9]+$'; then
-                  :
                 else
-                  echo "  [FLAG] entry ${i}/${total}: reusable pin ${pin} stale (below v1.0.6)"
-                  consumer_flags=$((consumer_flags + 1))
+                  content=$(echo "$content_b64" | base64 -d 2>/dev/null || true)
+                  pin=$(echo "$content" \
+                    | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
+                    | head -1 \
+                    | sed -E 's|.*@||')
+                  echo "  pin=${pin:-<none>}"
+                  if freshness=$(python3 "$PIN_FRESHNESS" --tags "$RELEASE_TAGS" --pin "$pin"); then
+                    echo "  pin freshness: ${freshness}"
+                  else
+                    echo "  [FLAG] entry ${i}/${total}: ${freshness}"
+                    consumer_flags=$((consumer_flags + 1))
+                  fi
                 fi
               fi
             fi

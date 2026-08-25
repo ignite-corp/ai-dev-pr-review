@@ -18,7 +18,11 @@ GitHub Rulesets for the tracked consumers are stored in the PRIVATE org secret `
 ### Daily consumer health
 `consumer-health.yml` runs daily (00:00 UTC) checking the tracked consumers:
 - recent ai-review.yml run conclusions
-- reusable workflow pin freshness
+- reusable workflow pin freshness: a SHA pin is resolved back to its release
+  tag (`.github/scripts/pin_freshness.py`), and every pin form must name the
+  latest release or the one MINOR before it. A commit that matches no release
+  is flagged too. The base repo's own entry is skipped here -- self-review.yml
+  calls the orchestrator by local path, so it has no pin.
 - org/repo-level secret accessibility
 - Dependabot PR status
 
