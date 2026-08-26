@@ -152,13 +152,21 @@ jobs:
       - review-gemini-s
       - review-codex-s
       - review-claude-s
+    # NOTE: deliberately NOT gated on needs.prepare.outputs.skip. This job's
+    # name is a required status context on the consumer rulesets, and a job
+    # that does not run produces no context at all -- which leaves the check
+    # Pending forever with nothing failed to explain it. The reviewer jobs
+    # above stay gated (that is the cost saving); aggregate always runs and
+    # renders the skip as an explicit, actionable verdict (AT-1975).
     if: >-
       always() &&
-      needs.prepare.result == 'success' &&
-      needs.prepare.outputs.skip == 'false'
+      needs.prepare.result == 'success'
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      size_skipped: ${{ needs.prepare.outputs.skip }}
+      size_total: ${{ needs.prepare.outputs.size_total }}
+      size_limit: ${{ needs.prepare.outputs.size_limit }}
       claude_result: ${{ needs.review-claude-p.result != 'skipped' && needs.review-claude-p.result || needs.review-claude-s.result }}
       codex_result: ${{ needs.review-codex-p.result != 'skipped' && needs.review-codex-p.result || needs.review-codex-s.result }}
       gemini_result: ${{ needs.review-gemini-p.result != 'skipped' && needs.review-gemini-p.result || needs.review-gemini-s.result }}

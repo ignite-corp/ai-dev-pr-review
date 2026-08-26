@@ -461,6 +461,72 @@ def _check_major_consensus(all_issues: list[dict[str, Any]]) -> tuple[str, str] 
     return None
 
 
+def _size_skip_details() -> tuple[str, str] | None:
+    """(total, limit) when prepare skipped the review for size, else None.
+
+    prepare gates the reviewer jobs on PR_SIZE_LIMIT but cannot skip this job:
+    its name is a required status context, and a job that never runs reports
+    nothing, so the check sits Pending with no failure to explain it. The
+    aggregate therefore runs on the skip path and renders it (AT-1975).
+    """
+    if os.environ.get("SIZE_SKIPPED", "false").strip().lower() != "true":
+        return None
+    return (
+        os.environ.get("SIZE_TOTAL", "").strip() or "unknown",
+        os.environ.get("SIZE_LIMIT", "").strip() or "unknown",
+    )
+
+
+def format_size_skip_summary(total: str, limit: str) -> str:
+    """Verdict body for a review skipped because the PR is too large.
+
+    Names the measurement and both remedies: the original defect was not that
+    large PRs are blocked -- they already were -- but that nothing said so or
+    said what to do about it.
+    """
+    headline = (
+        f"**Result: [X] Review skipped -- PR too large** --"
+        f" {total} changed lines exceeds the limit of {limit}"
+    )
+    why_red = (
+        "No reviewer ran, so this check reports a failure rather than a"
+        " verdict. That is deliberate: a required check that is never"
+        " reported stays Pending forever with nothing to act on."
+    )
+    remedy_split = (
+        f"1. **Split this PR** so each part is at or under {limit} changed lines."
+    )
+    remedy_limit = (
+        "2. **Raise the limit for this repository** by setting the"
+        f" `PR_SIZE_LIMIT` repository variable above {total}"
+        " (Settings -> Secrets and variables -> Actions -> Variables),"
+        " then re-run this workflow."
+    )
+    tradeoff = (
+        "Raising the limit makes the reviewers read a larger diff, which costs"
+        " more and reviews less closely -- splitting is preferred where it is"
+        " possible."
+    )
+    lines = [
+        REVIEW_MARKER,
+        "## [bot] Multi-LLM Review Summary",
+        "",
+        headline,
+        "",
+        "---",
+        "",
+        why_red,
+        "",
+        "To proceed, either:",
+        "",
+        remedy_split,
+        remedy_limit,
+        "",
+        tradeoff,
+    ]
+    return "\n".join(lines)
+
+
 def apply_verdict_rules(
     reviews: dict[str, dict[str, Any] | None],
 ) -> tuple[str, str, dict[str, dict[str, Any]]]:
@@ -824,6 +890,23 @@ def post_verdict(
 
 
 def main() -> None:
+    size_skip = _size_skip_details()
+    if size_skip is not None:
+        total, limit = size_skip
+        comment = format_size_skip_summary(total, limit)
+        post_verdict(
+            comment,
+            "request_changes",
+            comment_only=_is_comment_only(),
+        )
+        print(
+            f"Final verdict: request_changes -- review skipped, {total} changed"
+            f" lines exceeds PR_SIZE_LIMIT {limit}"
+        )
+        # Blocking is the pre-existing policy (an unreported required check
+        # already made these PRs unmergeable); this only makes it visible.
+        sys.exit(1)
+
     reviews = load_reviews()
     conclusions = load_reviewer_conclusions()
     partial_names = _emit_partial_observability(reviews, conclusions)

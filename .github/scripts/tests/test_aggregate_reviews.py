@@ -16,6 +16,7 @@ import yaml
 
 from aggregate_reviews import (
     _get_available,
+    _size_skip_details,
     _has_early_exit,
     _normalize_severity,
     _normalize_status,
@@ -23,12 +24,14 @@ from aggregate_reviews import (
     _is_partial,
     _is_valid_review,
     apply_verdict_rules,
+    format_size_skip_summary,
     format_summary,
     load_reviews,
     main,
     post_verdict,
     REVIEWER_NAMES,
 )
+from github_pr_support import REVIEW_MARKER
 
 
 def _make_review(**overrides: Any) -> dict[str, Any]:
@@ -1034,3 +1037,177 @@ class TestClaudeErrorVerdictStep:
         assert reviews["claude"] is not None
         assert "claude" not in available
         assert set(available) == {"codex", "gemini"}
+
+
+_ORCHESTRATOR_WORKFLOW = (
+    Path(__file__).resolve().parents[2]
+    / "workflows"
+    / "base-ai-review-orchestrator.yml"
+)
+
+
+class TestSizeSkipVerdict:
+    """A PR over PR_SIZE_LIMIT must produce a visible, actionable failure.
+
+    Before AT-1975 the aggregate job was gated off on this path, so the
+    required context was never reported and the PR sat Pending with nothing
+    failed to explain it. The block itself is not new -- only the signal is.
+    """
+
+    @staticmethod
+    def _set_size_env(
+        monkeypatch: pytest.MonkeyPatch, total: str = "4200", limit: str = "3000"
+    ) -> None:
+        monkeypatch.setenv("SIZE_SKIPPED", "true")
+        monkeypatch.setenv("SIZE_TOTAL", total)
+        monkeypatch.setenv("SIZE_LIMIT", limit)
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    def test_size_skip_exits_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._set_size_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        assert mock_post.call_args[0][1] == "request_changes"
+
+    def test_size_skip_body_names_the_measurement(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._set_size_env(monkeypatch, total="4200", limit="3000")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        assert "4200" in body
+        assert "3000" in body
+
+    def test_size_skip_body_names_both_remedies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reason without remedy only fixes half of "blocked and cannot tell why"."""
+        self._set_size_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        assert "Split this PR" in body
+        assert "PR_SIZE_LIMIT" in body
+
+    def test_size_skip_body_carries_the_review_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the marker the comment escapes stale-comment minimization."""
+        self._set_size_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert mock_post.call_args[0][0].startswith(REVIEW_MARKER)
+
+    def test_size_skip_never_reads_reviewer_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole point is that no reviewer ran, so none can be waited on."""
+        self._set_size_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.load_reviews") as mock_load,
+            patch("aggregate_reviews.post_verdict"),
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mock_load.assert_not_called()
+
+    def test_missing_numbers_degrade_to_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blank measurement must still block, not crash or pass silently."""
+        monkeypatch.setenv("SIZE_SKIPPED", "true")
+        monkeypatch.setenv("SIZE_TOTAL", "")
+        monkeypatch.setenv("SIZE_LIMIT", "")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        assert "unknown" in mock_post.call_args[0][0]
+
+    @pytest.mark.parametrize("value", ["false", "", "False", "no"])
+    def test_normal_size_takes_the_normal_path(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """Regression: PRs under the limit must be unaffected."""
+        monkeypatch.setenv("SIZE_SKIPPED", value)
+        assert _size_skip_details() is None
+
+    def test_unset_takes_the_normal_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Consumers pinned to an older tag send no size inputs at all."""
+        monkeypatch.delenv("SIZE_SKIPPED", raising=False)
+        assert _size_skip_details() is None
+
+    def test_unset_still_reaches_the_reviewer_pipeline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end regression guard for the untouched path."""
+        monkeypatch.delenv("SIZE_SKIPPED", raising=False)
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ) as mock_load,
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+        mock_load.assert_called_once()
+        assert mock_post.call_args[0][1] == "approve"
+
+    def test_summary_is_ascii(self) -> None:
+        """Public-repo invariant, asserted at the point the string is built."""
+        format_size_skip_summary("4200", "3000").encode("ascii")
+
+
+class TestAggregateJobIsNotSizeGated:
+    """The orchestrator must never gate the aggregate job on the size skip.
+
+    This is the defect itself: a required context that is not reported stays
+    Pending forever. The reviewer jobs stay gated -- that is the cost saving.
+    """
+
+    @staticmethod
+    def _jobs() -> dict[str, Any]:
+        return dict(
+            yaml.safe_load(_ORCHESTRATOR_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+        )
+
+    def test_aggregate_does_not_reference_the_skip_output(self) -> None:
+        condition = str(self._jobs()["aggregate"].get("if", ""))
+        assert "outputs.skip" not in condition
+
+    def test_every_reviewer_job_still_references_the_skip_output(self) -> None:
+        jobs = self._jobs()
+        reviewers = [name for name in jobs if name.startswith("review-")]
+        assert reviewers, "no reviewer jobs found -- selector is stale"
+        for name in reviewers:
+            assert "outputs.skip" in str(jobs[name].get("if", "")), name
+
+    def test_aggregate_receives_the_size_inputs(self) -> None:
+        supplied = dict(self._jobs()["aggregate"].get("with", {}))
+        for key in ("size_skipped", "size_total", "size_limit"):
+            assert key in supplied, key

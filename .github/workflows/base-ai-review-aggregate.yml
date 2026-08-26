@@ -7,6 +7,21 @@ on:
         type: string
         required: false
         description: "PR number (for workflow_dispatch)"
+      size_skipped:
+        type: string
+        required: false
+        default: "false"
+        description: "'true' when prepare skipped the review because the PR exceeded PR_SIZE_LIMIT"
+      size_total:
+        type: string
+        required: false
+        default: ""
+        description: "Total changed lines measured by prepare (only meaningful when size_skipped)"
+      size_limit:
+        type: string
+        required: false
+        default: ""
+        description: "PR_SIZE_LIMIT the total was compared against (only meaningful when size_skipped)"
       claude_result:
         type: string
         required: false
@@ -117,6 +132,9 @@ jobs:
           REVIEWER_TOKEN: ${{ steps.reviewer_token.outputs.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          SIZE_SKIPPED: ${{ inputs.size_skipped }}
+          SIZE_TOTAL: ${{ inputs.size_total }}
+          SIZE_LIMIT: ${{ inputs.size_limit }}
           BOT_LOGIN: ${{ vars.BOT_LOGIN || 'github-actions[bot]' }}
           CRITICAL_THRESHOLD: ${{ vars.CRITICAL_THRESHOLD || '1' }}
           DEPENDABOT_CRITICAL_THRESHOLD: ${{ vars.DEPENDABOT_CRITICAL_THRESHOLD || '2' }}

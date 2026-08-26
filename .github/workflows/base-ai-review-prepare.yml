@@ -20,6 +20,12 @@ on:
       skip:
         description: "Whether to skip review (PR too large)"
         value: ${{ jobs.prepare.outputs.skip }}
+      size_total:
+        description: "Total changed lines measured for the size gate"
+        value: ${{ jobs.prepare.outputs.size_total }}
+      size_limit:
+        description: "PR_SIZE_LIMIT the total was compared against"
+        value: ${{ jobs.prepare.outputs.size_limit }}
 
 permissions:
   contents: read
@@ -31,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.size-check.outputs.skip }}
+      size_total: ${{ steps.size-check.outputs.total }}
+      size_limit: ${{ steps.size-check.outputs.limit }}
     steps:
       # Caller-repo checkout: the prompt paths live in the consumer repo,
       # not in ai-dev-pr-review, so checkout the caller's PR head.
@@ -82,11 +90,14 @@ jobs:
           DELETIONS=$(echo "$PR_DATA" | jq '.deletions')
           TOTAL=$((ADDITIONS + DELETIONS))
 
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "limit=$PR_SIZE_LIMIT" >> "$GITHUB_OUTPUT"
+
           if [ "$TOTAL" -gt "$PR_SIZE_LIMIT" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" \
               --repo "${{ github.repository }}" \
-              --body "[!] PR too large (${TOTAL} lines changed). Skipping AI review -- please request manual review."
+              --body "[!] PR too large (${TOTAL} lines changed, limit ${PR_SIZE_LIMIT}). Skipping AI review -- the aggregate verdict below explains how to proceed."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
