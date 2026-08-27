@@ -26,6 +26,9 @@ on:
       size_limit:
         description: "PR_SIZE_LIMIT the total was compared against"
         value: ${{ jobs.prepare.outputs.size_limit }}
+      head_sha:
+        description: "The PR head commit the diff was computed against. Callers check out THIS, not github.ref"
+        value: ${{ jobs.prepare.outputs.head_sha }}
 
 permissions:
   contents: read
@@ -38,6 +41,7 @@ jobs:
     outputs:
       skip: ${{ steps.size-check.outputs.skip }}
       size_total: ${{ steps.size-check.outputs.total }}
+      head_sha: ${{ steps.refs.outputs.head_sha }}
       size_limit: ${{ steps.size-check.outputs.limit }}
     steps:
       # Caller-repo checkout: the prompt paths live in the consumer repo,
@@ -126,6 +130,32 @@ jobs:
         env:
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
         run: git fetch origin "$HEAD_SHA"
+
+      # The caller-repo checkout above resolves `github.ref` when there is no
+      # pull_request payload, which is the dispatched ref -- `main` unless the
+      # caller passed --ref. The diff is computed from the API-resolved head, so
+      # it stayed correct while the working tree did not, and nothing said so:
+      # a reviewer that opens a file read the pre-change version while its diff
+      # showed the change, and the run reported success (AT-2038).
+      #
+      # Move the tree onto the head the diff is about, then assert it. The
+      # assert is the part that has to stay: a future path that reintroduces the
+      # divergence fails here instead of reviewing the wrong tree quietly.
+      - name: Put the working tree on the PR head
+        if: steps.size-check.outputs.skip == 'false'
+        env:
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          if [ -z "$HEAD_SHA" ]; then
+            echo "::error::head_sha is empty; refusing to review an unknown tree"
+            exit 1
+          fi
+          [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] || git checkout --detach "$HEAD_SHA"
+          ACTUAL=$(git rev-parse HEAD)
+          if [ "$ACTUAL" != "$HEAD_SHA" ]; then
+            echo "::error::working tree is $ACTUAL but the diff is about $HEAD_SHA"
+            exit 1
+          fi
 
       - name: Extract diff and context
         if: steps.size-check.outputs.skip == 'false'
