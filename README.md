@@ -46,6 +46,45 @@ The Claude reviewer runs through `anthropics/claude-code-action`, which accepts 
 
 **Precedence when both are set:** the CLI gives `ANTHROPIC_API_KEY` higher precedence, so passing both would bill the API even when an OAuth token exists. To avoid that, this repo's workflow now passes **only** the OAuth token when `CLAUDE_CODE_OAUTH_TOKEN` is set, so the subscription is used; `ANTHROPIC_API_KEY` is a fallback wired through only when no OAuth token is present (docs: code.claude.com/docs/en/authentication). Provide the single credential you want to authenticate and bill against. (The `consumer-health` check reports all four so a misconfigured repo surfaces early — that is a health signal, not a hard requirement to set both Claude secrets.)
 
+## Required consumer-repo settings
+
+One setting has to be right before the first run, and getting it wrong fails the
+whole workflow at startup rather than failing a job you can read:
+
+```
+The workflow is requesting 'pull-requests: write',
+but is only allowed 'pull-requests: none'.
+```
+
+The orchestrator declares `permissions: {contents: read, pull-requests: write}`
+— it has to, because the aggregate posts the verdict. A repository's **default
+workflow permissions is a ceiling, not a default**: if it is `read`, a caller
+cannot grant more, and declaring the permissions in the consumer workflow does
+not help.
+
+Check and set it:
+
+```bash
+gh api repos/OWNER/REPO/actions/permissions/workflow
+# {"default_workflow_permissions":"read", ...}   <- will fail at startup
+
+gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow \
+  -f default_workflow_permissions=write \
+  -F can_approve_pull_request_reviews=false
+```
+
+Or: Settings -> Actions -> General -> Workflow permissions -> **Read and write
+permissions**.
+
+**Leave "Allow GitHub Actions to create and approve pull requests" off.** The
+aggregate approves through a dedicated reviewer App token when `REVIEWER_APP_ID`
+and `REVIEWER_APP_PRIVATE_KEY` are configured, and `ALLOW_AUTO_APPROVE` defaults
+to `false`. `GITHUB_TOKEN` never needs approval rights, so granting them widens
+the blast radius for nothing.
+
+This applies to **every** consumer, same-org or cross-org. It was not documented
+until a consumer hit it (AT-2031).
+
 ## Minimal consumer thin trigger
 
 Drop this into the consumer repo as `.github/workflows/ai-review.yml`:

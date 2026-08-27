@@ -9,6 +9,24 @@
 # Pick ONE variant and delete the other before committing.
 # Both pin to @v1 (floating major tag) -- DO NOT use @main in production.
 
+# PREREQUISITE FOR EVERY CONSUMER, same-org or cross-org:
+#   The repository's default workflow permissions must be "read and write".
+#   The orchestrator declares `pull-requests: write` (the aggregate posts the
+#   verdict), and this setting is a CEILING, not a default -- at "read" the run
+#   dies at startup with:
+#     "The workflow is requesting 'pull-requests: write',
+#      but is only allowed 'pull-requests: none'."
+#   Declaring permissions in this file does not raise the ceiling.
+#
+#     gh api repos/OWNER/REPO/actions/permissions/workflow
+#     gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow \
+#       -f default_workflow_permissions=write \
+#       -F can_approve_pull_request_reviews=false
+#
+#   Leave "create and approve pull requests" OFF -- approvals go through the
+#   reviewer App token, and ALLOW_AUTO_APPROVE defaults false, so GITHUB_TOKEN
+#   never needs it. (AT-2031)
+
 # --- Variant 1: same-org (ignite-corp) ---
 name: AI Code Review
 
