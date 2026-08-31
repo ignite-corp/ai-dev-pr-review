@@ -1211,3 +1211,105 @@ class TestAggregateJobIsNotSizeGated:
         supplied = dict(self._jobs()["aggregate"].get("with", {}))
         for key in ("size_skipped", "size_total", "size_limit"):
             assert key in supplied, key
+
+
+_PREPARE_WORKFLOW = (
+    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-prepare.yml"
+)
+_AGGREGATE_WORKFLOW = (
+    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-aggregate.yml"
+)
+
+
+def _workflow(path: Path) -> dict[str, Any]:
+    return dict(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def _guard_script(path: Path) -> str:
+    """The run: body of the tree/diff guard in a reviewer-side workflow."""
+    job = next(iter(_workflow(path)["jobs"].values()))
+    for step in job["steps"]:
+        if step.get("name") == "Confirm the tree matches the diff":
+            return str(step["run"])
+    raise AssertionError(f"guard step not found in {path.name}")
+
+
+class TestReviewTreeMatchesTheDiff:
+    """The tree the reviewers read must be the commit the diff is about.
+
+    On workflow_dispatch there is no pull_request payload, so a checkout of
+    `github.event.pull_request.head.sha || github.ref` resolves the dispatched
+    ref -- `main` unless the caller passed --ref. The diff stayed correct
+    because prepare resolves the head through the API, so a reviewer read one
+    tree and reasoned about another tree's diff, and the run reported success
+    (AT-2038).
+    """
+
+    def test_prepare_publishes_the_head_it_resolved(self) -> None:
+        wf = _workflow(_PREPARE_WORKFLOW)
+        assert "head_sha" in wf[True]["workflow_call"]["outputs"]
+        assert "head_sha" in wf["jobs"]["prepare"]["outputs"]
+
+    def test_every_reviewer_side_job_is_given_that_head(self) -> None:
+        jobs = _workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]
+        callers = [n for n, j in jobs.items() if "uses" in j and n != "prepare"]
+        assert callers, "no reusable-calling jobs found -- selector is stale"
+        for name in callers:
+            supplied = dict(jobs[name].get("with") or {})
+            assert "head_sha" in supplied, name
+
+    def test_prepare_is_not_given_its_own_output(self) -> None:
+        """It produces head_sha; consuming it would be a cycle."""
+        supplied = dict(_workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]["prepare"].get("with") or {})
+        assert "head_sha" not in supplied
+
+    @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
+    def test_checkout_prefers_the_resolved_head(self, path: Path) -> None:
+        job = next(iter(_workflow(path)["jobs"].values()))
+        checkout = next(
+            s for s in job["steps"] if str(s.get("name", "")).startswith("Checkout caller repo")
+        )
+        ref = str(checkout["with"]["ref"])
+        assert "inputs.head_sha" in ref
+        assert ref.index("inputs.head_sha") < ref.index("github.ref")
+
+    @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
+    def test_guard_passes_when_the_tree_matches(self, path: Path, tmp_path: Path) -> None:
+        head = _git_repo_at(tmp_path)
+        assert _run_guard(_guard_script(path), tmp_path, head) == 0
+
+    @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
+    def test_guard_fails_when_the_tree_is_a_different_commit(
+        self, path: Path, tmp_path: Path
+    ) -> None:
+        _git_repo_at(tmp_path)
+        other = "0" * 40
+        assert _run_guard(_guard_script(path), tmp_path, other) == 1
+
+    @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
+    def test_guard_allows_the_size_skip_path(self, path: Path, tmp_path: Path) -> None:
+        """prepare never resolves a head when it skips, so empty must pass."""
+        _git_repo_at(tmp_path)
+        assert _run_guard(_guard_script(path), tmp_path, "") == 0
+
+
+def _git_repo_at(root: Path) -> str:
+    env = {"PATH": os.environ["PATH"], "HOME": str(root),
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    (root / "f").write_text("x", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "f"], ["commit", "-qm", "c"]):
+        subprocess.run(["git", *args], cwd=root, env=env, check=True,
+                       capture_output=True, timeout=30)
+    out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, env=env,
+                         check=True, capture_output=True, text=True, timeout=30)
+    return out.stdout.strip()
+
+
+def _run_guard(script: str, cwd: Path, head_sha: str) -> int:
+    return subprocess.run(
+        ["bash", "-c", script], cwd=cwd,
+        env={"PATH": os.environ["PATH"], "HEAD_SHA": head_sha},
+        capture_output=True, timeout=30,
+        check=False,  # the exit code IS the assertion here
+    ).returncode

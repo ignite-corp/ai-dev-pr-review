@@ -57,6 +57,7 @@ jobs:
     with:
       reviewer: gemini
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -70,6 +71,7 @@ jobs:
     with:
       reviewer: codex
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -83,6 +85,7 @@ jobs:
     with:
       reviewer: claude
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -99,6 +102,7 @@ jobs:
     with:
       reviewer: claude
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -117,6 +121,7 @@ jobs:
     with:
       reviewer: codex
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -136,6 +141,7 @@ jobs:
     with:
       reviewer: gemini
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -164,6 +170,7 @@ jobs:
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
       size_skipped: ${{ needs.prepare.outputs.skip }}
       size_total: ${{ needs.prepare.outputs.size_total }}
       size_limit: ${{ needs.prepare.outputs.size_limit }}
