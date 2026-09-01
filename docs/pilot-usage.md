@@ -4,20 +4,49 @@ How the AI review pipeline is installed and run for `ignite-pilot-org` consumers
 Unlike same-org `ignite-corp` consumers, the pilot org calls through a **wrapper**
 and does not support org-level secrets, so everything is configured per repo.
 
-## Architecture (wrapper indirection)
+## Architecture (the wrapper reimplements, it does not delegate)
 
 ```
 consumer repo  .github/workflows/ai-review.yml
   └─ uses: ignite-pilot-org/ai-dev-pr-review-wrapper/.github/workflows/wrapper.yml@v1
-        └─ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
+       one `review:` job with every prepare/reviewer/aggregate step written out inline
+        └─ actions/checkout ignite-corp/ai-dev-pr-review@${{ inputs.upstream_ref }}
+             into `.ai-dev-pr-review/` — helper scripts, `review_prompt.md` and the
+             shared `.github/actions/claude-review` composite only
 ```
 
-- Pilot consumers do **not** call the upstream `ignite-corp` orchestrator directly —
-  they go through `ignite-pilot-org/ai-dev-pr-review-wrapper`, which forwards inputs and
-  secrets to the upstream orchestrator.
-- Exceptions: `spec-interview` and `factory-process-maker` historically pin the upstream
-  orchestrator directly (`@v1.0.5`). Migrating them to the wrapper is recommended for
-  consistency.
+- The wrapper does **not** call `base-ai-review-orchestrator.yml`, or any other reusable
+  workflow from this repo. `wrapper.yml` is a hand-maintained duplicate of the review
+  pipeline. Measured at wrapper `c3dd05c` (v1.6.0 plus AT-1979), its 726 non-comment,
+  non-blank lines partition as:
+  - **603** copied verbatim from base's `prepare` / `single` / `aggregate` / `orchestrator`
+    (identical once leading indentation is ignored);
+  - **98** scaffolding forced by collapsing base's five jobs into one — per-step
+    `steps.size-check.outputs.skip` / `early_exit` guards, the per-reviewer early-exit reads,
+    verdict synthesis and reviewer status computation. Base gets all of this for free from
+    job-level `needs:` and `result`;
+  - **25** genuinely wrapper-specific — the `upstream_ref` input and its checkout, the
+    `.wrapper-defaults/.prompts/` fallback, the hardcoded `REVIEW_MODE: sequential`, and
+    workflow identity.
+
+  Re-measure against the wrapper's current `main` before quoting these numbers; the totals
+  move with every wrapper release.
+- What it consumes from base is checked out at `upstream_ref` (default: the floating `v1`
+  tag): the `.github/scripts/*` helpers, `.github/scripts/review_prompt.md` (the shared
+  reviewer instruction, copied at `wrapper.yml:494`), and the `.github/actions/claude-review`
+  composite. Changes to **those** reach pilot consumers on the next run with no wrapper edit.
+- The per-repo prompts do **not** come from base. `code-review-system.md` and
+  `code-review-checklist.md` are read out of the *consumer* repo — base branch first, PR head
+  second — and the last-resort fallback is the wrapper's own `.prompts/`, checked out at
+  `ref: main` rather than at a release tag (AT-1957). `examples/prompts/` in this repo is a
+  starter template copied once at install time, not a runtime source.
+- **A change to `base-ai-review-single.yml` does not reach pilot consumers automatically.**
+  The workflow body is duplicated, so it must be hand-ported into `wrapper.yml` and shipped
+  as a lockstep wrapper release — see [Tag pinning](../README.md#tag-pinning). Six drift
+  incidents have been confirmed this way (AT-1800, AT-1955, AT-1837 and AT-1979 among them);
+  none was caught by an automated check.
+- Exceptions: `spec-interview` and `factory-process-maker` call the upstream orchestrator
+  directly (`@v1.0.5`) rather than through the wrapper.
 
 ## Installation — three components per repo
 
