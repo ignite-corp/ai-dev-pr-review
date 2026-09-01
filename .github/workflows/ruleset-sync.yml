@@ -1,11 +1,15 @@
 name: ruleset-sync
 
-# Consumer ruleset config (repo names, ruleset IDs, per-repo ruleset bodies)
-# lives ONLY in the private org secret RULESET_CONFIG, never in this public
-# repo. This workflow runs in a PUBLIC repo, so its Actions logs are public;
-# because the config is a secret, Actions masks its value wherever it would
-# otherwise be echoed (including the step env listing). Progress is still
-# reported by index only, so no consumer repo names or ruleset IDs reach the log.
+# Consumer ruleset config (the tracked-consumer list, ruleset IDs, per-repo
+# ruleset bodies) lives ONLY in the private org secret RULESET_CONFIG, never in
+# this public repo's tree. Consumer repo names themselves DO appear in the
+# onboarding docs (MIGRATION.md, the READMEs, examples/) -- see AGENTS.md, "What
+# the public tree exposes"; what the secret withholds is which of those repos
+# are ruleset-tracked and under what rules. This workflow runs in a PUBLIC repo,
+# so its Actions logs are public; because the config is a secret, Actions masks
+# its value wherever it would otherwise be echoed (including the step env
+# listing). Progress is still reported by index only, so no consumer repo names
+# or ruleset IDs reach the log.
 #
 # RULESET_CONFIG shape: {"<repo>": {"id": <int>, "ruleset": {<ruleset body>}}, ...}
 # Config changes do not auto-trigger a sync (a secret change fires no event); run
