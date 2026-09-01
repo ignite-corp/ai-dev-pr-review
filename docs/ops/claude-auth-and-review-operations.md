@@ -58,8 +58,9 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
 - base <-> wrapper keep **MAJOR.MINOR in lockstep**; patch versions independent.
   The wrapper reimplements the single-review job inline instead of calling base's
   reusable workflows, so a `base-ai-review-single.yml` change must be hand-ported
-  into `wrapper.yml` and released with it. Only scripts, prompts and the
-  `claude-review` composite ride along on their own. See `docs/pilot-usage.md`.
+  into `wrapper.yml` and released with it. Only `.github/scripts/*` (including
+  `review_prompt.md`) and the `claude-review` composite ride along on their own -
+  the per-repo prompts come from the consumer. See `docs/pilot-usage.md`.
 - **Pin-bump rule** - `single.yml`, `prepare.yml`, `aggregate.yml` each run
   different scripts from their own pinned checkout. Bump only the pin(s) serving
   the changed script:
