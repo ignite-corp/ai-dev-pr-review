@@ -221,7 +221,7 @@ updates:
 - 마이너(`v1.x.0`): 새 선택적 입력, 추가적 리뷰어 기능.
 - 메이저(`v2.0.0`): 입력 계약 변경, 스크립트 시그니처 깨짐, 심각도 임계 기본값 변경.
 
-래퍼 버전 정렬: 이 레포와 파일럿 래퍼 `ignite-pilot-org/ai-dev-pr-review-wrapper`는 릴리스 버전의 MAJOR.MINOR를 lockstep으로 유지하며, PATCH는 레포별로 독립적으로 올립니다. 현재 페어링: base `v1.5.0` ↔ wrapper `v1.5.0`. 한쪽 레포가 MINOR(또는 MAJOR)를 올리면, 다른 쪽도 매칭되는 정렬(alignment) 릴리스를 냅니다 — 변경 사항이 없으면 내용이 동일한 릴리스입니다. 두 레포 모두 릴리스 발행 시 `move-major-tag.yml`로 `v1` 메이저 태그를 자동 이동하므로, `@v1` 소비자는 별도 조치가 필요 없습니다.
+래퍼 버전 정렬: 이 레포와 파일럿 래퍼 `ignite-pilot-org/ai-dev-pr-review-wrapper`는 릴리스 버전의 MAJOR.MINOR를 lockstep으로 유지하며, PATCH는 레포별로 독립적으로 올립니다. 현재 페어링: base `v1.6.0` ↔ wrapper `v1.6.0`. 한쪽 레포가 MINOR(또는 MAJOR)를 올리면, 다른 쪽도 매칭되는 정렬(alignment) 릴리스를 냅니다 — 변경 사항이 없으면 내용이 동일한 릴리스입니다. 두 레포 모두 릴리스 발행 시 `move-major-tag.yml`로 `v1` 메이저 태그를 자동 이동하므로, `@v1` 소비자는 별도 조치가 필요 없습니다.
 
 ## 소비자 레포별 프롬프트 재정의
 
