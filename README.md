@@ -262,6 +262,8 @@ Version policy:
 
 Wrapper version alignment: this repo and the pilot wrapper `ignite-pilot-org/ai-dev-pr-review-wrapper` keep their release versions in MAJOR.MINOR lockstep; PATCH moves independently per repo. Current pairing: base `v1.6.0` ↔ wrapper `v1.6.0`. When either repo needs a MINOR (or MAJOR) bump, the other cuts a matching alignment release — content-identical if it has no changes. Both repos auto-float their `v1` major tag via `move-major-tag.yml` on release publish, so `@v1` consumers need no action.
 
+The lockstep exists because the wrapper does not call this repo's reusable workflows — it reimplements the single-review job inline. A change to `base-ai-review-single.yml` therefore does not reach pilot consumers on its own: it must be hand-ported into `wrapper.yml` and shipped as a matching wrapper release. Only `.github/scripts/*`, the prompts and the `.github/actions/claude-review` composite propagate automatically, through the wrapper's `upstream_ref` checkout. See [pilot usage](docs/pilot-usage.md).
+
 ## Overriding prompts per consumer repo
 
 The per-repo system prompt and checklist live in the consumer repo, NOT here. The reusable workflow reads them via `code-review-system-prompt-path` / `code-review-checklist-path` and concatenates them into the `context.md` that every reviewer (Claude / Codex / Gemini) reads as its shared guideline. To customize:
