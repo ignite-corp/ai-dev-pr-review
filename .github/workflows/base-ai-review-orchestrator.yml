@@ -158,19 +158,26 @@ jobs:
       - review-gemini-s
       - review-codex-s
       - review-claude-s
-    # NOTE: deliberately NOT gated on needs.prepare.outputs.skip. This job's
-    # name is a required status context on the consumer rulesets, and a job
-    # that does not run produces no context at all -- which leaves the check
-    # Pending forever with nothing failed to explain it. The reviewer jobs
-    # above stay gated (that is the cost saving); aggregate always runs and
-    # renders the skip as an explicit, actionable verdict (AT-1975).
-    if: >-
-      always() &&
-      needs.prepare.result == 'success'
+    # NOTE: deliberately gated on NOTHING. This job's name is a required status
+    # context on the consumer rulesets, and a job that does not run produces no
+    # context at all -- which leaves the check Pending forever with nothing
+    # failed to explain it. The reviewer jobs above stay gated (that is the cost
+    # saving); aggregate always runs and renders whatever happened as an
+    # explicit, actionable verdict.
+    #
+    # Two conditions were removed for that reason, one at a time:
+    #   - needs.prepare.outputs.skip == 'false'  (AT-1975, PR over PR_SIZE_LIMIT)
+    #   - needs.prepare.result == 'success'      (AT-2087, prepare failed)
+    # The second hole was the same Pending reached by a different path: an
+    # invalid PR_SIZE_LIMIT, an unresolvable head, the tree/diff assert AT-2038
+    # added, or any checkout/API/runner failure. prepare's result is passed in
+    # instead of gating on it, so the aggregate can say what happened.
+    if: always()
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
+      prepare_result: ${{ needs.prepare.result }}
       size_skipped: ${{ needs.prepare.outputs.skip }}
       size_total: ${{ needs.prepare.outputs.size_total }}
       size_limit: ${{ needs.prepare.outputs.size_limit }}
