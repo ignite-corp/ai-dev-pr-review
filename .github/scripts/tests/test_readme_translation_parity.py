@@ -1,0 +1,240 @@
+"""Public repo invariant: README.md and README.ko.md must not drift apart.
+
+AT-2031 added a 39-line ``## Required consumer-repo settings`` section to
+README.md only. It shipped in v1.6.0 English-only -- the one section whose
+absence kills a consumer at workflow startup -- and nothing reported it. A
+person found it days later while doing unrelated work (AT-2091).
+
+Translation cannot be checked by comparing strings: README.ko.md is
+deliberately different prose. Two invariants survive translation instead.
+
+1. Section shape. The ordered sequence of heading levels (outside fenced
+   code) must be identical in both files. Heading *text* is translated, so
+   only the shape is comparable; a section added to one side alone changes
+   it.
+
+2. Identifier presence. Tokens that no translator rewrites -- variable and
+   secret names, API field names, workflow and script filenames -- must
+   appear in both files or in neither. Presence, not count.
+
+   Exact occurrence counts were rejected as the invariant. On the tree as
+   it stands they flag ``settings.json`` (15 vs 13) and
+   ``managed-settings.json`` (8 vs 7): both files document the same facts,
+   the English prose just repeats the filename in sentences the Korean
+   phrases without it. Presence parity has zero violations on the same tree
+   and still catches AT-2091, where the Korean side had the identifiers zero
+   times.
+
+Escape hatch: put ``<!-- translation-parity: ignore-section -->`` on the line
+before a heading to drop that heading and its body from both checks, for a
+section that deliberately exists on one side only. It must carry a reason on
+the same line after the marker. Nothing in the tree needs it today.
+
+Not caught: a section present in both files but hollow in one. Matching
+headings and matching identifier presence say the structure and the
+untranslatable vocabulary agree; they say nothing about whether the prose
+under a heading actually explains the same thing. This is accepted -- the
+alternative is comparing translated prose, which is what makes this hard.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from difflib import SequenceMatcher
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ENGLISH = REPO_ROOT / "README.md"
+KOREAN = REPO_ROOT / "README.ko.md"
+
+FENCE = re.compile(r"^\s*(?:```|~~~)")
+HEADING = re.compile(r"^(#{1,6})\s+(\S.*)$")
+IGNORE_MARKER = "<!-- translation-parity: ignore-section -->"
+
+# Tokens as markdown writes them: identifiers, dotted paths, filenames.
+TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# An identifier is untranslatable if it is snake_case/SCREAMING_SNAKE ...
+SNAKE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$")
+# ... or a filename with an extension this repo actually ships.
+FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yml|yaml|json|md|py|sh)$")
+
+
+def _strip_ignored_sections(text: str) -> str:
+    """Drop sections marked as deliberately one-sided."""
+    lines = text.splitlines()
+    kept: list[str] = []
+    skip_above: int | None = None
+    marked = False
+    for line in lines:
+        heading = HEADING.match(line)
+        if heading:
+            level = len(heading.group(1))
+            if marked:
+                skip_above, marked = level, False
+                continue
+            if skip_above is not None and level > skip_above:
+                continue
+            skip_above = None
+        elif line.strip().startswith(IGNORE_MARKER):
+            marked = True
+            continue
+        if skip_above is None:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def headings(text: str) -> list[tuple[int, str]]:
+    """(level, title) for every heading outside a fenced code block."""
+    found: list[tuple[int, str]] = []
+    in_fence = False
+    for line in _strip_ignored_sections(text).splitlines():
+        if FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = HEADING.match(line)
+        if match:
+            found.append((len(match.group(1)), match.group(2).strip()))
+    return found
+
+
+def identifier_counts(text: str) -> Counter[str]:
+    """Occurrences of every untranslatable identifier in the document.
+
+    Fenced code is deliberately included: ``default_workflow_permissions``,
+    the identifier at the centre of AT-2091, appears only inside a ``gh api``
+    example.
+    """
+    counts: Counter[str] = Counter()
+    for token in TOKEN.findall(_strip_ignored_sections(text)):
+        token = token.strip("._-")
+        if SNAKE.match(token) or FILENAME.match(token):
+            counts[token] += 1
+    return counts
+
+
+def shape_diff(english: list[tuple[int, str]], korean: list[tuple[int, str]]) -> list[str]:
+    """Human-readable report of where the two heading sequences diverge."""
+    matcher = SequenceMatcher(a=[level for level, _ in english], b=[level for level, _ in korean])
+    report: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        for level, title in english[i1:i2]:
+            report.append(f"  README.md only: {'#' * level} {title}")
+        for level, title in korean[j1:j2]:
+            report.append(f"  README.ko.md only: {'#' * level} {title}")
+    return report
+
+
+def presence_diff(english: Counter[str], korean: Counter[str]) -> list[str]:
+    report: list[str] = []
+    for name in sorted(set(english) | set(korean)):
+        if bool(english[name]) != bool(korean[name]):
+            report.append(f"  {name}: README.md x{english[name]}, README.ko.md x{korean[name]}")
+    return report
+
+
+# ---------------------------------------------------------------------------
+# The invariant, against the real files
+# ---------------------------------------------------------------------------
+
+
+def test_both_readmes_exist() -> None:
+    """A rename must break this test loudly, not make it vacuous."""
+    assert ENGLISH.is_file(), f"missing {ENGLISH}"
+    assert KOREAN.is_file(), f"missing {KOREAN}"
+
+
+def test_section_shape_matches() -> None:
+    diff = shape_diff(headings(ENGLISH.read_text()), headings(KOREAN.read_text()))
+    assert not diff, "README.md and README.ko.md have different sections:\n" + "\n".join(diff)
+
+
+def test_untranslatable_identifiers_appear_in_both() -> None:
+    diff = presence_diff(identifier_counts(ENGLISH.read_text()), identifier_counts(KOREAN.read_text()))
+    assert not diff, (
+        "identifiers documented on one side only:\n"
+        + "\n".join(diff)
+        + "\nTranslate the missing text, or mark the section with "
+        + IGNORE_MARKER
+    )
+
+
+# ---------------------------------------------------------------------------
+# The checks themselves, against synthetic documents
+# ---------------------------------------------------------------------------
+
+_EN = """# Title
+
+## Setup
+
+Set `default_workflow_permissions` to write.
+
+## Usage
+
+Call `base-ai-review-single.yml`.
+"""
+
+_KO = """# Title
+
+## Seteop
+
+`default_workflow_permissions` reul write ro.
+
+## Sayong
+
+`base-ai-review-single.yml` ho-chul.
+"""
+
+
+def test_translated_pair_passes_both_checks() -> None:
+    assert shape_diff(headings(_EN), headings(_KO)) == []
+    assert presence_diff(identifier_counts(_EN), identifier_counts(_KO)) == []
+
+
+def test_section_added_on_one_side_is_reported() -> None:
+    drifted = _EN + "\n## Required consumer-repo settings\n\nRun `gh api`.\n"
+    diff = shape_diff(headings(drifted), headings(_KO))
+    assert any("Required consumer-repo settings" in line for line in diff), diff
+
+
+def test_identifier_documented_on_one_side_only_is_reported() -> None:
+    drifted = _EN.replace("`default_workflow_permissions`", "nothing")
+    diff = presence_diff(identifier_counts(drifted), identifier_counts(_KO))
+    assert diff == ["  default_workflow_permissions: README.md x0, README.ko.md x1"]
+
+
+def test_repeated_identifier_is_not_a_count_mismatch() -> None:
+    """Prose density differs between languages; presence is the invariant."""
+    wordy = _EN + "\nAgain: `base-ai-review-single.yml`, `base-ai-review-single.yml`.\n"
+    assert presence_diff(identifier_counts(wordy), identifier_counts(_KO)) == []
+
+
+def test_heading_inside_a_code_fence_is_not_a_section() -> None:
+    fenced = _EN + "\n```bash\n# Not a heading\necho hi\n```\n"
+    assert shape_diff(headings(fenced), headings(_KO)) == []
+
+
+def test_marked_section_is_excluded_from_both_checks() -> None:
+    en_only = (
+        _EN
+        + f"\n{IGNORE_MARKER} English-only appendix, no Korean equivalent planned\n"
+        + "## Appendix\n\nSee `internal_only_flag` and `notes.md`.\n"
+    )
+    assert shape_diff(headings(en_only), headings(_KO)) == []
+    assert presence_diff(identifier_counts(en_only), identifier_counts(_KO)) == []
+
+
+def test_marked_section_ends_at_the_next_sibling_heading() -> None:
+    en_only = (
+        _EN
+        + f"\n{IGNORE_MARKER} English-only appendix\n"
+        + "## Appendix\n\n### Detail\n\nUses `internal_only_flag`.\n"
+        + "## Tail\n\nUses `base-ai-review-single.yml`.\n"
+    )
+    ko = _KO + "\n## Kkori\n\n`base-ai-review-single.yml` sayong.\n"
+    assert shape_diff(headings(en_only), headings(ko)) == []
+    assert presence_diff(identifier_counts(en_only), identifier_counts(ko)) == []
