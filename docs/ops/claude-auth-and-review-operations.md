@@ -110,6 +110,9 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
     done
     ```
 
+    Runs under a plain `repo` scope; echoes repository names only, never
+    variable values.
+
     Adjust the workflow filename for any consumer not using `ai-review.yml`.
 - base <-> wrapper keep **MAJOR.MINOR in lockstep**; patch versions independent.
   The wrapper reimplements the single-review job inline instead of calling base's
