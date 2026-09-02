@@ -31,22 +31,35 @@ consumer repo  .github/workflows/ai-review.yml
 
   Re-measure against the wrapper's current `main` before quoting these numbers; the totals
   move with every wrapper release.
+
+  Wrapper internals are cited **by step name** below, never by line number. To locate one,
+  `grep -n '<step name>' .github/workflows/wrapper.yml` in the wrapper repo. Line numbers
+  do not survive: `wrapper.yml:494` was already wrong when this page was last corrected,
+  and `wrapper.yml:816` / `:135` (AT-1982 comments 84957 and 85007) and
+  `claude-code-action` `action.yml:192` (comment 85002) were all stale within a day of
+  being written. A step name survives every edit that does not rename the step.
 - What it consumes from base is checked out at `upstream_ref` (default: the floating `v1`
   tag): the `.github/scripts/*` helpers, `.github/scripts/review_prompt.md` (the shared
-  reviewer instruction, copied at `wrapper.yml:579`), and the `.github/actions/claude-review`
-  composite. Changes to **those** reach pilot consumers on the next run with no wrapper edit.
+  reviewer instruction, copied by the `Use trusted Codex prompt from ai-dev-pr-review`
+  step), and the `.github/actions/claude-review` composite. Changes to **those** reach
+  pilot consumers on the next run with no wrapper edit.
 - The per-repo prompts do **not** come from base. `code-review-system.md` and
   `code-review-checklist.md` are read out of the *consumer* repo — base branch first, PR head
   second — and the last-resort fallback is the wrapper's own `.prompts/`, sparse-checked-out
-  at the wrapper's own release tag (`wrapper.yml:107`) so the prompts move in lockstep with
-  the pin, the same way the base scripts do. It read `ref: main` until wrapper v1.6.0, which
+  at the wrapper's own release tag by the `Checkout wrapper canonical default prompts
+  (pinned to release tag)` step, so the prompts move in lockstep with the pin, the same
+  way the base scripts do. It read `ref: main` until wrapper v1.6.0, which
   left the prompts outside that lockstep (AT-1957, fixed). `examples/prompts/` in this repo
   is a starter template copied once at install time, not a runtime source.
 - **A change to `base-ai-review-single.yml` does not reach pilot consumers automatically.**
   The workflow body is duplicated, so it must be hand-ported into `wrapper.yml` and shipped
-  as a lockstep wrapper release — see [Tag pinning](../README.md#tag-pinning). Six drift
-  incidents have been confirmed this way (AT-1800, AT-1955, AT-1837 and AT-1979 among them);
-  none was caught by an automated check.
+  as a lockstep wrapper release — see [Tag pinning](../README.md#tag-pinning). **Seven**
+  drift incidents have been confirmed this way (AT-1800, AT-1955, AT-1837 and AT-1979
+  among them). The seventh — the wrapper's PR-too-large comment wording, diverged from
+  `base-ai-review-prepare.yml` and recorded in AT-1982 comment 85007 — **is closed**: the
+  two `--body "[!] PR too large ..."` lines are now identical once indentation is ignored
+  (re-checked 2026-09-02, wrapper `c900a95` against base `8266040`). None of the seven was
+  caught by an automated check; every one was found by hand while doing something else.
 - Exceptions: `spec-interview` and `factory-process-maker` call the upstream orchestrator
   directly rather than through the wrapper, SHA-pinned to a base release (`v1.6.0` as of
   2026-09-02) rather than to a floating tag.
@@ -118,39 +131,85 @@ repo](../README.md#overriding-prompts-per-consumer-repo) for how `system.md` and
 ## Runtime configuration (`vars.*`, optional)
 
 Set under repo or org `Settings → Secrets and variables → Actions → Variables`. Common
-ones: `REVIEW_MODE` (`parallel` default | `sequential`), `GEMINI_MODEL`, `CLAUDE_MODEL`,
-`CODEX_MODEL`, `PR_SIZE_LIMIT`, `CRITICAL_THRESHOLD`, `ALLOW_AUTO_APPROVE`,
-`REVIEWER_APP_ID` (see Secrets above). Full list:
-[Runtime configuration via `vars.*`](../README.md#runtime-configuration-via-vars).
+ones: `GEMINI_MODEL`, `CLAUDE_MODEL`, `CODEX_MODEL`, `PR_SIZE_LIMIT`,
+`CRITICAL_THRESHOLD`, `ALLOW_AUTO_APPROVE`, `REVIEWER_APP_ID` (see Secrets above). Full
+list: [Runtime configuration via `vars.*`](../README.md#runtime-configuration-via-vars).
+
+### `REVIEW_MODE` does nothing on the wrapper path
+
+**Do not set `REVIEW_MODE` for a wrapper consumer. It has no effect, and nothing will
+tell you so.** The README documents it because base consumers have it: the orchestrator
+gates its reviewer jobs on `vars.REVIEW_MODE`, fanning them out or chaining them. The
+wrapper has no jobs to fan out — it is a single `review:` job that runs the three
+reviewers as consecutive steps, so the mode is not a choice it is able to make. It hands
+the aggregator a literal `REVIEW_MODE: sequential` (step `Aggregate and post verdict`)
+and never reads the variable at all.
+
+`ignite-pilot-org` has an org-level `REVIEW_MODE=parallel` set today. It is dead. Runs
+go on reviewing sequentially and report `success`, so the setting looks accepted; the
+failure is entirely silent. `REVIEW_MODE` is the *only* such variable: grepping
+`vars.[A-Z_]*` out of `wrapper.yml` and differencing it against the README's `vars.*`
+table leaves `REVIEW_MODE` and nothing else unread. Every other variable the README
+documents does work here.
 
 ## Actions allowlist (org setting)
 
 The org/repo Actions policy must permit the wrapper + orchestrator reusable workflows and
-the underlying actions: `anthropics/claude-code-action`, `actions/checkout`,
-`actions/setup-python`, `actions/download-artifact`, `actions/upload-artifact`.
+the underlying actions:
 
-## Install status (snapshot 2026-06-24)
+- `anthropics/claude-code-action`
+- `actions/checkout`
+- `actions/setup-python`
+- `actions/download-artifact` (base/orchestrator path)
+- `actions/upload-artifact`
+- `actions/create-github-app-token` — mints the reviewer App token when `REVIEWER_APP_ID`
+  is set. A blanket `actions/*@*` pattern already covers it; it is named here because a
+  policy written action-by-action will not.
+- `oven-sh/setup-bun` — **we never call it.** `anthropics/claude-code-action` uses it
+  internally (its `action.yml`, `Setup Bun` step), and a nested action is checked against
+  the allowlist under its own name, so allowing the parent is not enough. Leaving it out
+  does not fail the run: the Claude step dies with `action_invocation_failed`, the
+  aggregate writes an error verdict for Claude, and the run still finishes `success`.
+  That is what happened to the AT-1982 experiment run on `spec-interview` — a 2-of-3
+  review read as a healthy 3-reviewer run, and it nearly became the evidence for retiring
+  the wrapper.
 
-- **Installed (13):** daon-manufacturing, peaknow, bnk-mes-prod-plan, Ignite-pilot-plugins,
-  IGTdesignsystem, spec-interview, factory-process-maker, bnk-mes, ig-notification,
-  ig-member, ig-ai-report, admin-tools-plugins, PS-Simulation1
-- **Not installed (6):** aws-simple-deploy, wesource, wesource-fe, wesource-be,
-  ig-config-manager, mg_wrap
+## Install status (snapshot 2026-09-02)
 
-To re-survey, list `ignite-pilot-org` repos and check each for `.github/workflows/ai-review.yml`.
+All 32 non-archived `ignite-pilot-org` repos surveyed; 19 run review.
+
+- **Wrapper consumers (17)**, all on the floating `wrapper.yml@v1`: ig-notification,
+  ig-member, mg_wrap, aws-simple-deploy, bnk-mes, ig-ai-report, daon-manufacturing,
+  ig-config-manager, admin-tools-plugins, peaknow, PS-Simulation1, IGTdesignsystem,
+  Ignite-pilot-plugins, bnk-mes-prod-plan, wesource-fe, wesource-be, wesource
+- **Base-direct consumers (2)**, SHA-pinned to `05f2752` (v1.6.0): spec-interview,
+  factory-process-maker — the Exceptions bullet above
+- **No review workflow (12):** factory-system-builder, ig-movie-editor,
+  IGTdesignsystem_VOC, ig-movie-editor-app, max-kakao-gateway, Ignite-pilot-compass,
+  factory-process-simulator, fsb-repository-publisher-bootstrap,
+  fsb-github-app-smoke-20260824-083722, komt-dev, factory-notok, hanbit-cnc
+
+The 32nd repo is `ai-dev-pr-review-wrapper` itself, which is not a consumer.
+
+To re-survey: `gh api orgs/ignite-pilot-org/repos --paginate --jq '.[] | select(.archived==false) | .name'`,
+then read `.github/workflows/ai-review.yml` in each and classify by its `uses:` line.
+Cheap and exact — re-run it rather than trusting the date above.
 
 ## Bulk install script (for not-installed repos)
 
 Sets the four secrets, adds the thin trigger, and copies the standard prompts, opening one
-PR per repo. Export the secret values first (never hardcode); trim the `REPOS` list to the
-repos that should actually run review (skip deploy/wrapper-only repos).
+PR per repo. Export the secret values first (never hardcode); fill the `REPOS` list from
+the **No review workflow** list above, keeping only the repos that should actually run
+review (skip deploy-only and scratch repos). The list below is an example, not a
+worklist — re-run the survey before using it, or you will open install PRs against repos
+that already run the wrapper.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 ORG=ignite-pilot-org
 BR=task/install-ai-review
-REPOS=( aws-simple-deploy wesource wesource-fe wesource-be )   # edit as needed
+REPOS=( komt-dev hanbit-cnc )   # example only -- refill from a fresh survey
 
 # OPENAI + GOOGLE are required; Claude needs at least ONE of OAUTH / ANTHROPIC.
 : "${OPENAI_API_KEY:?export}" "${GOOGLE_AI_API_KEY:?export}"
