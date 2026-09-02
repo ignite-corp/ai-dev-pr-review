@@ -1,9 +1,11 @@
-"""Tests for the consumer pin freshness judgement (AT-2007).
+"""Tests for the consumer pin freshness judgement (AT-2007, AT-2088).
 
 The fixture mirrors the real release history of this repo as of 2026-08-25,
 including the floating ``v1`` tag that shares a commit with v1.5.0, so the
 acceptance case (the v1.3.0 commit two MINORs behind) is exercised against
-data the workflow actually sees.
+data the workflow actually sees. Moving that ``v1`` row onto an older commit
+is what the AT-2088 cases do: a stuck float is invisible in the tag *names*
+and shows up only in the SHA the row carries.
 """
 
 import json
@@ -31,8 +33,13 @@ TAGS = [
 
 
 def judge(pin, tags=None):
-    versions, by_sha = pin_freshness.build_index(tags if tags is not None else TAGS)
-    return pin_freshness.classify(pin, versions, by_sha)
+    versions, by_sha, floating = pin_freshness.build_index(tags if tags is not None else TAGS)
+    return pin_freshness.classify(pin, versions, by_sha, floating)
+
+
+def tags_with_v1_at(sha):
+    """The fixture with the floating ``v1`` row moved onto another commit."""
+    return [{"name": "v1", "sha": sha}] + [t for t in TAGS if t["name"] != "v1"]
 
 
 def test_sha_pin_two_minors_behind_is_flagged():
@@ -69,10 +76,43 @@ def test_sha_pin_matching_no_release_is_flagged_distinctly():
     assert "arbitrary commit" in message
 
 
-def test_floating_major_tag_passes():
+def test_floating_tag_on_the_latest_release_commit_passes():
+    # Passing is now a statement about the commit v1 carries, not about its
+    # name: the fixture's v1 row shares the v1.5.0 commit.
     ok, message = judge("v1")
     assert ok
-    assert "tracks latest v1.5.0" in message
+    assert "floating tag v1 resolves to v1.5.0" in message
+
+
+def test_floating_tag_left_on_an_older_commit_is_flagged():
+    # move-major-tag.yml fires on release:published, not on tag push, so a tag
+    # pushed without a published release leaves v1 behind while every @v1
+    # consumer keeps running the old code.
+    ok, message = judge("v1", tags_with_v1_at(V1_3_0))
+    assert not ok
+    assert "v1.3.0" in message
+    assert "has not moved to latest v1.5.0" in message
+
+
+def test_floating_tag_one_minor_behind_gets_no_tolerance():
+    # The MINOR tolerance buys a human one cycle to bump a pin by hand. Nobody
+    # bumps v1 by hand, so any lag at all means the automation did not run.
+    ok, message = judge("v1", tags_with_v1_at(V1_4_0))
+    assert not ok
+    assert "v1.4.0" in message
+
+
+def test_floating_tag_on_an_unreleased_commit_is_flagged():
+    ok, message = judge("v1", tags_with_v1_at("0" * 40))
+    assert not ok
+    assert "matches no release tag" in message
+
+
+def test_floating_tag_absent_from_the_tag_list_is_flagged():
+    # No v1 row at all: unjudgeable, so fail closed instead of raising.
+    ok, message = judge("v1", [t for t in TAGS if t["name"] != "v1"])
+    assert not ok
+    assert "absent from the tag list" in message
 
 
 def test_floating_tag_of_an_older_major_is_flagged():
@@ -109,7 +149,7 @@ def test_patch_lag_inside_an_accepted_minor_passes():
 
 
 def test_classify_fails_closed_on_an_empty_index():
-    ok, message = pin_freshness.classify("v1", {}, {})
+    ok, message = pin_freshness.classify("v1", {}, {}, {})
     assert not ok
     assert message == pin_freshness.EMPTY_INDEX_MESSAGE
 
@@ -134,8 +174,17 @@ def test_floor_moves_with_the_release_history():
 
 
 def test_build_index_prefers_the_highest_tag_on_a_shared_commit():
-    _, by_sha = pin_freshness.build_index(TAGS)
+    _, by_sha, _ = pin_freshness.build_index(TAGS)
     assert by_sha[V1_5_0] == "v1.5.0"
+
+
+def test_build_index_keeps_the_floating_tag_sha_without_making_it_a_release():
+    versions, _, floating = pin_freshness.build_index(TAGS)
+    assert floating == {"v1": V1_5_0}
+    # parse_version's contract is untouched: v1 is still not a release, so it
+    # cannot become "latest" nor be named by a version pin.
+    assert "v1" not in versions
+    assert pin_freshness.parse_version("v1") is None
 
 
 def test_load_entries_accepts_json_lines_and_arrays():
@@ -163,7 +212,11 @@ def test_cli_exit_codes_and_output():
 
     fresh = _run(["--tags", "-", "--pin", "v1"], stdin)
     assert fresh.returncode == 0
-    assert "tracks latest v1.5.0" in fresh.stdout
+    assert "floating tag v1 resolves to v1.5.0" in fresh.stdout
+
+    stuck = _run(["--tags", "-", "--pin", "v1"], json.dumps(tags_with_v1_at(V1_3_0)))
+    assert stuck.returncode == 1
+    assert "has not moved to latest v1.5.0" in stuck.stdout
 
     latest = _run(["--tags", "-", "--latest"], stdin)
     assert latest.returncode == 0
