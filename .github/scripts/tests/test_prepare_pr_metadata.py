@@ -401,3 +401,57 @@ class TestResolvedAuthorSelectsThresholds:
             tmp_path, context=_pull_request_context(author="hyuk-hur")
         )
         assert _verdict_for_author(outputs["pr_author"]) == "request_changes"
+
+
+# The author has to survive three files to reach the thresholds: prepare
+# exports it, the orchestrator forwards it, the aggregate reads it. Each hop
+# is a separate workflow, and a name that matches nothing on the other side
+# evaluates to an empty string rather than failing -- which is the same
+# silence the empty PR_AUTHOR produced before this ticket.
+ORCHESTRATOR = WORKFLOW.parent / "base-ai-review-orchestrator.yml"
+AGGREGATE = WORKFLOW.parent / "base-ai-review-aggregate.yml"
+
+
+def _workflow(path: Path) -> dict[str, Any]:
+    # `on:` is YAML 1.1, so PyYAML gives the key as the boolean True. Reading
+    # wf["on"] is the KeyError, not the fix.
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+class TestAggregateWiring:
+    """The resolved author must reach aggregate_reviews.py's threshold test."""
+
+    def test_prepare_exports_the_author_as_a_workflow_output(self) -> None:
+        outputs = _workflow(WORKFLOW)[True]["workflow_call"]["outputs"]
+        assert outputs["pr_author"]["value"] == "${{ jobs.prepare.outputs.pr_author }}"
+
+    def test_orchestrator_forwards_the_prepare_output_to_the_aggregate(self) -> None:
+        job = _workflow(ORCHESTRATOR)["jobs"]["aggregate"]
+        assert job["uses"].endswith("base-ai-review-aggregate.yml")
+        assert job["with"]["pr_author"] == "${{ needs.prepare.outputs.pr_author }}"
+
+    def test_aggregate_declares_the_input_the_orchestrator_passes(self) -> None:
+        inputs = _workflow(AGGREGATE)[True]["workflow_call"]["inputs"]
+        assert "pr_author" in inputs
+        assert inputs["pr_author"]["default"] == ""
+
+    def test_aggregate_prefers_the_resolved_author_over_the_event_payload(
+        self,
+    ) -> None:
+        env = _aggregate_script_env()
+        assert env["PR_AUTHOR"] == (
+            "${{ inputs.pr_author || github.event.pull_request.user.login || '' }}"
+        )
+        # Order is the whole point: the event payload is empty on the dispatch
+        # path, so reading it first would keep the defect.
+        assert env["PR_AUTHOR"].index("inputs.pr_author") < env["PR_AUTHOR"].index(
+            "github.event"
+        )
+
+
+def _aggregate_script_env() -> dict[str, str]:
+    for step in _workflow(AGGREGATE)["jobs"]["aggregate"]["steps"]:
+        env = step.get("env") or {}
+        if "PR_AUTHOR" in env:
+            return env
+    raise AssertionError("no aggregate step sets PR_AUTHOR")
