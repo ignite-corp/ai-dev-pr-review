@@ -17,6 +17,7 @@ import yaml
 from aggregate_reviews import (
     _get_available,
     _prepare_failure_result,
+    _run_was_cancelled,
     _size_skip_details,
     _has_early_exit,
     _normalize_severity,
@@ -1382,14 +1383,21 @@ class TestPrepareFailureVerdict:
     def test_prepare_failure_reports_the_result_verbatim(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """cancelled is not failure, and saying so saves a wrong-cause hunt."""
-        self._set_prepare_env(monkeypatch, result="cancelled")
+        """The result is quoted, not classified -- it saves a wrong-cause hunt.
+
+        This asserted on `cancelled` until AT-2092: a cancelled prepare is a
+        cancelled run, and posting anything for it races the live run for the
+        comment slot. That state is now short-circuited before this path and
+        is covered by TestCancelledRunPostsNoVerdict; every other non-success
+        result still reaches here and is still quoted.
+        """
+        self._set_prepare_env(monkeypatch, result="skipped")
         with (
             patch("aggregate_reviews.post_verdict") as mock_post,
             pytest.raises(SystemExit),
         ):
             main()
-        assert "cancelled" in mock_post.call_args[0][0]
+        assert "skipped" in mock_post.call_args[0][0]
 
     def test_prepare_failure_carries_the_review_marker(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1541,23 +1549,20 @@ class TestAggregateJobIsNotPrepareGated:
             for fn in ("always()", "cancelled()", "failure()", "success()")
         ), condition
 
-    def test_aggregate_does_not_run_after_a_cancellation(self) -> None:
-        """A cancelled run must not race the live one for the comment slot.
+    def test_aggregate_still_runs_after_a_cancellation(self) -> None:
+        """Cancellation must be guarded inside the job, never on the job.
 
-        cancel-in-progress kills the previous run on every new commit. Under
-        always() the dying run still aggregated -- the artifact downloads are
-        continue-on-error -- and posted "0/3 LLM responses" over the live run's
-        verdict (AT-2092).
+        `!cancelled()` skips the aggregate, and AT-1967 Phase 0 measured what a
+        skipped aggregate reports: the two-part name `review / aggregate`, not
+        the three-part `review / aggregate / Aggregate & Verdict` the consumer
+        rulesets require. The required context is then never reported at all
+        and the PR sits Pending forever -- not the Success GitHub documents for
+        a job skipped by its `if:`. The posting is stopped in the script
+        instead (TestCancelledRunPostsNoVerdict).
         """
-        assert "!cancelled()" in str(self._aggregate().get("if", ""))
-
-    def test_aggregate_condition_is_wrapped_in_an_expression(self) -> None:
-        """A bare leading `!` is a YAML tag indicator and will not parse.
-
-        The workflow loading at all proves it; this records why the braces are
-        there, so they are not tidied away later.
-        """
-        assert str(self._aggregate().get("if", "")).startswith("${{")
+        condition = str(self._aggregate().get("if", ""))
+        assert "always()" in condition, condition
+        assert "cancelled" not in condition, condition
 
     def test_aggregate_receives_the_prepare_result(self) -> None:
         """Not gating on it is only half: the verdict has to be able to say it."""
@@ -1572,3 +1577,189 @@ class TestAggregateJobIsNotPrepareGated:
         env = dict(step.get("env", {}))
         assert "inputs.prepare_result" in str(env.get("PREPARE_RESULT", ""))
         assert "run_id" in str(env.get("RUN_URL", ""))
+
+    def test_aggregate_workflow_forwards_every_reviewer_result(self) -> None:
+        """The cancellation guard reads them; an unforwarded one blinds it."""
+        job = next(iter(_workflow(_AGGREGATE_WORKFLOW)["jobs"].values()))
+        step = next(
+            s for s in job["steps"] if s.get("name") == "Aggregate and post verdict"
+        )
+        env = dict(step.get("env", {}))
+        supplied = dict(self._aggregate().get("with", {}))
+        for name in REVIEWER_NAMES:
+            assert f"{name}_result" in supplied, name
+            assert f"inputs.{name}_result" in str(
+                env.get(f"REVIEWER_RESULT_{name.upper()}", "")
+            ), name
+
+
+class TestCancelledRunPostsNoVerdict:
+    """A cancelled run must reach the aggregate and then post nothing.
+
+    cancel-in-progress kills the previous run on every new commit. The job has
+    to keep running -- its name is the required status context and a skipped
+    job never reports the three-part name (AT-1967 Phase 0) -- so the guard is
+    here, in the script, not on the job's `if:` (AT-2092).
+    """
+
+    @staticmethod
+    def _set_env(
+        monkeypatch: pytest.MonkeyPatch,
+        prepare: str = "success",
+        reviewers: dict[str, str] | None = None,
+    ) -> None:
+        monkeypatch.setenv("PREPARE_RESULT", prepare)
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.delenv("SIZE_SKIPPED", raising=False)
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(
+                f"REVIEWER_RESULT_{name.upper()}", (reviewers or {}).get(name, "")
+            )
+
+    def test_all_reviewers_cancelled_posts_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The AT-2092 incident: the dying run posted "0/3 -- all failed"."""
+        self._set_env(monkeypatch, reviewers={n: "cancelled" for n in REVIEWER_NAMES})
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        mock_post.assert_not_called()
+        assert excinfo.value.code == 1
+
+    def test_cancelled_run_never_reads_reviewer_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every download is continue-on-error, so nothing else stops it."""
+        self._set_env(monkeypatch, reviewers={n: "cancelled" for n in REVIEWER_NAMES})
+        with (
+            patch("aggregate_reviews.load_reviews") as mock_load,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mock_load.assert_not_called()
+
+    def test_cancelled_prepare_posts_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelled before any reviewer started -- reviewers report `skipped`.
+
+        The guard has to run before the AT-2087 path, which would otherwise
+        post "the prepare job reported cancelled" as a failure verdict.
+        """
+        self._set_env(
+            monkeypatch,
+            prepare="cancelled",
+            reviewers={n: "skipped" for n in REVIEWER_NAMES},
+        )
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        mock_post.assert_not_called()
+        assert excinfo.value.code == 1
+
+    def test_cancelled_run_does_not_report_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exit 0 would be a green required check for a PR nothing reviewed."""
+        self._set_env(monkeypatch, reviewers={n: "cancelled" for n in REVIEWER_NAMES})
+        with pytest.raises(SystemExit) as excinfo:
+            main()
+        assert excinfo.value.code != 0
+
+    def test_one_cancelled_reviewer_still_posts_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A lone `cancelled` is a dead reviewer, not a dead run (AT-1837).
+
+        base-ai-review-single.yml caps each reviewer at timeout-minutes: 15,
+        and the other two have real reviews to report on.
+        """
+        results = {n: "success" for n in REVIEWER_NAMES}
+        results[list(REVIEWER_NAMES)[0]] = "cancelled"
+        self._set_env(monkeypatch, reviewers=results)
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mock_post.assert_called_once()
+
+    def test_failed_prepare_still_posts_its_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard for AT-2087, merged in the same PR as the defect."""
+        self._set_env(
+            monkeypatch,
+            prepare="failure",
+            reviewers={n: "skipped" for n in REVIEWER_NAMES},
+        )
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert mock_post.call_args[0][1] == "request_changes"
+        assert "prepare job reported" in mock_post.call_args[0][0]
+
+    def test_size_skip_still_posts_its_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard for AT-1975: prepare succeeds, reviewers skip."""
+        self._set_env(monkeypatch, reviewers={n: "skipped" for n in REVIEWER_NAMES})
+        monkeypatch.setenv("SIZE_SKIPPED", "true")
+        monkeypatch.setenv("SIZE_TOTAL", "5000")
+        monkeypatch.setenv("SIZE_LIMIT", "3000")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert "PR too large" in mock_post.call_args[0][0]
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param([""], id="unset-older-caller"),
+            pytest.param(["skipped"], id="all-skipped"),
+            pytest.param(["success"], id="all-succeeded"),
+            pytest.param(["failure"], id="all-failed"),
+            pytest.param(["cancelled", "failure"], id="cancelled-plus-failed"),
+            pytest.param(["cancelled", "success"], id="cancelled-plus-succeeded"),
+        ],
+    )
+    def test_states_that_are_not_a_cancelled_run(
+        self, monkeypatch: pytest.MonkeyPatch, values: list[str]
+    ) -> None:
+        """Over-suppression is the mirror defect: a silent check, again."""
+        self._set_env(
+            monkeypatch,
+            reviewers={
+                n: values[i % len(values)] for i, n in enumerate(REVIEWER_NAMES)
+            },
+        )
+        assert _run_was_cancelled() is False
+
+    @pytest.mark.parametrize("value", ["cancelled", "CANCELLED", "  cancelled  "])
+    def test_the_reviewer_result_is_normalized(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """The value crosses two workflow boundaries before it lands here."""
+        self._set_env(monkeypatch, reviewers={n: value for n in REVIEWER_NAMES})
+        assert _run_was_cancelled() is True
+
+    @pytest.mark.parametrize("value", ["cancelled", "CANCELLED", "  cancelled  "])
+    def test_the_prepare_result_is_normalized(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        self._set_env(monkeypatch, prepare=value)
+        assert _run_was_cancelled() is True

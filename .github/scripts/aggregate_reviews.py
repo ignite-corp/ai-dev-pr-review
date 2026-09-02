@@ -461,6 +461,49 @@ def _check_major_consensus(all_issues: list[dict[str, Any]]) -> tuple[str, str] 
     return None
 
 
+_RESULT_CANCELLED = "cancelled"
+_RESULT_SKIPPED = "skipped"
+
+
+def _run_was_cancelled() -> bool:
+    """True when the upstream results say this whole run was cancelled.
+
+    The check cannot be `cancelled()`, at either level. On the job it would
+    skip the aggregate, and a skipped aggregate reports the two-part context
+    name `review / aggregate` instead of the three-part name the consumer
+    rulesets require -- measured on probe PRs #100/#101/#102 in AT-1967
+    Phase 0 -- so the required check is never reported and the PR sits
+    Pending forever. Inside a step it would not fire at all: `cancelled()`
+    reads the *job's* status, and this job is not itself cancelled. It starts
+    fresh, under `always()`, after the run was cancelled. That is exactly the
+    AT-2092 defect, and it is also what makes this guard reachable.
+
+    So the state is read from the results the orchestrator already passes in
+    (AT-1837 for the reviewers, AT-2087 for prepare). Two shapes count:
+
+    * prepare cancelled -- the run died before any reviewer started. Without
+      this clause the run falls into the AT-2087 path and posts a
+      "prepare reported cancelled" failure for a PR with nothing wrong.
+    * every reviewer that was not skipped cancelled -- the AT-2092 incident:
+      nothing was left to aggregate, so the verdict would be the false
+      "0/3 LLM responses -- all failed".
+
+    Requiring *all* of them is deliberate. A single `cancelled` among
+    successes is not a cancelled run -- a job that exceeds its
+    `timeout-minutes` (15, base-ai-review-single.yml) can report it too, and
+    that run has real reviews to report on. It keeps the AT-1837 behavior:
+    say which reviewer died.
+    """
+    if os.environ.get("PREPARE_RESULT", "").strip().lower() == _RESULT_CANCELLED:
+        return True
+    reported = [
+        value.strip().lower()
+        for value in load_reviewer_conclusions().values()
+        if value.strip().lower() not in ("", _RESULT_SKIPPED)
+    ]
+    return bool(reported) and all(r == _RESULT_CANCELLED for r in reported)
+
+
 def _prepare_failure_result() -> str | None:
     """prepare's result when it did not succeed, else None.
 
@@ -960,6 +1003,25 @@ def post_verdict(
 
 
 def main() -> None:
+    # First, ahead of every other path: a cancelled run has nothing to say and
+    # must not say it. The job still runs -- it has to, its name is the
+    # required status context -- but it posts nothing and fails, so the run
+    # that was cancelled cannot be mistaken for one that reviewed the PR.
+    if _run_was_cancelled():
+        print(
+            "::notice title=Aggregate::the run was cancelled before the review"
+            " completed -- no verdict posted",
+            file=sys.stderr,
+        )
+        print(
+            "Final verdict: none -- the run was cancelled; the live run posts"
+            " the verdict for this PR"
+        )
+        # Not exit 0: no reviewer vouched for this commit, and a green
+        # required check would say one had. Not a posted verdict either: the
+        # live run owns the comment slot (AT-2092).
+        sys.exit(1)
+
     # Checked before the size gate: when prepare fails, its size outputs are
     # empty, so the size path cannot recognise this run at all. The two are
     # mutually exclusive in practice -- every step after the size check is

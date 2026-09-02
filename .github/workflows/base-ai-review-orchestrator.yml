@@ -173,18 +173,30 @@ jobs:
     # added, or any checkout/API/runner failure. prepare's result is passed in
     # instead of gating on it, so the aggregate can say what happened.
     #
-    # The one state that must NOT reach the aggregate is cancellation (AT-2092).
-    # concurrency.cancel-in-progress kills the previous run when a new commit
-    # arrives; under always() the dying run still aggregated -- every
-    # download-artifact is continue-on-error, so nothing stopped it -- and
-    # posted "0/3 LLM responses -- all failed" for a PR with nothing wrong with
-    # it, racing the live run for the same comment slot. `!cancelled()` is the
-    # only difference from always(): GitHub skips the implicit success() status
-    # check for any expression containing always/cancelled/failure/success, so
-    # the failure and size-skip paths above still reach the aggregate. The
-    # `${{ }}` is load-bearing -- a bare leading `!` is a YAML tag indicator and
-    # fails to parse.
-    if: ${{ !cancelled() }}
+    # Cancellation is NOT a third condition to add here, and `!cancelled()`
+    # was reverted for that reason (AT-2092). A cancelled run must not post a
+    # verdict -- cancel-in-progress kills the previous run on every new commit,
+    # and under always() the dying run still aggregated (every
+    # download-artifact is continue-on-error, so nothing stopped it) and posted
+    # "0/3 LLM responses -- all failed" for a PR with nothing wrong with it,
+    # racing the live run for the same comment slot. But the way to stop the
+    # posting is not to stop the job: it is guarded inside the aggregate
+    # script, which already receives every upstream result it needs to
+    # recognise the state.
+    #
+    # That fix was ported from the wrapper, where the aggregate is a *step*
+    # inside the one required job: skipping a step there leaves the job's own
+    # conclusion intact, so the required check still reports. Here the
+    # aggregate is a *job*, and a job that does not run produces no context --
+    # the two paragraphs above are that same defect, twice.
+    #
+    # AT-1967 Phase 0 measured what a skipped aggregate job reports (probe PRs
+    # #100/#101/#102): a skipped `aggregate` reports the two-part name
+    # `review / aggregate`, never the three-part `review / aggregate /
+    # Aggregate & Verdict` that the consumer rulesets require. The required
+    # context is therefore not reported at all -- Pending forever -- rather
+    # than the Success GitHub documents for a job skipped by its `if:`.
+    if: always()
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
