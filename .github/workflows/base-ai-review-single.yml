@@ -63,12 +63,6 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ inputs.head_sha || github.event.pull_request.head.sha || github.ref }}
 
-      # Reusable-repo checkout: helper scripts + trusted codex prompt live here.
-      # WARNING: ref below is hardcoded to this release's tag. When cutting a new
-      # version, FIRST bump this literal to the new tag in a release PR, THEN tag
-      # that commit. Both github.workflow_ref and github.workflow_sha return the
-      # caller's context inside a reusable workflow (not the reusable's own
-      # ref/SHA), so hardcoding is the only reliable mechanism.
       # The head prepare resolved and computed the diff against. Without it this
       # falls back to `github.ref`, which on a workflow_dispatch is whatever ref
       # the caller dispatched on -- reviewing one tree while reading another
@@ -88,6 +82,12 @@ jobs:
             exit 1
           fi
 
+      # Reusable-repo checkout: helper scripts + trusted codex prompt live here.
+      # WARNING: ref below is hardcoded to this release's tag. When cutting a new
+      # version, FIRST bump this literal to the new tag in a release PR, THEN tag
+      # that commit. Both github.workflow_ref and github.workflow_sha return the
+      # caller's context inside a reusable workflow (not the reusable's own
+      # ref/SHA), so hardcoding is the only reliable mechanism.
       - name: Checkout ai-dev-pr-review scripts (pinned to release tag)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
