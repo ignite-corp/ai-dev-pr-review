@@ -17,6 +17,11 @@ on:
         required: false
         default: "success"
         description: "Result of the prepare job. Anything but 'success' means no review ran (AT-2087)"
+      pr_author:
+        type: string
+        required: false
+        default: ""
+        description: "PR author login resolved by prepare, in the webhook spelling. Empty when prepare never resolved one (AT-2086)"
       size_skipped:
         type: string
         required: false
@@ -174,7 +179,16 @@ jobs:
           DEPENDABOT_MAJOR_CONSENSUS_OVERLAP: ${{ vars.DEPENDABOT_MAJOR_CONSENSUS_OVERLAP || '0.5' }}
           MAJOR_CONSENSUS_MIN: ${{ vars.MAJOR_CONSENSUS_MIN || '2' }}
           REVIEW_MODE: ${{ vars.REVIEW_MODE || 'parallel' }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
+          # Resolved by prepare so a dispatched run selects the same
+          # thresholds as the pull_request run of the same PR: without it the
+          # dispatch path has no event payload, and an empty author scores a
+          # dependabot PR against the stricter human thresholds (AT-2086).
+          # The event payload stays as the fallback for the two paths where
+          # prepare resolved nothing -- the size skip and a failed prepare --
+          # so the pull_request path keeps reporting the real author there.
+          # Neither reaches the thresholds: main() short-circuits on both
+          # before apply_verdict_rules.
+          PR_AUTHOR: ${{ inputs.pr_author || github.event.pull_request.user.login || '' }}
           REVIEWER_RESULT_CLAUDE: ${{ inputs.claude_result }}
           REVIEWER_RESULT_CODEX: ${{ inputs.codex_result }}
           REVIEWER_RESULT_GEMINI: ${{ inputs.gemini_result }}
