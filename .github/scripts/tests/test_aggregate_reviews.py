@@ -1528,9 +1528,36 @@ class TestAggregateJobIsNotPrepareGated:
         condition = str(self._aggregate().get("if", ""))
         assert "review-" not in condition
 
-    def test_aggregate_still_runs_on_always(self) -> None:
-        """Dropping always() would restore the hole from the other side."""
-        assert "always()" in str(self._aggregate().get("if", ""))
+    def test_aggregate_condition_suppresses_the_implicit_success_check(self) -> None:
+        """A plain condition would re-gate the job on every upstream job.
+
+        GitHub applies an implicit success() unless the expression contains one
+        of always/cancelled/failure/success -- losing that word would restore
+        the hole from the other side.
+        """
+        condition = str(self._aggregate().get("if", ""))
+        assert any(
+            fn in condition
+            for fn in ("always()", "cancelled()", "failure()", "success()")
+        ), condition
+
+    def test_aggregate_does_not_run_after_a_cancellation(self) -> None:
+        """A cancelled run must not race the live one for the comment slot.
+
+        cancel-in-progress kills the previous run on every new commit. Under
+        always() the dying run still aggregated -- the artifact downloads are
+        continue-on-error -- and posted "0/3 LLM responses" over the live run's
+        verdict (AT-2092).
+        """
+        assert "!cancelled()" in str(self._aggregate().get("if", ""))
+
+    def test_aggregate_condition_is_wrapped_in_an_expression(self) -> None:
+        """A bare leading `!` is a YAML tag indicator and will not parse.
+
+        The workflow loading at all proves it; this records why the braces are
+        there, so they are not tidied away later.
+        """
+        assert str(self._aggregate().get("if", "")).startswith("${{")
 
     def test_aggregate_receives_the_prepare_result(self) -> None:
         """Not gating on it is only half: the verdict has to be able to say it."""
