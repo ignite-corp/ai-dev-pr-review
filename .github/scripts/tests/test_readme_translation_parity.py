@@ -25,10 +25,20 @@ deliberately different prose. Two invariants survive translation instead.
    and still catches AT-2091, where the Korean side had the identifiers zero
    times.
 
-Escape hatch: put ``<!-- translation-parity: ignore-section -->`` on the line
-before a heading to drop that heading and its body from both checks, for a
-section that deliberately exists on one side only. It must carry a reason on
-the same line after the marker. Nothing in the tree needs it today.
+Escape hatch: put ``<!-- translation-parity: ignore-section <reason> -->`` on
+the line before a heading to drop that heading and its body from both checks,
+for a section that deliberately exists on one side only. The reason is
+mandatory and lives inside the comment, so it never renders into the page.
+
+A marker with no reason does not exempt anything: it leaves the section under
+both checks *and* fails ``test_ignore_markers_carry_a_reason`` at its own
+file and line. Silently honouring it would be the exact defect this module
+exists to catch, one level up -- a documented rule that nothing enforces,
+failing in the direction that looks like success. Ignoring it quietly instead
+would keep coverage but let a marker someone believes is load-bearing sit
+unnoticed in a section that happens to be shape- and identifier-neutral
+today. Failing loudly keeps the coverage and names the defect. Nothing in the
+tree needs the hatch today.
 
 Not caught: a section present in both files but hollow in one. Matching
 headings and matching identifier presence say the structure and the
@@ -50,7 +60,12 @@ KOREAN = REPO_ROOT / "README.ko.md"
 
 FENCE = re.compile(r"^\s*(?:```|~~~)")
 HEADING = re.compile(r"^(#{1,6})\s+(\S.*)$")
-IGNORE_MARKER = "<!-- translation-parity: ignore-section -->"
+# The escape hatch, and the looser pattern that recognises an attempt at it.
+IGNORE_MARKER = re.compile(
+    r"^\s*<!--\s*translation-parity:\s*ignore-section\s+(?P<reason>\S.*?)\s*-->\s*$"
+)
+IGNORE_MARKER_ATTEMPT = re.compile(r"^\s*<!--\s*translation-parity:\s*ignore-section\b")
+IGNORE_MARKER_EXAMPLE = "<!-- translation-parity: ignore-section <reason> -->"
 
 # Tokens as markdown writes them: identifiers, dotted paths, filenames.
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -61,7 +76,11 @@ FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yml|yaml|json|md|py|sh)$
 
 
 def _strip_ignored_sections(text: str) -> str:
-    """Drop sections marked as deliberately one-sided."""
+    """Drop sections marked as deliberately one-sided.
+
+    Only a marker carrying a reason exempts anything. A reasonless marker is
+    inert here and is reported by ``malformed_markers`` instead.
+    """
     kept: list[str] = []
     skip_above: int | None = None
     marked = False
@@ -78,12 +97,21 @@ def _strip_ignored_sections(text: str) -> str:
             if skip_above is not None and level > skip_above:
                 continue
             skip_above = None
-        elif line.strip().startswith(IGNORE_MARKER):
+        elif IGNORE_MARKER.match(line):
             marked = True
             continue
         if skip_above is None:
             kept.append(line)
     return "\n".join(kept)
+
+
+def malformed_markers(text: str) -> list[str]:
+    """Lines reaching for the escape hatch without giving a reason."""
+    bad: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if IGNORE_MARKER_ATTEMPT.match(line) and not IGNORE_MARKER.match(line):
+            bad.append(f"  line {lineno}: {line.strip()}")
+    return bad
 
 
 def headings(text: str) -> list[tuple[int, str]]:
@@ -150,6 +178,16 @@ def test_both_readmes_exist() -> None:
     assert KOREAN.is_file(), f"missing {KOREAN}"
 
 
+def test_ignore_markers_carry_a_reason() -> None:
+    for path in (ENGLISH, KOREAN):
+        bad = malformed_markers(path.read_text())
+        assert not bad, (
+            f"{path.name} reaches for the parity escape hatch without a reason:\n"
+            + "\n".join(bad)
+            + f"\nUse {IGNORE_MARKER_EXAMPLE}"
+        )
+
+
 def test_section_shape_matches() -> None:
     diff = shape_diff(headings(ENGLISH.read_text()), headings(KOREAN.read_text()))
     assert not diff, "README.md and README.ko.md have different sections:\n" + "\n".join(diff)
@@ -161,7 +199,7 @@ def test_untranslatable_identifiers_appear_in_both() -> None:
         "identifiers documented on one side only:\n"
         + "\n".join(diff)
         + "\nTranslate the missing text, or mark the section with "
-        + IGNORE_MARKER
+        + IGNORE_MARKER_EXAMPLE
     )
 
 
@@ -190,6 +228,13 @@ _KO = """# Title
 
 `base-ai-review-single.yml` ho-chul.
 """
+
+
+def _marker(reason: str) -> str:
+    return f"<!-- translation-parity: ignore-section {reason} -->"
+
+
+BARE_MARKER = "<!-- translation-parity: ignore-section -->"
 
 
 def test_translated_pair_passes_both_checks() -> None:
@@ -223,7 +268,7 @@ def test_heading_inside_a_code_fence_is_not_a_section() -> None:
 def test_marked_section_is_excluded_from_both_checks() -> None:
     en_only = (
         _EN
-        + f"\n{IGNORE_MARKER} English-only appendix, no Korean equivalent planned\n"
+        + "\n" + _marker("English-only appendix, no Korean equivalent planned") + "\n"
         + "## Appendix\n\nSee `internal_only_flag` and `notes.md`.\n"
     )
     assert shape_diff(headings(en_only), headings(_KO)) == []
@@ -233,7 +278,7 @@ def test_marked_section_is_excluded_from_both_checks() -> None:
 def test_marked_section_ends_at_the_next_sibling_heading() -> None:
     en_only = (
         _EN
-        + f"\n{IGNORE_MARKER} English-only appendix\n"
+        + "\n" + _marker("English-only appendix") + "\n"
         + "## Appendix\n\n### Detail\n\nUses `internal_only_flag`.\n"
         + "## Tail\n\nUses `base-ai-review-single.yml`.\n"
     )
@@ -245,9 +290,39 @@ def test_marked_section_ends_at_the_next_sibling_heading() -> None:
 def test_marked_section_survives_a_comment_line_in_fenced_code() -> None:
     en_only = (
         _EN
-        + f"\n{IGNORE_MARKER} English-only appendix\n"
+        + "\n" + _marker("English-only appendix") + "\n"
         + "## Appendix\n\n```bash\n# Looks like a heading, is not one\ngh api\n```\n"
         + "Uses `internal_only_flag`.\n"
     )
     assert shape_diff(headings(en_only), headings(_KO)) == []
     assert presence_diff(identifier_counts(en_only), identifier_counts(_KO)) == []
+
+
+def test_bare_marker_does_not_exempt_a_section() -> None:
+    """A reasonless marker must leave the section under both checks."""
+    en_only = (
+        _EN
+        + f"\n{BARE_MARKER}\n"
+        + "## Appendix\n\nSee `internal_only_flag`.\n"
+    )
+    assert any("Appendix" in line for line in shape_diff(headings(en_only), headings(_KO)))
+    assert presence_diff(identifier_counts(en_only), identifier_counts(_KO)) == [
+        "  internal_only_flag: README.md x1, README.ko.md x0"
+    ]
+
+
+def test_bare_marker_is_reported_at_its_line() -> None:
+    assert malformed_markers(f"# Title\n\n{BARE_MARKER}\n\n## Appendix\n") == [
+        f"  line 3: {BARE_MARKER}"
+    ]
+
+
+def test_marker_with_a_reason_is_not_malformed() -> None:
+    reason = _marker("English-only appendix, no Korean equivalent planned")
+    assert malformed_markers(f"# Title\n\n{reason}\n\n## Appendix\n") == []
+
+
+def test_marker_reason_stays_inside_the_comment() -> None:
+    """A reason placed after the comment close would render into the page."""
+    outside = "<!-- translation-parity: ignore-section --> English-only appendix"
+    assert malformed_markers(outside) == [f"  line 1: {outside}"]
