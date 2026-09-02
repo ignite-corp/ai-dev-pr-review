@@ -410,9 +410,12 @@ jobs:
               # floating v1 tag -- but immutable is not current. Until AT-2007
               # any 40-hex SHA passed forever, and consumers rotted on the
               # v1.3.0 commit while this check reported green. pin_freshness.py
-              # resolves a SHA back to its release tag and applies the same
-              # MINOR-tolerance rule to every pin form; the acceptable floor
-              # follows the newest release instead of a hardcoded constant.
+              # resolves a SHA back to its release tag and applies the
+              # MINOR-tolerance rule to version and SHA pins; the acceptable
+              # floor follows the newest release instead of a hardcoded
+              # constant. A floating v1 is resolved to its commit as well and
+              # held to the latest release exactly, since automation moves it
+              # (AT-2088; rationale in the module docstring).
               # Its output names only this public repo's own pins and tags.
               if [ "$is_base_repo" = 1 ]; then
                 echo "  pin: n/a (base repo calls the orchestrator by local path)"
