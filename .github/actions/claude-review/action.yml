@@ -58,7 +58,7 @@ runs:
       # completes even when claude exits abnormally, keeping the
       # execution_file output available for callers' fallback extraction.
       continue-on-error: true
-      uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464  # v1.0.159
+      uses: anthropics/claude-code-action@e5ad3c7725bc2459721893f88879fef9dbcf97b0  # v1.0.202
       # Step-level env propagates into the inner composite's steps and reaches
       # the Claude CLI subprocess via the action's process.env passthrough
       # (base-action/src/parse-sdk-options.ts spreads process.env; the action

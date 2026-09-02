@@ -15,7 +15,7 @@ truth for:
   When an OAuth token is present, an empty API key is passed (subscription is
   used); when absent, the API key is the fallback.
 - **claude-code-action SHA pin** - a full-length commit SHA (currently
-  `a92e7c70...` = v1.0.159), not a floating tag.
+  `e5ad3c77...` = v1.0.202), not a floating tag.
 - **Model wiring** - `--model ${{ inputs.model }}`.
 - **`api_timeout_ms` (default 600000)** - applied to BOTH `API_TIMEOUT_MS` (the
   per-request cap) and `CLAUDE_STREAM_IDLE_TIMEOUT_MS`. The CLI's byte-level
