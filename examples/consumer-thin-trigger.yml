@@ -27,6 +27,22 @@
 #   reviewer App token, and ALLOW_AUTO_APPROVE defaults false, so GITHUB_TOKEN
 #   never needs it. (AT-2031)
 
+# THE `with:` BLOCK BELOW IS NOT THE FULL SET OF KNOBS:
+#   It lists the workflow_call inputs, and that is all it lists. Further
+#   behavior -- review mode, size limit, thresholds, models, the auto-approve
+#   killswitch -- is read as `vars.*` INSIDE the reusable workflows, so those
+#   names appear nowhere in this file and nowhere in the consumer repo's own
+#   tree. Grepping your repository for them finds nothing; that absence is not
+#   evidence they do not exist.
+#   Commonly changed: PR_SIZE_LIMIT, REVIEW_MODE, ALLOW_AUTO_APPROVE.
+#   Set them on THIS repository (or its organization) under
+#     Settings -> Secrets and variables -> Actions -> Variables
+#   The full list with defaults and effects lives in the base repo, and is
+#   deliberately not copied here -- two copies would diverge:
+#     ignite-corp/ai-dev-pr-review -> README.md
+#     -> section "Runtime configuration via `vars.*`"  (README.ko.md for Korean)
+#   (AT-2090)
+
 # --- Variant 1: same-org (ignite-corp) ---
 name: AI Code Review
 
