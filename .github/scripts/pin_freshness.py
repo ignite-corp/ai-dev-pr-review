@@ -45,7 +45,10 @@ Floating major tags
     run, and that is precisely what this check has to surface. A float on a
     commit that matches no release, or missing from the tag list entirely, is
     FLAGged for the same reason a SHA that resolves to nothing is: an
-    unresolvable pin cannot be called current.
+    unresolvable pin cannot be called current. Those conditions are reported
+    apart from one another -- absent, unusable SHA, unreleased commit, behind
+    latest -- because a verdict that names a condition other than the one it
+    found is the failure this whole script exists to correct.
 
 Version floor
     There is no hardcoded floor. The floor is derived from the newest release
@@ -119,7 +122,9 @@ def build_index(
     ``versions`` -- letting it in would make it a release and skew ``latest``.
     Its commit is kept in a third map instead: the SHA is the only evidence
     that the alias actually moved, and it arrives in the same listing, so no
-    extra request is needed to obtain it.
+    extra request is needed to obtain it. That map holds the SHA as the listing
+    gave it, well-formed or not, so a caller can tell a tag that is missing
+    from a tag that is unresolvable.
     """
     versions: dict[str, Version] = {}
     by_sha: dict[str, str] = {}
@@ -129,7 +134,12 @@ def build_index(
         sha = str(entry.get("sha") or "").lower()
         version = parse_version(name)
         if version is None:
-            if _FLOATING_TAG_RE.match(name) and _SHA_RE.match(sha):
+            if _FLOATING_TAG_RE.match(name):
+                # Record the row even when its SHA is unusable. Whether the tag
+                # exists and whether its commit can be resolved are two separate
+                # findings, and the verdict has to name the one that occurred.
+                # This mirrors the release path, where ``versions`` keeps the
+                # name and only ``by_sha`` demands a well-formed SHA.
                 floating[name] = sha
             continue
         versions[name] = version
@@ -212,6 +222,12 @@ def classify(
         if sha is None:
             return False, (
                 "floating tag %s is absent from the tag list "
+                "(cannot confirm what it points at; latest release is %s)"
+                % (pin, _format(latest))
+            )
+        if not _SHA_RE.match(sha):
+            return False, (
+                "floating tag %s is present but carries no usable commit SHA "
                 "(cannot confirm what it points at; latest release is %s)"
                 % (pin, _format(latest))
             )

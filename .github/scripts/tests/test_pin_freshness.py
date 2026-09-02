@@ -115,6 +115,20 @@ def test_floating_tag_absent_from_the_tag_list_is_flagged():
     assert "absent from the tag list" in message
 
 
+def test_floating_tag_with_an_unusable_sha_is_flagged_as_such():
+    # Present but unresolvable is a different finding from absent. Both fail
+    # closed; only one of them is true at a time, and the verdict an operator
+    # reads at 3am has to name the one that occurred.
+    for bad in ("", "not-a-sha", V1_5_0[:7]):
+        ok, message = judge("v1", tags_with_v1_at(bad))
+        assert not ok
+        assert "carries no usable commit SHA" in message
+        assert "absent from the tag list" not in message
+    # The unusable value itself is never echoed back into the public log.
+    _, message = judge("v1", tags_with_v1_at("not-a-sha"))
+    assert "not-a-sha" not in message
+
+
 def test_floating_tag_of_an_older_major_is_flagged():
     tags = TAGS + [{"name": "v2.0.0", "sha": "3" * 40}]
     ok, message = judge("v1", tags)
