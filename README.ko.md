@@ -249,7 +249,7 @@ updates:
 - 마이너(`v1.x.0`): 새 선택적 입력, 추가적 리뷰어 기능.
 - 메이저(`v2.0.0`): 입력 계약 변경, 스크립트 시그니처 깨짐, 심각도 임계 기본값 변경.
 
-래퍼 버전 정렬: 이 레포와 파일럿 래퍼 `ignite-pilot-org/ai-dev-pr-review-wrapper`는 릴리스 버전의 MAJOR.MINOR를 lockstep으로 유지하며, PATCH는 레포별로 독립적으로 올립니다. 현재 페어링: base `v1.6.0` ↔ wrapper `v1.6.0`. 한쪽 레포가 MINOR(또는 MAJOR)를 올리면, 다른 쪽도 매칭되는 정렬(alignment) 릴리스를 냅니다 — 변경 사항이 없으면 내용이 동일한 릴리스입니다. 두 레포 모두 릴리스 발행 시 `move-major-tag.yml`로 `v1` 메이저 태그를 자동 이동하므로, `@v1` 소비자는 별도 조치가 필요 없습니다.
+래퍼 버전 정렬: 이 레포와 파일럿 래퍼 `ignite-pilot-org/ai-dev-pr-review-wrapper`는 릴리스 버전의 MAJOR.MINOR를 lockstep으로 유지하며, PATCH는 레포별로 독립적으로 올립니다. 현재 페어링: base `v1.7.0` ↔ wrapper `v1.7.0`. 한쪽 레포가 MINOR(또는 MAJOR)를 올리면, 다른 쪽도 매칭되는 정렬(alignment) 릴리스를 냅니다 — 변경 사항이 없으면 내용이 동일한 릴리스입니다. 두 레포 모두 릴리스 발행 시 `move-major-tag.yml`로 `v1` 메이저 태그를 자동 이동하므로, `@v1` 소비자는 별도 조치가 필요 없습니다.
 
 lockstep이 필요한 이유는 래퍼가 이 레포의 재사용 워크플로우를 호출하지 않고 단일 리뷰 job을 인라인으로 재구현하고 있기 때문입니다. 따라서 `base-ai-review-single.yml`의 변경은 파일럿 소비자에게 자동으로 전달되지 않습니다 — `wrapper.yml`로 직접 포팅한 뒤 대응되는 래퍼 릴리스로 배포해야 합니다. 자동으로 전파되는 것은 래퍼의 `upstream_ref` 체크아웃을 타고 오는 `.github/scripts/*`(`review_prompt.md` 포함)와 `.github/actions/claude-review` 컴포지트뿐입니다. 레포별 프롬프트인 `code-review-system.md` / `code-review-checklist.md`는 이 레포가 아니라 소비자 레포에서 읽습니다. [파일럿 사용법](docs/pilot-usage.md) 참조.
 
