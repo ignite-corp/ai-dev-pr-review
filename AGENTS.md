@@ -22,10 +22,13 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
 `consumer-health.yml` runs daily (00:00 UTC) checking the tracked consumers:
 - recent ai-review.yml run conclusions
 - reusable workflow pin freshness: a SHA pin is resolved back to its release
-  tag (`.github/scripts/pin_freshness.py`), and every pin form must name the
-  latest release or the one MINOR before it. A commit that matches no release
-  is flagged too. The base repo's own entry is skipped here -- self-review.yml
-  calls the orchestrator by local path, so it has no pin.
+  tag (`.github/scripts/pin_freshness.py`), and a version or SHA pin must name
+  the latest release or the one MINOR before it. A floating `v1` is resolved to
+  the commit it points at and held to the latest release exactly: nobody bumps
+  it by hand, so any lag means the tag move did not run (AT-2088; rationale in
+  the module docstring). A commit that matches no release is flagged too. The
+  base repo's own entry is skipped here -- self-review.yml calls the
+  orchestrator by local path, so it has no pin.
 - org/repo-level secret accessibility
 - Dependabot PR status
 
