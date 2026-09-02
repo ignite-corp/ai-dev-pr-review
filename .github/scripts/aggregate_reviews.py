@@ -461,6 +461,76 @@ def _check_major_consensus(all_issues: list[dict[str, Any]]) -> tuple[str, str] 
     return None
 
 
+def _prepare_failure_result() -> str | None:
+    """prepare's result when it did not succeed, else None.
+
+    The orchestrator gates the reviewer jobs on prepare but cannot gate this
+    job on it: its name is a required status context, and a job that never
+    runs reports nothing, so the check sits Pending with no failure to explain
+    it -- the AT-1975 defect reached through a different door (AT-2087).
+
+    Unset is treated as success so that a caller pinned to a tag that predates
+    this input keeps the old path.
+    """
+    result = os.environ.get("PREPARE_RESULT", "").strip().lower()
+    if result in ("", "success"):
+        return None
+    return result
+
+
+def format_prepare_failure_summary(result: str, run_url: str) -> str:
+    """Verdict body for a run where prepare did not succeed.
+
+    prepare dies before publishing anything -- no head_sha, no size numbers, no
+    reviewer artifacts -- so the body cannot name a measurement the way the
+    size-skip body does. It names the job to open instead: the reason is in
+    that job's log, and pointing at it is the difference between a check that
+    blocks and a check that blocks actionably.
+    """
+    headline = (
+        f"**Result: [X] Review did not run -- the prepare job reported"
+        f" `{result}`**"
+    )
+    why_red = (
+        "No reviewer ran, so this check reports a failure rather than a"
+        " verdict. That is deliberate: a required check that is never"
+        " reported stays Pending forever with nothing to act on."
+    )
+    where = (
+        "The reason is in the `review / prepare / Prepare Review Context` job"
+        " of this run"
+    )
+    where += f": {run_url}" if run_url else "."
+    causes = [
+        "Known causes:",
+        "",
+        "1. **`PR_SIZE_LIMIT` is not an integer.** Fix the repository variable"
+        " (Settings -> Secrets and variables -> Actions -> Variables) or remove"
+        " it to fall back to the default.",
+        "2. **The PR head could not be resolved**, or the checked-out tree did"
+        " not match the commit the diff is about. The log names the two SHAs.",
+        "3. **Checkout, GitHub API, or runner failure.** Usually transient --"
+        " re-run the workflow.",
+    ]
+    lines = [
+        REVIEW_MARKER,
+        "## [bot] Multi-LLM Review Summary",
+        "",
+        headline,
+        "",
+        "---",
+        "",
+        why_red,
+        "",
+        where,
+        "",
+        *causes,
+        "",
+        "This check turns green once prepare succeeds and the reviewers report.",
+    ]
+    return "\n".join(lines)
+
+
 def _size_skip_details() -> tuple[str, str] | None:
     """(total, limit) when prepare skipped the review for size, else None.
 
@@ -890,6 +960,27 @@ def post_verdict(
 
 
 def main() -> None:
+    # Checked before the size gate: when prepare fails, its size outputs are
+    # empty, so the size path cannot recognise this run at all. The two are
+    # mutually exclusive in practice -- every step after the size check is
+    # gated on skip == 'false', so a skipping prepare succeeds.
+    prepare_failure = _prepare_failure_result()
+    if prepare_failure is not None:
+        comment = format_prepare_failure_summary(
+            prepare_failure, os.environ.get("RUN_URL", "").strip()
+        )
+        # PR_NUMBER does not come from prepare -- it is the event payload on
+        # pull_request and the caller's input on workflow_dispatch -- so it
+        # survives a prepare failure. If it is somehow absent, post_verdict
+        # exits 1 with the reason on stderr: the check is still created and
+        # still red, explained only in the runner log. Worse than a comment,
+        # far better than a context that never appears.
+        post_verdict(comment, "request_changes", comment_only=_is_comment_only())
+        print(f"Final verdict: request_changes -- prepare reported {prepare_failure}")
+        # No review happened at all; passing would newly permit unreviewed
+        # merges, which is the opposite of what this check exists for.
+        sys.exit(1)
+
     size_skip = _size_skip_details()
     if size_skip is not None:
         total, limit = size_skip

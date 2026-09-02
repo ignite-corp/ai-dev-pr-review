@@ -16,6 +16,7 @@ import yaml
 
 from aggregate_reviews import (
     _get_available,
+    _prepare_failure_result,
     _size_skip_details,
     _has_early_exit,
     _normalize_severity,
@@ -24,6 +25,7 @@ from aggregate_reviews import (
     _is_partial,
     _is_valid_review,
     apply_verdict_rules,
+    format_prepare_failure_summary,
     format_size_skip_summary,
     format_summary,
     load_reviews,
@@ -1313,3 +1315,260 @@ def _run_guard(script: str, cwd: Path, head_sha: str) -> int:
         capture_output=True, timeout=30,
         check=False,  # the exit code IS the assertion here
     ).returncode
+
+
+class TestPrepareFailureVerdict:
+    """A run whose prepare job failed must produce a visible, actionable failure.
+
+    AT-1975 took the aggregate out of the size gate; the `prepare.result ==
+    'success'` gate stayed, so every other way prepare can die -- invalid
+    PR_SIZE_LIMIT, unresolvable head, the AT-2038 tree/diff assert, a checkout
+    or API error -- still produced no context at all and left the required
+    check Pending forever (AT-2087).
+    """
+
+    @staticmethod
+    def _set_prepare_env(
+        monkeypatch: pytest.MonkeyPatch,
+        result: str = "failure",
+        run_url: str = "https://github.example/o/r/actions/runs/9",
+    ) -> None:
+        monkeypatch.setenv("PREPARE_RESULT", result)
+        monkeypatch.setenv("RUN_URL", run_url)
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    def test_prepare_failure_exits_nonzero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Blocking is the point: no reviewer ran, so nothing vouched for this PR."""
+        self._set_prepare_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        assert mock_post.call_args[0][1] == "request_changes"
+
+    def test_prepare_failure_names_the_job_to_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare "prepare failed" is not actionable -- name a place to look."""
+        self._set_prepare_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        assert "Prepare Review Context" in body
+        assert "https://github.example/o/r/actions/runs/9" in body
+
+    def test_prepare_failure_names_the_known_causes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The log says what broke; the body says what the candidates are."""
+        self._set_prepare_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        assert "PR_SIZE_LIMIT" in body
+        assert "re-run" in body
+
+    def test_prepare_failure_reports_the_result_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """cancelled is not failure, and saying so saves a wrong-cause hunt."""
+        self._set_prepare_env(monkeypatch, result="cancelled")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert "cancelled" in mock_post.call_args[0][0]
+
+    def test_prepare_failure_carries_the_review_marker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the marker the comment escapes stale-comment minimization."""
+        self._set_prepare_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert mock_post.call_args[0][0].startswith(REVIEW_MARKER)
+
+    def test_prepare_failure_never_reads_reviewer_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reviewer jobs are skipped when prepare dies, so none can be awaited."""
+        self._set_prepare_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.load_reviews") as mock_load,
+            patch("aggregate_reviews.post_verdict"),
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mock_load.assert_not_called()
+
+    def test_prepare_failure_survives_an_empty_run_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caller on an older tag sends no RUN_URL; the verdict must still post."""
+        self._set_prepare_env(monkeypatch, run_url="")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert "Prepare Review Context" in mock_post.call_args[0][0]
+
+    def test_prepare_failure_precedes_the_size_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed prepare publishes no size numbers, so the size body cannot apply."""
+        self._set_prepare_env(monkeypatch)
+        monkeypatch.setenv("SIZE_SKIPPED", "")
+        monkeypatch.setenv("SIZE_TOTAL", "")
+        monkeypatch.setenv("SIZE_LIMIT", "")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        assert "prepare job reported" in body
+        assert "PR too large" not in body
+
+    def test_missing_pr_number_still_fails_the_job(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No PR number means no comment -- but the context must still be red.
+
+        A check that fails with the explanation only in the runner log is
+        strictly better than a check that never appears. post_verdict already
+        exits 1 on an unusable PR_NUMBER; this pins that the prepare-failure
+        path reaches it rather than returning 0.
+        """
+        monkeypatch.setenv("PREPARE_RESULT", "failure")
+        monkeypatch.delenv("PR_NUMBER", raising=False)
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        with (
+            patch("aggregate_reviews.load_reviews") as mock_load,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        mock_load.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["success", "", "SUCCESS", "  success  "])
+    def test_successful_prepare_takes_the_normal_path(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """Regression: the untouched path must stay untouched."""
+        monkeypatch.setenv("PREPARE_RESULT", value)
+        assert _prepare_failure_result() is None
+
+    def test_unset_takes_the_normal_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Consumers pinned to an older tag send no prepare_result at all."""
+        monkeypatch.delenv("PREPARE_RESULT", raising=False)
+        assert _prepare_failure_result() is None
+
+    def test_unset_still_reaches_the_reviewer_pipeline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end regression guard for the normal path."""
+        monkeypatch.delenv("PREPARE_RESULT", raising=False)
+        monkeypatch.delenv("SIZE_SKIPPED", raising=False)
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ) as mock_load,
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+        mock_load.assert_called_once()
+        assert mock_post.call_args[0][1] == "approve"
+
+    def test_summary_is_ascii(self) -> None:
+        """Public-repo invariant, asserted at the point the string is built."""
+        format_prepare_failure_summary("failure", "https://x/y").encode("ascii")
+
+
+class TestAggregateJobIsNotPrepareGated:
+    """The orchestrator must not gate the aggregate job on prepare's result.
+
+    Same defect as TestAggregateJobIsNotSizeGated, different door: a required
+    context that is not reported stays Pending forever. v1.6.0 widened the hole
+    by adding the AT-2038 tree/diff assert as a new way for prepare to fail.
+    """
+
+    @staticmethod
+    def _aggregate() -> dict[str, Any]:
+        return dict(_workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]["aggregate"])
+
+    def test_aggregate_does_not_reference_the_prepare_result(self) -> None:
+        condition = str(self._aggregate().get("if", ""))
+        assert "prepare.result" not in condition
+
+    def test_aggregate_does_not_gate_on_the_reviewer_jobs(self) -> None:
+        """They are skipped whenever prepare skips or dies, and that is correct."""
+        condition = str(self._aggregate().get("if", ""))
+        assert "review-" not in condition
+
+    def test_aggregate_condition_suppresses_the_implicit_success_check(self) -> None:
+        """A plain condition would re-gate the job on every upstream job.
+
+        GitHub applies an implicit success() unless the expression contains one
+        of always/cancelled/failure/success -- losing that word would restore
+        the hole from the other side.
+        """
+        condition = str(self._aggregate().get("if", ""))
+        assert any(
+            fn in condition
+            for fn in ("always()", "cancelled()", "failure()", "success()")
+        ), condition
+
+    def test_aggregate_does_not_run_after_a_cancellation(self) -> None:
+        """A cancelled run must not race the live one for the comment slot.
+
+        cancel-in-progress kills the previous run on every new commit. Under
+        always() the dying run still aggregated -- the artifact downloads are
+        continue-on-error -- and posted "0/3 LLM responses" over the live run's
+        verdict (AT-2092).
+        """
+        assert "!cancelled()" in str(self._aggregate().get("if", ""))
+
+    def test_aggregate_condition_is_wrapped_in_an_expression(self) -> None:
+        """A bare leading `!` is a YAML tag indicator and will not parse.
+
+        The workflow loading at all proves it; this records why the braces are
+        there, so they are not tidied away later.
+        """
+        assert str(self._aggregate().get("if", "")).startswith("${{")
+
+    def test_aggregate_receives_the_prepare_result(self) -> None:
+        """Not gating on it is only half: the verdict has to be able to say it."""
+        assert "prepare_result" in dict(self._aggregate().get("with", {}))
+
+    def test_aggregate_workflow_forwards_it_to_the_script(self) -> None:
+        """A declared input nothing reads would render an empty verdict."""
+        job = next(iter(_workflow(_AGGREGATE_WORKFLOW)["jobs"].values()))
+        step = next(
+            s for s in job["steps"] if s.get("name") == "Aggregate and post verdict"
+        )
+        env = dict(step.get("env", {}))
+        assert "inputs.prepare_result" in str(env.get("PREPARE_RESULT", ""))
+        assert "run_id" in str(env.get("RUN_URL", ""))
