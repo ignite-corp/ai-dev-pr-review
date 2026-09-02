@@ -140,10 +140,13 @@ def _run_refs_step(
     script = _render(step["run"], context)
 
     rest_fixture = tmp_path / "rest.json"
-    rest_fixture.write_text(json.dumps(rest or _DEPENDABOT_REST), encoding="utf-8")
+    rest_fixture.write_text(
+        json.dumps(_DEPENDABOT_REST if rest is None else rest), encoding="utf-8"
+    )
     view_fixture = tmp_path / "gh-pr-view.json"
     view_fixture.write_text(
-        json.dumps(gh_pr_view or _DEPENDABOT_GH_PR_VIEW), encoding="utf-8"
+        json.dumps(_DEPENDABOT_GH_PR_VIEW if gh_pr_view is None else gh_pr_view),
+        encoding="utf-8",
     )
     call_log = tmp_path / "gh-calls.log"
     call_log.touch()
@@ -258,6 +261,21 @@ class TestDispatchPath:
         # Neither the literal "null" nor the base branch name.
         assert outputs["head_ref"] != "null"
         assert outputs["head_ref"] != outputs["base_ref"]
+
+    def test_a_partial_response_never_yields_the_literal_null(
+        self, tmp_path: Path
+    ) -> None:
+        # Every field guarded, not only the two this ticket added. jq -r
+        # prints an absent field as the string "null", which is truthy
+        # everywhere downstream -- it would be checked out, diffed against and
+        # printed as metadata as if it were a ref.
+        outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest={})
+        assert outputs == {
+            "base_ref": "",
+            "head_sha": "",
+            "head_ref": "",
+            "pr_author": "",
+        }
 
 
 @requires_jq

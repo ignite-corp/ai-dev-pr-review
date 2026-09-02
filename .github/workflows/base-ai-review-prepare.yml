@@ -132,7 +132,13 @@ jobs:
       # reviewers read it as "this PR's head branch is main", and it is one of
       # the two signals they use to recognise a dependabot PR (AT-2086).
       # `// ""` keeps an unresolvable field empty rather than letting jq print
-      # the string "null" as if it were a branch name or a login.
+      # the string "null" as if it were a branch name or a login. It guards
+      # every one of the four reads, including the two that predate this
+      # change: a valid PR always carries a base ref and a head SHA, but a
+      # partial response would otherwise hand the steps below the string
+      # "null", which is truthy everywhere -- a ref to check out, a ref to diff
+      # against, a value to print as metadata. An empty value fails the
+      # emptiness checks that already exist instead.
       #
       # The wrapper (ignite-pilot-org/ai-dev-pr-review-wrapper, commits
       # 8648105 + d88b0fe) reimplements this workflow inline and carries the
@@ -151,8 +157,8 @@ jobs:
         run: |
           if [ -z "$BASE_REF" ]; then
             PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
-            BASE_REF=$(echo "$PR_JSON" | jq -r '.base.ref')
-            HEAD_SHA=$(echo "$PR_JSON" | jq -r '.head.sha')
+            BASE_REF=$(echo "$PR_JSON" | jq -r '.base.ref // ""')
+            HEAD_SHA=$(echo "$PR_JSON" | jq -r '.head.sha // ""')
             HEAD_REF=$(echo "$PR_JSON" | jq -r '.head.ref // ""')
             PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login // ""')
           else
