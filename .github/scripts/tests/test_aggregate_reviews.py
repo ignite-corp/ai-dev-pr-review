@@ -17,6 +17,7 @@ import yaml
 from aggregate_reviews import (
     _get_available,
     _prepare_failure_result,
+    _head_is_stale,
     _size_skip_details,
     _has_early_exit,
     _normalize_severity,
@@ -1382,14 +1383,22 @@ class TestPrepareFailureVerdict:
     def test_prepare_failure_reports_the_result_verbatim(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """cancelled is not failure, and saying so saves a wrong-cause hunt."""
-        self._set_prepare_env(monkeypatch, result="cancelled")
+        """The result is quoted, not classified -- it saves a wrong-cause hunt.
+
+        This asserted on `cancelled` until AT-2092, when the guard that
+        suppresses a superseded run took that value over. `skipped` replaces
+        it only as a value distinct from `failure` -- prepare is a root job
+        with no `if:`, so it can never actually report `skipped`. What is
+        under test is that the result is quoted rather than classified, and
+        any non-success value shows that.
+        """
+        self._set_prepare_env(monkeypatch, result="skipped")
         with (
             patch("aggregate_reviews.post_verdict") as mock_post,
             pytest.raises(SystemExit),
         ):
             main()
-        assert "cancelled" in mock_post.call_args[0][0]
+        assert "skipped" in mock_post.call_args[0][0]
 
     def test_prepare_failure_carries_the_review_marker(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1541,23 +1550,20 @@ class TestAggregateJobIsNotPrepareGated:
             for fn in ("always()", "cancelled()", "failure()", "success()")
         ), condition
 
-    def test_aggregate_does_not_run_after_a_cancellation(self) -> None:
-        """A cancelled run must not race the live one for the comment slot.
+    def test_aggregate_still_runs_after_a_cancellation(self) -> None:
+        """Cancellation must be guarded inside the job, never on the job.
 
-        cancel-in-progress kills the previous run on every new commit. Under
-        always() the dying run still aggregated -- the artifact downloads are
-        continue-on-error -- and posted "0/3 LLM responses" over the live run's
-        verdict (AT-2092).
+        `!cancelled()` skips the aggregate, and AT-1967 Phase 0 measured what a
+        skipped aggregate reports: the two-part name `review / aggregate`, not
+        the three-part `review / aggregate / Aggregate & Verdict` the consumer
+        rulesets require. The required context is then never reported at all
+        and the PR sits Pending forever -- not the Success GitHub documents for
+        a job skipped by its `if:`. The posting is stopped in the script
+        instead (TestSupersededHeadPostsNoVerdict).
         """
-        assert "!cancelled()" in str(self._aggregate().get("if", ""))
-
-    def test_aggregate_condition_is_wrapped_in_an_expression(self) -> None:
-        """A bare leading `!` is a YAML tag indicator and will not parse.
-
-        The workflow loading at all proves it; this records why the braces are
-        there, so they are not tidied away later.
-        """
-        assert str(self._aggregate().get("if", "")).startswith("${{")
+        condition = str(self._aggregate().get("if", ""))
+        assert "always()" in condition, condition
+        assert "cancelled" not in condition, condition
 
     def test_aggregate_receives_the_prepare_result(self) -> None:
         """Not gating on it is only half: the verdict has to be able to say it."""
@@ -1572,3 +1578,244 @@ class TestAggregateJobIsNotPrepareGated:
         env = dict(step.get("env", {}))
         assert "inputs.prepare_result" in str(env.get("PREPARE_RESULT", ""))
         assert "run_id" in str(env.get("RUN_URL", ""))
+
+    def test_aggregate_workflow_forwards_the_head_it_reviewed(self) -> None:
+        """The staleness guard compares it; unforwarded, nothing is stale."""
+        job = next(iter(_workflow(_AGGREGATE_WORKFLOW)["jobs"].values()))
+        step = next(
+            s for s in job["steps"] if s.get("name") == "Aggregate and post verdict"
+        )
+        assert "inputs.head_sha" in str(dict(step.get("env", {})).get("HEAD_SHA", ""))
+        assert "head_sha" in dict(self._aggregate().get("with", {}))
+
+    def test_aggregate_workflow_forwards_every_reviewer_result(self) -> None:
+        """The verdict names who died; an unforwarded one is a silent gap."""
+        job = next(iter(_workflow(_AGGREGATE_WORKFLOW)["jobs"].values()))
+        step = next(
+            s for s in job["steps"] if s.get("name") == "Aggregate and post verdict"
+        )
+        env = dict(step.get("env", {}))
+        supplied = dict(self._aggregate().get("with", {}))
+        for name in REVIEWER_NAMES:
+            assert f"{name}_result" in supplied, name
+            assert f"inputs.{name}_result" in str(
+                env.get(f"REVIEWER_RESULT_{name.upper()}", "")
+            ), name
+
+
+class TestSupersededHeadPostsNoVerdict:
+    """A run whose head has moved on must reach the aggregate and post nothing.
+
+    cancel-in-progress kills the previous run on every new commit. The job has
+    to keep running -- its name is the required status context and a skipped
+    job never reports the three-part name (AT-1967 Phase 0) -- so the guard is
+    here, in the script, not on the job's `if:` (AT-2092).
+
+    The guard is head staleness, not cancellation. Reviewer conclusions cannot
+    tell a cancelled run from a dead reviewer: a cancel lands wherever the
+    reviewers happen to be and produces every mixture, so the four shapes
+    below are all reachable from one cancel. Each is asserted twice, once with
+    a superseded head and once with a current one.
+    """
+
+    _REVIEWED = "a" * 40
+    _NEWER = "b" * 40
+
+    # Every mixture of reviewer conclusions one cancel can leave behind.
+    # Live timings (gemini 18s, codex 40s, claude 1m18s) put a cancel in the
+    # ~60s window on the second or third of these; two of the three cancelled
+    # runs in this repo's history landed on the fourth.
+    _SHAPES = [
+        pytest.param(["cancelled", "cancelled", "cancelled"], id="all-cancelled"),
+        pytest.param(["cancelled", "success", "success"], id="one-cancelled"),
+        pytest.param(["cancelled", "cancelled", "success"], id="two-cancelled"),
+        pytest.param(["success", "success", "success"], id="none-cancelled"),
+        pytest.param(["cancelled", "skipped", "skipped"], id="sequential-mode"),
+    ]
+
+    @classmethod
+    def _set_env(
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+        results: list[str],
+        head_sha: str | None = None,
+    ) -> None:
+        monkeypatch.setenv("PREPARE_RESULT", "success")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.delenv("SIZE_SKIPPED", raising=False)
+        if head_sha is None:
+            monkeypatch.delenv("HEAD_SHA", raising=False)
+        else:
+            monkeypatch.setenv("HEAD_SHA", head_sha)
+        for name, value in zip(REVIEWER_NAMES, results):
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", value)
+
+    @staticmethod
+    def _head_lookup(sha: str = "", returncode: int = 0) -> Any:
+        """Patch the one `gh api` call the guard makes."""
+        return patch(
+            "aggregate_reviews.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=returncode, stdout=sha, stderr=""
+            ),
+        )
+
+    @pytest.mark.parametrize("results", _SHAPES)
+    def test_a_superseded_head_posts_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, results: list[str]
+    ) -> None:
+        """One rule covers every shape a cancel can leave behind."""
+        self._set_env(monkeypatch, results, head_sha=self._REVIEWED)
+        with (
+            self._head_lookup(self._NEWER),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        mock_post.assert_not_called()
+        assert excinfo.value.code == 1
+
+    @pytest.mark.parametrize("results", _SHAPES)
+    def test_a_current_head_still_posts_its_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, results: list[str]
+    ) -> None:
+        """Manual cancel, dead reviewer, timeout: indistinguishable, and this
+        run still owes the PR the honest partial verdict naming who died
+        (AT-1837), in either review mode.
+        """
+        self._set_env(monkeypatch, results, head_sha=self._REVIEWED)
+        with (
+            self._head_lookup(self._REVIEWED),
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            try:
+                main()
+            except SystemExit:
+                pass
+        mock_post.assert_called_once()
+
+    def test_a_superseded_head_never_reads_reviewer_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every download is continue-on-error, so nothing else stops it."""
+        self._set_env(
+            monkeypatch, ["cancelled"] * 3, head_sha=self._REVIEWED
+        )
+        with (
+            self._head_lookup(self._NEWER),
+            patch("aggregate_reviews.load_reviews") as mock_load,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mock_load.assert_not_called()
+
+    def test_a_superseded_head_does_not_report_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exit 0 would be a green required check for an unreviewed commit."""
+        self._set_env(
+            monkeypatch, ["success"] * 3, head_sha=self._REVIEWED
+        )
+        with self._head_lookup(self._NEWER), pytest.raises(SystemExit) as excinfo:
+            main()
+        assert excinfo.value.code != 0
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"returncode": 1}, id="api-error"),
+            pytest.param({"sha": ""}, id="empty-response"),
+        ],
+    )
+    def test_an_undeterminable_head_still_posts(
+        self, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
+    ) -> None:
+        """Rate limit, network, a deleted PR: fail toward posting.
+
+        A redundant verdict is visible and the live run's supersedes it; a
+        dropped one is the silence this file exists to prevent.
+        """
+        self._set_env(monkeypatch, ["success"] * 3, head_sha=self._REVIEWED)
+        with (
+            self._head_lookup(**kwargs),
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+        mock_post.assert_called_once()
+
+    def test_a_timed_out_head_lookup_still_posts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same direction for the exception path, which returns no result."""
+        self._set_env(monkeypatch, ["success"] * 3, head_sha=self._REVIEWED)
+        with patch(
+            "aggregate_reviews.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=1),
+        ):
+            assert _head_is_stale() is False
+
+    def test_no_head_is_not_stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """prepare resolved none -- it failed (AT-2087) or skipped (AT-1975).
+
+        Both still owe the PR a verdict, and there is nothing to compare.
+        """
+        self._set_env(monkeypatch, ["skipped"] * 3, head_sha=None)
+        with patch("aggregate_reviews.subprocess.run") as mock_run:
+            assert _head_is_stale() is False
+        mock_run.assert_not_called()
+
+    def test_failed_prepare_still_posts_its_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard for AT-2087, merged in the same PR as the defect."""
+        self._set_env(monkeypatch, ["skipped"] * 3, head_sha=None)
+        monkeypatch.setenv("PREPARE_RESULT", "failure")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert mock_post.call_args[0][1] == "request_changes"
+        assert "prepare job reported" in mock_post.call_args[0][0]
+
+    def test_size_skip_still_posts_its_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard for AT-1975: prepare succeeds, reviewers skip."""
+        self._set_env(monkeypatch, ["skipped"] * 3, head_sha=None)
+        monkeypatch.setenv("SIZE_SKIPPED", "true")
+        monkeypatch.setenv("SIZE_TOTAL", "5000")
+        monkeypatch.setenv("SIZE_LIMIT", "3000")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert "PR too large" in mock_post.call_args[0][0]
+
+    def test_the_head_is_compared_after_normalization(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`gh` returns a trailing newline; a raw compare would call it stale."""
+        self._set_env(monkeypatch, ["success"] * 3, head_sha=self._REVIEWED)
+        with self._head_lookup(self._REVIEWED + "\n"):
+            assert _head_is_stale() is False
+
+    def test_an_unusable_pr_number_is_not_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No PR to ask about -- post_verdict reports that failure itself."""
+        self._set_env(monkeypatch, ["success"] * 3, head_sha=self._REVIEWED)
+        monkeypatch.delenv("PR_NUMBER", raising=False)
+        with patch("aggregate_reviews.subprocess.run") as mock_run:
+            assert _head_is_stale() is False
+        mock_run.assert_not_called()
