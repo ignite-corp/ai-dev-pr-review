@@ -46,6 +46,34 @@ Claude 리뷰어는 `anthropics/claude-code-action`을 통해 실행되며, 이 
 
 **둘 다 설정된 경우의 우선순위:** CLI는 `ANTHROPIC_API_KEY`에 더 높은 우선순위를 부여하므로, 둘 다 전달하면 OAuth 토큰이 있어도 API에 과금됩니다. 이를 피하기 위해 이 레포의 워크플로우는 이제 `CLAUDE_CODE_OAUTH_TOKEN`이 설정된 경우 **OAuth 토큰만** 전달하여 구독이 사용되도록 하며, `ANTHROPIC_API_KEY`는 OAuth 토큰이 없을 때만 연결되는 폴백입니다(docs: code.claude.com/docs/en/authentication). 인증·과금하려는 **하나만** 제공하세요. (`consumer-health` 체크는 네 개를 모두 점검해 잘못 구성된 레포를 조기에 드러내지만, 이는 헬스 신호일 뿐 Claude 시크릿 두 개를 모두 설정해야 한다는 하드 요구사항은 아닙니다.)
 
+## 소비자 레포에 필요한 설정
+
+첫 실행 전에 반드시 맞춰 두어야 하는 설정이 하나 있습니다. 이것이 틀리면 잡 하나가 실패하는 것이 아니라, 읽을 로그조차 남기지 않고 워크플로우 전체가 시작 단계에서 죽습니다.
+
+```
+The workflow is requesting 'pull-requests: write',
+but is only allowed 'pull-requests: none'.
+```
+
+orchestrator는 `permissions: {contents: read, pull-requests: write}`를 선언합니다 — 취합기가 판정을 게시해야 하므로 선언하지 않을 수 없습니다. 그런데 레포지토리의 **기본 워크플로우 권한(default workflow permissions)은 기본값이 아니라 상한(ceiling)입니다**. 상한이 `read`이면 호출부에서 그 이상을 부여할 수 없고, 소비자 워크플로우에 권한을 명시해도 소용이 없습니다.
+
+확인 및 설정:
+
+```bash
+gh api repos/OWNER/REPO/actions/permissions/workflow
+# {"default_workflow_permissions":"read", ...}   <- 시작 단계에서 실패함
+
+gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow \
+  -f default_workflow_permissions=write \
+  -F can_approve_pull_request_reviews=false
+```
+
+또는 UI에서: Settings -> Actions -> General -> Workflow permissions -> **Read and write permissions**.
+
+**"Allow GitHub Actions to create and approve pull requests"는 켜지 말고 꺼 둔 채로 두세요.** `REVIEWER_APP_ID`와 `REVIEWER_APP_PRIVATE_KEY`가 구성되어 있으면 취합기는 전용 리뷰어 App 토큰으로 승인하며, `ALLOW_AUTO_APPROVE`의 기본값도 `false`입니다. `GITHUB_TOKEN`에는 승인 권한이 필요한 경로가 없으므로, 켜 봐야 얻는 것 없이 사고 시 피해 범위만 넓어집니다.
+
+이 전제는 동일 조직이든 조직 간이든 **모든** 소비자에게 적용됩니다. 실제로 한 소비자가 여기에 걸릴 때까지 문서에 없던 항목입니다(AT-2031).
+
 ## 최소 소비자 thin 트리거
 
 소비자 레포에 `.github/workflows/ai-review.yml`로 추가하세요:
