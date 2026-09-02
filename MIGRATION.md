@@ -5,7 +5,7 @@ After `ignite-corp/ai-dev-pr-review` is created and tagged `v1.0.0`, open one PR
 ## Common preconditions (all consumers)
 
 1. Org or repo secrets present: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`.
-2. Repo vars (optional, override defaults from README): `PR_SIZE_LIMIT`, `REVIEW_MODE`, `CRITICAL_THRESHOLD`, `DEPENDABOT_CRITICAL_THRESHOLD`, `MAJOR_CONSENSUS_OVERLAP`, `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP`, `MAJOR_CONSENSUS_MIN`, `CLAUDE_MODEL`, `CODEX_MODEL`, `GEMINI_MODEL`, `BOT_LOGIN`, `ALLOW_AUTO_APPROVE`.
+2. Repo vars (optional -- every one has a working default, so a consumer can migrate without setting any). These are read inside the reusable workflows, so they appear neither in the thin trigger's `with:` block nor anywhere else in the consumer's tree. Commonly set: `PR_SIZE_LIMIT`, `REVIEW_MODE`, `ALLOW_AUTO_APPROVE`. For the complete set with defaults and effects see [Runtime configuration via `vars.*`](README.md#runtime-configuration-via-vars) -- that table is the single list and is deliberately not copied here. Set them under `Settings -> Secrets and variables -> Actions -> Variables`.
 3. `.github/prompts/code-review-system.md` and `.github/prompts/code-review-checklist.md` remain in the consumer repo. Do NOT delete.
 4. Branch protection on the consumer repo's main branch still requires the "AI Code Review" check — verify the new thin trigger's job name matches the protected check name, or update the branch protection rule alongside the migration PR.
 
