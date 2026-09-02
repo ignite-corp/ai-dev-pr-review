@@ -29,6 +29,9 @@ on:
       head_sha:
         description: "The PR head commit the diff was computed against. Callers check out THIS, not github.ref"
         value: ${{ jobs.prepare.outputs.head_sha }}
+      pr_author:
+        description: "PR author login in the webhook spelling (a bot is `dependabot[bot]`). Empty whenever the refs step did not run -- the size gate skipped the review, or the job failed before it -- and an empty author selects the stricter human thresholds downstream"
+        value: ${{ jobs.prepare.outputs.pr_author }}
 
 permissions:
   contents: read
@@ -43,6 +46,7 @@ jobs:
       size_total: ${{ steps.size-check.outputs.total }}
       head_sha: ${{ steps.refs.outputs.head_sha }}
       size_limit: ${{ steps.size-check.outputs.limit }}
+      pr_author: ${{ steps.refs.outputs.pr_author }}
     steps:
       # Caller-repo checkout: the prompt paths live in the consumer repo,
       # not in ai-dev-pr-review, so checkout the caller's PR head.
@@ -106,24 +110,60 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The dispatch branch resolves the PR through the REST endpoint rather
+      # than `gh pr view`. All four fields then arrive in exactly the shape the
+      # pull_request path receives from the webhook payload, which is what
+      # consumes them: `github.event.pull_request.user.login` is literally
+      # `.user.login` here, so the two paths cannot diverge in spelling.
+      # `gh pr view --json author` is a display surface with its own formatting
+      # and renders a bot as `app/dependabot`, where the webhook, the equality
+      # test in aggregate_reviews.py and the reviewer prompts all say
+      # `dependabot[bot]` -- three incompatible spellings of one identity, and
+      # the wrong one fails the test as silently as no value at all. One
+      # request either way, so this costs nothing over the previous call.
+      #
+      # `.head.ref`, never `.head.label`: on a fork PR the label is
+      # owner-prefixed (`someuser:branch-name`) while `.head.ref` is the bare
+      # branch name the pull_request path yields.
+      #
+      # Without head_ref and pr_author the metadata block below reported
+      # `github.head_ref`, which is empty on a dispatch and fell back to the
+      # BASE branch name -- not a missing value but a false one, since the
+      # reviewers read it as "this PR's head branch is main", and it is one of
+      # the two signals they use to recognise a dependabot PR (AT-2086).
+      # `// ""` keeps an unresolvable field empty rather than letting jq print
+      # the string "null" as if it were a branch name or a login.
+      #
+      # The wrapper (ignite-pilot-org/ai-dev-pr-review-wrapper, commits
+      # 8648105 + d88b0fe) reimplements this workflow inline and carries the
+      # same fix, arrived at the same way. The two files agree here: do not
+      # "reconcile" them by reverting either side.
       - name: Resolve PR refs
         id: refs
         if: steps.size-check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$BASE_REF" ]; then
-            PR_JSON=$(gh pr view "$PR_NUMBER" \
-              --repo "${{ github.repository }}" --json baseRefName,headRefOid)
-            BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName')
-            HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
+            PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+            BASE_REF=$(echo "$PR_JSON" | jq -r '.base.ref')
+            HEAD_SHA=$(echo "$PR_JSON" | jq -r '.head.sha')
+            HEAD_REF=$(echo "$PR_JSON" | jq -r '.head.ref // ""')
+            PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login // ""')
           else
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           fi
-          echo "base_ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
-          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "base_ref=${BASE_REF}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "head_ref=${HEAD_REF}"
+            echo "pr_author=${PR_AUTHOR}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Fetch PR head (when pr_number provided manually)
         if: steps.size-check.outputs.skip == 'false' && inputs.pr_number != ''
@@ -162,8 +202,8 @@ jobs:
         env:
           BASE_REF: ${{ steps.refs.outputs.base_ref }}
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
-          HEAD_REF: ${{ github.head_ref || steps.refs.outputs.base_ref }}
+          PR_AUTHOR: ${{ steps.refs.outputs.pr_author }}
+          HEAD_REF: ${{ steps.refs.outputs.head_ref }}
           SYSTEM_PROMPT_PATH: ${{ inputs.code-review-system-prompt-path }}
           CHECKLIST_PATH: ${{ inputs.code-review-checklist-path }}
         run: |
