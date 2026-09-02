@@ -62,12 +62,14 @@ FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yml|yaml|json|md|py|sh)$
 
 def _strip_ignored_sections(text: str) -> str:
     """Drop sections marked as deliberately one-sided."""
-    lines = text.splitlines()
     kept: list[str] = []
     skip_above: int | None = None
     marked = False
-    for line in lines:
-        heading = HEADING.match(line)
+    in_fence = False
+    for line in text.splitlines():
+        if FENCE.match(line):
+            in_fence = not in_fence
+        heading = None if in_fence else HEADING.match(line)
         if heading:
             level = len(heading.group(1))
             if marked:
@@ -238,3 +240,14 @@ def test_marked_section_ends_at_the_next_sibling_heading() -> None:
     ko = _KO + "\n## Kkori\n\n`base-ai-review-single.yml` sayong.\n"
     assert shape_diff(headings(en_only), headings(ko)) == []
     assert presence_diff(identifier_counts(en_only), identifier_counts(ko)) == []
+
+
+def test_marked_section_survives_a_comment_line_in_fenced_code() -> None:
+    en_only = (
+        _EN
+        + f"\n{IGNORE_MARKER} English-only appendix\n"
+        + "## Appendix\n\n```bash\n# Looks like a heading, is not one\ngh api\n```\n"
+        + "Uses `internal_only_flag`.\n"
+    )
+    assert shape_diff(headings(en_only), headings(_KO)) == []
+    assert presence_diff(identifier_counts(en_only), identifier_counts(_KO)) == []
