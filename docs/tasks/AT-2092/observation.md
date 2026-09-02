@@ -16,6 +16,7 @@ run leaves the check Pending forever. The posting is stopped inside
 reviewed against the PR's current head and short-circuits before posting once a
 newer run owns the comment slot.
 
-## Step 1
+## Step 2
 
-First commit. The second commit follows once this run is in progress.
+Second commit, pushed while the first run had all three reviewer jobs in
+progress. The first run is now superseded and owns no comment slot.
