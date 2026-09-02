@@ -30,6 +30,10 @@ the line before a heading to drop that heading and its body from both checks,
 for a section that deliberately exists on one side only. The reason is
 mandatory and lives inside the comment, so it never renders into the page.
 
+A marker inside a fenced code block is an example, not an instruction: it
+neither exempts a section nor counts as malformed. Documenting the hatch in
+this repository must not silently switch it on.
+
 A marker with no reason does not exempt anything: it leaves the section under
 both checks *and* fails ``test_ignore_markers_carry_a_reason`` at its own
 file and line. Silently honouring it would be the exact defect this module
@@ -51,6 +55,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterator
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -75,19 +80,46 @@ SNAKE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$")
 FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:yml|yaml|json|md|py|sh)$")
 
 
+def _read(path: Path) -> str:
+    """Read a README as UTF-8, never as the locale-preferred encoding.
+
+    ``Path.read_text()`` with no encoding follows the platform locale. On a
+    runner with ``C``/``POSIX`` or any non-UTF-8 locale it raises
+    ``UnicodeDecodeError`` on README.ko.md -- this check would die on the very
+    file it exists to read, and an error is not a finding: a check that cannot
+    open the file looks exactly like a check with nothing to report.
+    """
+    return path.read_text(encoding="utf-8")
+
+
+def _scan(text: str) -> Iterator[tuple[int, str, bool]]:
+    """Yield (line number, line, is inside a fenced code block).
+
+    Every consumer of fence state goes through here. Three separate loops
+    used to re-derive it, which is why fence-awareness kept being fixed in
+    one branch at a time. Fence delimiters themselves report as inside the
+    fence: they are never headings and never markers.
+    """
+    in_fence = False
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if FENCE.match(line):
+            in_fence = not in_fence
+            yield lineno, line, True
+            continue
+        yield lineno, line, in_fence
+
+
 def _strip_ignored_sections(text: str) -> str:
     """Drop sections marked as deliberately one-sided.
 
-    Only a marker carrying a reason exempts anything. A reasonless marker is
-    inert here and is reported by ``malformed_markers`` instead.
+    Only a marker carrying a reason, and sitting outside a fenced block,
+    exempts anything. A reasonless marker is inert here and is reported by
+    ``malformed_markers`` instead.
     """
     kept: list[str] = []
     skip_above: int | None = None
     marked = False
-    in_fence = False
-    for line in text.splitlines():
-        if FENCE.match(line):
-            in_fence = not in_fence
+    for _, line, in_fence in _scan(text):
         heading = None if in_fence else HEADING.match(line)
         if heading:
             level = len(heading.group(1))
@@ -97,7 +129,7 @@ def _strip_ignored_sections(text: str) -> str:
             if skip_above is not None and level > skip_above:
                 continue
             skip_above = None
-        elif IGNORE_MARKER.match(line):
+        elif not in_fence and IGNORE_MARKER.match(line):
             marked = True
             continue
         if skip_above is None:
@@ -106,9 +138,15 @@ def _strip_ignored_sections(text: str) -> str:
 
 
 def malformed_markers(text: str) -> list[str]:
-    """Lines reaching for the escape hatch without giving a reason."""
+    """Lines reaching for the escape hatch without giving a reason.
+
+    Fenced lines are exempt for the same reason they are not honoured as
+    markers: inside a code block the text is an example, not an instruction.
+    """
     bad: list[str] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for lineno, line, in_fence in _scan(text):
+        if in_fence:
+            continue
         if IGNORE_MARKER_ATTEMPT.match(line) and not IGNORE_MARKER.match(line):
             bad.append(f"  line {lineno}: {line.strip()}")
     return bad
@@ -117,11 +155,7 @@ def malformed_markers(text: str) -> list[str]:
 def headings(text: str) -> list[tuple[int, str]]:
     """(level, title) for every heading outside a fenced code block."""
     found: list[tuple[int, str]] = []
-    in_fence = False
-    for line in _strip_ignored_sections(text).splitlines():
-        if FENCE.match(line):
-            in_fence = not in_fence
-            continue
+    for _, line, in_fence in _scan(_strip_ignored_sections(text)):
         if in_fence:
             continue
         match = HEADING.match(line)
@@ -180,7 +214,7 @@ def test_both_readmes_exist() -> None:
 
 def test_ignore_markers_carry_a_reason() -> None:
     for path in (ENGLISH, KOREAN):
-        bad = malformed_markers(path.read_text())
+        bad = malformed_markers(_read(path))
         assert not bad, (
             f"{path.name} reaches for the parity escape hatch without a reason:\n"
             + "\n".join(bad)
@@ -189,12 +223,12 @@ def test_ignore_markers_carry_a_reason() -> None:
 
 
 def test_section_shape_matches() -> None:
-    diff = shape_diff(headings(ENGLISH.read_text()), headings(KOREAN.read_text()))
+    diff = shape_diff(headings(_read(ENGLISH)), headings(_read(KOREAN)))
     assert not diff, "README.md and README.ko.md have different sections:\n" + "\n".join(diff)
 
 
 def test_untranslatable_identifiers_appear_in_both() -> None:
-    diff = presence_diff(identifier_counts(ENGLISH.read_text()), identifier_counts(KOREAN.read_text()))
+    diff = presence_diff(identifier_counts(_read(ENGLISH)), identifier_counts(_read(KOREAN)))
     assert not diff, (
         "identifiers documented on one side only:\n"
         + "\n".join(diff)
@@ -326,3 +360,22 @@ def test_marker_reason_stays_inside_the_comment() -> None:
     """A reason placed after the comment close would render into the page."""
     outside = "<!-- translation-parity: ignore-section --> English-only appendix"
     assert malformed_markers(outside) == [f"  line 1: {outside}"]
+
+
+def test_marker_inside_a_code_fence_is_not_honoured() -> None:
+    """Documenting the hatch must not switch it on."""
+    documented = (
+        _EN
+        + "\nHow to exempt a section:\n\n```markdown\n"
+        + _marker("English-only appendix")
+        + "\n```\n\n## Appendix\n\nSee `internal_only_flag`.\n"
+    )
+    assert any("Appendix" in line for line in shape_diff(headings(documented), headings(_KO)))
+    assert presence_diff(identifier_counts(documented), identifier_counts(_KO)) == [
+        "  internal_only_flag: README.md x1, README.ko.md x0"
+    ]
+
+
+def test_bare_marker_inside_a_code_fence_is_not_malformed() -> None:
+    """The mirror of the case above: an example must not be a violation."""
+    assert malformed_markers(f"# Title\n\n```markdown\n{BARE_MARKER}\n```\n") == []
