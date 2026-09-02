@@ -33,20 +33,23 @@ consumer repo  .github/workflows/ai-review.yml
   move with every wrapper release.
 - What it consumes from base is checked out at `upstream_ref` (default: the floating `v1`
   tag): the `.github/scripts/*` helpers, `.github/scripts/review_prompt.md` (the shared
-  reviewer instruction, copied at `wrapper.yml:494`), and the `.github/actions/claude-review`
+  reviewer instruction, copied at `wrapper.yml:579`), and the `.github/actions/claude-review`
   composite. Changes to **those** reach pilot consumers on the next run with no wrapper edit.
 - The per-repo prompts do **not** come from base. `code-review-system.md` and
   `code-review-checklist.md` are read out of the *consumer* repo — base branch first, PR head
-  second — and the last-resort fallback is the wrapper's own `.prompts/`, checked out at
-  `ref: main` rather than at a release tag (AT-1957). `examples/prompts/` in this repo is a
-  starter template copied once at install time, not a runtime source.
+  second — and the last-resort fallback is the wrapper's own `.prompts/`, sparse-checked-out
+  at the wrapper's own release tag (`wrapper.yml:107`) so the prompts move in lockstep with
+  the pin, the same way the base scripts do. It read `ref: main` until wrapper v1.6.0, which
+  left the prompts outside that lockstep (AT-1957, fixed). `examples/prompts/` in this repo
+  is a starter template copied once at install time, not a runtime source.
 - **A change to `base-ai-review-single.yml` does not reach pilot consumers automatically.**
   The workflow body is duplicated, so it must be hand-ported into `wrapper.yml` and shipped
   as a lockstep wrapper release — see [Tag pinning](../README.md#tag-pinning). Six drift
   incidents have been confirmed this way (AT-1800, AT-1955, AT-1837 and AT-1979 among them);
   none was caught by an automated check.
 - Exceptions: `spec-interview` and `factory-process-maker` call the upstream orchestrator
-  directly (`@v1.0.5`) rather than through the wrapper.
+  directly rather than through the wrapper, SHA-pinned to a base release (`v1.6.0` as of
+  2026-09-02) rather than to a floating tag.
 
 ## Installation — three components per repo
 
