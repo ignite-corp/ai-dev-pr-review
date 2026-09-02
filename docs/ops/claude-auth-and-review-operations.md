@@ -55,6 +55,41 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
 - Releases are **manual**: cut `vX.Y.Z` on the merge commit; `move-major-tag`
   floats `v1` to it. Merged base changes stay inert for consumers until release
   + pin bump, so accumulating on main is safe.
+- **Release precondition - before moving `v1`, confirm the base
+  `approve_quorum` separation has landed.** `approve_quorum` still reuses the
+  verdict-gate availability count (`aggregate_reviews.py:1127`, against
+  `MIN_REVIEWERS_FOR_VERDICT = 2` at line 59). Wrapper PR #28 (AT-2114) stops
+  one reviewer's auth failure from skipping the other reviewers, so a codex
+  outage now leaves **2** reviewers available instead of 1 - quorum is
+  satisfied and auto-approve fires on a **degraded reviewer set**, posting a
+  formal `APPROVED` review from the reviewer App on a PR that a configured
+  reviewer never ran against. A green check is passive - it says nothing is
+  stopping you. A formal `APPROVED` review is an affirmative, attributable
+  claim that the code was reviewed; on that PR it is a false attestation.
+  - **The gate is the release, not the merge.** Consumers track
+    `wrapper.yml@v1`, and `v1` floats to release tags rather than to `main`, so
+    merging changes nothing for them - the exposure begins when the float
+    moves.
+  - Exposure when this was written is **six pilot repos**: `aws-simple-deploy`,
+    `ig-config-manager`, `mg_wrap`, `wesource`, `wesource-be`, `wesource-fe`.
+    Do not trust that list - re-measure it. A repo is exposed when it has
+    `ALLOW_AUTO_APPROVE=true` AND `REVIEWER_APP_ID` set AND is on
+    `wrapper.yml@v1`.
+  - **Repo-level Actions variables read with a plain `repo` scope** - only
+    *org*-level variables need `admin:org` - so the list is measurable from an
+    ordinary token:
+
+    ```bash
+    for r in $(gh api orgs/ignite-pilot-org/repos --paginate --jq '.[].name'); do
+      gh api "repos/ignite-pilot-org/$r/actions/variables" --jq \
+        '[.variables[]|select((.name=="ALLOW_AUTO_APPROVE" and .value=="true")
+           or .name=="REVIEWER_APP_ID")]|length' 2>/dev/null | grep -qx 2 || continue
+      gh api "repos/ignite-pilot-org/$r/contents/.github/workflows/ai-review.yml" \
+        --jq .content 2>/dev/null | base64 -d | grep -q 'wrapper.yml@v1' && echo "$r"
+    done
+    ```
+
+    Adjust the workflow filename for any consumer not using `ai-review.yml`.
 - base <-> wrapper keep **MAJOR.MINOR in lockstep**; patch versions independent.
   The wrapper reimplements the single-review job inline instead of calling base's
   reusable workflows, so a `base-ai-review-single.yml` change must be hand-ported
