@@ -190,6 +190,7 @@ jobs:
       pr_number: ${{ inputs.pr_number || '' }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       prepare_result: ${{ needs.prepare.result }}
+      pr_author: ${{ needs.prepare.outputs.pr_author }}
       size_skipped: ${{ needs.prepare.outputs.skip }}
       size_total: ${{ needs.prepare.outputs.size_total }}
       size_limit: ${{ needs.prepare.outputs.size_limit }}
