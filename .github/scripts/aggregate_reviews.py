@@ -461,47 +461,73 @@ def _check_major_consensus(all_issues: list[dict[str, Any]]) -> tuple[str, str] 
     return None
 
 
-_RESULT_CANCELLED = "cancelled"
-_RESULT_SKIPPED = "skipped"
+def _current_pr_head(pr_number: str, repo: str) -> str | None:
+    """The PR's head SHA as GitHub reports it now, or None if unobtainable.
 
-
-def _run_was_cancelled() -> bool:
-    """True when the upstream results say this whole run was cancelled.
-
-    The check cannot be `cancelled()`, at either level. On the job it would
-    skip the aggregate, and a skipped aggregate reports the two-part context
-    name `review / aggregate` instead of the three-part name the consumer
-    rulesets require -- measured on probe PRs #100/#101/#102 in AT-1967
-    Phase 0 -- so the required check is never reported and the PR sits
-    Pending forever. Inside a step it would not fire at all: `cancelled()`
-    reads the *job's* status, and this job is not itself cancelled. It starts
-    fresh, under `always()`, after the run was cancelled. That is exactly the
-    AT-2092 defect, and it is also what makes this guard reachable.
-
-    So the state is read from the results the orchestrator already passes in
-    (AT-1837 for the reviewers, AT-2087 for prepare). Two shapes count:
-
-    * prepare cancelled -- the run died before any reviewer started. Without
-      this clause the run falls into the AT-2087 path and posts a
-      "prepare reported cancelled" failure for a PR with nothing wrong.
-    * every reviewer that was not skipped cancelled -- the AT-2092 incident:
-      nothing was left to aggregate, so the verdict would be the false
-      "0/3 LLM responses -- all failed".
-
-    Requiring *all* of them is deliberate. A single `cancelled` among
-    successes is not a cancelled run -- a job that exceeds its
-    `timeout-minutes` (15, base-ai-review-single.yml) can report it too, and
-    that run has real reviews to report on. It keeps the AT-1837 behavior:
-    say which reviewer died.
+    None is "could not determine", never "not stale" -- the caller decides
+    what to do with that, and the two must not be confused here.
     """
-    if os.environ.get("PREPARE_RESULT", "").strip().lower() == _RESULT_CANCELLED:
-        return True
-    reported = [
-        value.strip().lower()
-        for value in load_reviewer_conclusions().values()
-        if value.strip().lower() not in ("", _RESULT_SKIPPED)
-    ]
-    return bool(reported) and all(r == _RESULT_CANCELLED for r in reported)
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".head.sha"],
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(f"::warning::Head lookup failed: {exc}", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        print(
+            f"::warning::Head lookup failed: {result.stderr.strip()}", file=sys.stderr
+        )
+        return None
+    return result.stdout.strip() or None
+
+
+def _head_is_stale() -> bool:
+    """True when a newer commit has superseded the head this run reviewed.
+
+    This is the discriminator, and it is not cancellation. The reviewer job
+    conclusions cannot tell "the run was cancelled" from "one reviewer died":
+    a cancel lands wherever the reviewers happen to be, so it produces every
+    mixture from three cancelled to none, and a dead reviewer produces one of
+    those same mixtures. Run 33615176056 shows how little the conclusions say
+    -- all three reviewers `cancelled`, and two of them had already uploaded
+    real reviews. No threshold over those values is correct in both
+    directions, so none is taken.
+
+    What actually matters is who owns the comment slot. If the head has moved,
+    a newer run is reviewing the current commit and will post; this run's
+    verdict is about a commit nobody is looking at any more, and posting it
+    races the live run for the same slot (AT-2092). If the head has not moved,
+    this run is still the one that owes the PR a verdict -- whether it was
+    cancelled by hand, lost a reviewer, or hit a timeout is indistinguishable
+    and, here, irrelevant. It posts the honest partial verdict naming who
+    died, which is the AT-1837 behavior, in either review mode.
+
+    Two cases are deliberately not stale:
+
+    * no HEAD_SHA -- prepare never resolved one, so it either failed
+      (AT-2087) or skipped for size (AT-1975). Both owe the PR a verdict and
+      there is nothing to compare anyway.
+    * the head could not be determined -- rate limit, network, a PR that no
+      longer exists. Failing that way posts a verdict that may be redundant;
+      failing the other way drops one silently. Redundancy is visible and the
+      live run's later verdict supersedes it; a dropped verdict is the defect
+      this whole file exists to prevent.
+    """
+    reviewed = os.environ.get("HEAD_SHA", "").strip()
+    if not reviewed:
+        return False
+    pr_number = os.environ.get("PR_NUMBER", "").strip()
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if not pr_number or not repo:
+        return False
+    current = _current_pr_head(pr_number, repo)
+    if current is None:
+        return False
+    return current != reviewed
 
 
 def _prepare_failure_result() -> str | None:
@@ -1003,23 +1029,30 @@ def post_verdict(
 
 
 def main() -> None:
-    # First, ahead of every other path: a cancelled run has nothing to say and
-    # must not say it. The job still runs -- it has to, its name is the
-    # required status context -- but it posts nothing and fails, so the run
-    # that was cancelled cannot be mistaken for one that reviewed the PR.
-    if _run_was_cancelled():
+    # First, ahead of every other path: a run whose head has been superseded
+    # posts nothing. The job still runs -- it has to, its name is the required
+    # status context -- and it still fails, so a superseded run can never be
+    # mistaken for one that reviewed the current commit.
+    if _head_is_stale():
         print(
-            "::notice title=Aggregate::the run was cancelled before the review"
-            " completed -- no verdict posted",
+            "::notice title=Aggregate::the head this run reviewed has been"
+            " superseded -- no verdict posted",
             file=sys.stderr,
         )
         print(
-            "Final verdict: none -- the run was cancelled; the live run posts"
-            " the verdict for this PR"
+            "Final verdict: none -- head superseded; the run reviewing the"
+            " current commit posts the verdict for this PR"
         )
-        # Not exit 0: no reviewer vouched for this commit, and a green
-        # required check would say one had. Not a posted verdict either: the
-        # live run owns the comment slot (AT-2092).
+        # Not exit 0: nothing reviewed the current head, and a green required
+        # check would say something had. This check reports on the superseded
+        # commit, which is no longer the one the ruleset evaluates.
+        #
+        # This is the one path that blocks without saying so on the PR, and it
+        # is an exception to AT-1975's "block visibly", not an instance of it.
+        # AT-1975 posts a comment because nothing else would ever explain the
+        # block. Here the live run posts one seconds later, and any comment
+        # from this run is the AT-2092 race itself -- the explanation would be
+        # the defect.
         sys.exit(1)
 
     # Checked before the size gate: when prepare fails, its size outputs are

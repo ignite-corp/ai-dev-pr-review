@@ -180,11 +180,22 @@ jobs:
     # download-artifact is continue-on-error, so nothing stopped it) and posted
     # "0/3 LLM responses -- all failed" for a PR with nothing wrong with it,
     # racing the live run for the same comment slot. But the way to stop the
-    # posting is not to stop the job: it is guarded inside the aggregate
-    # script, which already receives every upstream result it needs to
-    # recognise the state.
+    # posting is not to stop the job: the aggregate script compares the head
+    # it reviewed against the PR's current head and posts nothing once a newer
+    # run owns the slot.
     #
-    # That fix was ported from the wrapper, where the aggregate is a *step*
+    # Run 33615176056 (this repo, on f79ef96) measured the whole shape on
+    # base, not on the wrapper: run conclusion `cancelled`, all three reviewer
+    # jobs `cancelled`, and `review / aggregate / Aggregate & Verdict` still
+    # ran to success under always() and posted -- overwritten by the live run
+    # two minutes later. always() reaches the job here, and the race is real
+    # here.
+    #
+    # If a `!`-prefixed condition is ever needed on this job, it must be
+    # wrapped in `${{ }}`: a bare leading `!` is a YAML tag indicator and
+    # fails to parse.
+    #
+    # `!cancelled()` was ported from the wrapper, where the aggregate is a *step*
     # inside the one required job: skipping a step there leaves the job's own
     # conclusion intact, so the required check still reports. Here the
     # aggregate is a *job*, and a job that does not run produces no context --
