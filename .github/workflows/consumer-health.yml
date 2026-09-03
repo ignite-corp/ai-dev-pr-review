@@ -321,7 +321,12 @@ jobs:
           # there). Unlike RULESET_CONFIG (AT-1956: "the protection that
           # actually holds is the mapping, not the names"), there is no
           # secret mapping to protect for pilot consumers, so names are safe
-          # to log directly here -- no index-only obfuscation needed.
+          # to log directly here -- no index-only obfuscation needed. This
+          # is a recorded deviation from AT-2121's index-only condition, and
+          # it holds only while that census exists: if docs/pilot-usage.md
+          # ever stops naming the pilot consumers, printing them here becomes
+          # a new disclosure, and these log lines and the alert issue body
+          # must switch to index-only the way the corp check below does.
           ALL_REPOS_FILE=$(mktemp)
           if ! gh api --paginate "orgs/ignite-pilot-org/repos" \
             --jq '.[] | select(.archived==false) | .name' > "$ALL_REPOS_FILE"; then
