@@ -231,7 +231,9 @@ jobs:
   # never emits -- reviewer_produced_no_verdict (reviewer ran, wrote nothing)
   # and `reviewer_not_run: authentication failed` (a dead OPENAI_API_KEY
   # fails `codex login --with-api-key`, so the Codex run step is skipped and
-  # never reaches cli_invocation_failed). That verdict is produced
+  # never reaches cli_invocation_failed). Gemini has no fixed kind --
+  # review_gemini.py stores the exception text as `error` -- so for Gemini
+  # the marker is its summary prefix `Review failed:`. That verdict is produced
   # only after a real API call was attempted with the real secret value, so a
   # sustained streak of it reflects that value's actual behavior against the
   # provider, the same way credential-probe's direct call does -- unlike an
@@ -297,7 +299,7 @@ jobs:
       # verdict-payload signature scan below needs.
       - name: Mint pilot-org App token
         id: pilot-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ vars.REVIEWER_APP_ID }}
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
@@ -381,14 +383,27 @@ jobs:
               continue
             fi
             # Same section extraction as the health job's corp
-            # reviewer-error-streak check (step 4 below); the error-marker
+            # reviewer-error-streak check (step 4 below). The error-marker
             # regex is that check's set plus the error kinds named in this
-            # job's header comment, matched as kinds rather than relying on
-            # the summary wording. Both rendered header shapes carry the
-            # kind: `[ ] not run (<kind>)` (AT-2123) and the older
-            # `[!] (partial: <kind>)`. The wrapper-only kinds exist here and
-            # not in the corp regex because corp consumers run base, which
-            # never emits them.
+            # job's header comment. Claude, Codex and the wrapper-synthesized
+            # verdicts carry a fixed kind, so those are matched as kinds and
+            # do not depend on summary wording; Gemini's kind is the raw
+            # exception text (review_gemini.py, `error: str(exc)`), so its
+            # only stable marker is the summary prefix "Review failed:" --
+            # that is what `review failed:` (case-insensitive) is for, and it
+            # is also the corp check's legacy marker. Both rendered header
+            # shapes carry the kind: `[ ] not run (<kind>)` (AT-2123) and
+            # the older `[!] (partial: <kind>)`.
+            # `reviewer_not_run` is matched bare on purpose: wrapper.yml puts
+            # exactly two reasons after it -- "authentication failed" (the
+            # `codex login --with-api-key` step failed, which includes an
+            # empty OPENAI_API_KEY) and "a preceding step did not succeed"
+            # (the Codex run step was skipped for another upstream failure)
+            # -- and the wrapper has no by-design skip that uses this kind,
+            # so every occurrence is an operational fault, which is what the
+            # streak counts. The wrapper-only kinds exist here and not in
+            # the corp regex because corp consumers run base, which never
+            # emits them.
             for reviewer in claude codex gemini; do
               streak=$(jq -r --arg r "$reviewer" '
                 def section($body):
@@ -517,7 +532,7 @@ jobs:
 
       - name: Mint App token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_ID }}
           private-key: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_PRIVATE_KEY }}

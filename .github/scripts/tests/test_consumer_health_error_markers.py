@@ -13,8 +13,11 @@ that program from the YAML and runs it under jq against verdict bodies
 rendered by ``aggregate_reviews.format_summary`` -- the real renderer, in
 both the current ``[ ] not run (<kind>)`` header shape (AT-2123) and the
 older ``[!] (partial: <kind>)`` one still present on pilot PRs inside the
-scan window. The summary line is deliberately neutral so the match must come
-from the kind itself, not from "review failed:" wording.
+scan window. For Claude, Codex and the wrapper kinds the summary line is
+deliberately neutral so the match must come from the kind itself. Gemini has
+no fixed kind -- ``review_gemini.py`` stores the exception text as ``error``
+-- so its case renders the real ``Review failed:`` summary, which is the
+load-bearing marker for that reviewer.
 
 Kinds come from two places. Base's own emitter is read from the tree.
 Pilot consumers run the wrapper's inline copy of that emitter
@@ -174,6 +177,23 @@ class TestPilotScanErrorMarkers:
     def test_legacy_partial_header_counts_toward_streak(self, kind: str) -> None:
         body = _legacy_partial_body("codex", kind)
         assert _streak(_pilot_scan_jq_program(), "codex", [body]) == 1
+
+    def test_gemini_matches_via_review_failed_summary(self) -> None:
+        # review_gemini.py: error=str(exc), summary=f"Review failed: {exc}".
+        exc_text = (
+            "400 INVALID_ARGUMENT. API key not valid. Please pass a valid API key."
+        )
+        reviews: dict[str, dict[str, Any] | None] = {
+            name: _healthy_review() for name in REVIEWER_NAMES
+        }
+        reviews["gemini"] = _failed_review("gemini", exc_text)
+        assert (
+            _streak(_pilot_scan_jq_program(), "gemini", [_verdict_body(reviews)]) == 0
+        )
+        reviews["gemini"]["summary"] = f"Review failed: {exc_text}"
+        assert (
+            _streak(_pilot_scan_jq_program(), "gemini", [_verdict_body(reviews)]) == 1
+        )
 
     def test_healthy_verdict_ends_streak(self) -> None:
         program = _pilot_scan_jq_program()
