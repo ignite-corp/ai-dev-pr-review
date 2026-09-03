@@ -60,9 +60,12 @@ consumer repo  .github/workflows/ai-review.yml
   two `--body "[!] PR too large ..."` lines are now identical once indentation is ignored
   (re-checked 2026-09-02, wrapper `c900a95` against base `8266040`). None of the seven was
   caught by an automated check; every one was found by hand while doing something else.
-- Exceptions: `spec-interview` and `factory-process-maker` call the upstream orchestrator
-  directly rather than through the wrapper, SHA-pinned to a base release (`v1.6.0` as of
-  2026-09-02) rather than to a floating tag.
+- Direct-to-base consumers: `spec-interview` and `factory-process-maker` call the upstream
+  orchestrator directly rather than through the wrapper, tracking the floating `@v1` tag.
+  This is the normal, designed pattern for a public repo, not a workaround: per AT-1210's
+  visibility rules, a **public** reusable workflow can be called cross-org by any caller
+  regardless of the caller's own visibility — only private/internal reusable workflows are
+  restricted to same-org callers.
 
 ## Installation — three components per repo
 
@@ -182,8 +185,8 @@ All 32 non-archived `ignite-pilot-org` repos surveyed; 19 run review.
   ig-member, mg_wrap, aws-simple-deploy, bnk-mes, ig-ai-report, daon-manufacturing,
   ig-config-manager, admin-tools-plugins, peaknow, PS-Simulation1, IGTdesignsystem,
   Ignite-pilot-plugins, bnk-mes-prod-plan, wesource-fe, wesource-be, wesource
-- **Base-direct consumers (2)**, SHA-pinned to `05f2752` (v1.6.0): spec-interview,
-  factory-process-maker — the Exceptions bullet above
+- **Base-direct consumers (2)**, tracking the floating `@v1` tag: spec-interview,
+  factory-process-maker — the direct-to-base bullet above
 - **No review workflow (12):** factory-system-builder, ig-movie-editor,
   IGTdesignsystem_VOC, ig-movie-editor-app, max-kakao-gateway, Ignite-pilot-compass,
   factory-process-simulator, fsb-repository-publisher-bootstrap,
