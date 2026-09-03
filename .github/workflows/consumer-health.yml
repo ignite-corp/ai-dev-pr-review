@@ -408,8 +408,16 @@ jobs:
             # The wrapper-only kinds exist here and not in
             # the corp regex because corp consumers run base, which never
             # emits them.
+            # A jq failure (malformed payload, jq itself broken) is a check
+            # NOT performed, exactly like a fetch failure above: it must
+            # land in scan_errors so all_ok stays 0 and the recovery step
+            # cannot close an open alert on it. Masking it as streak 0 would
+            # read as a healthy reviewer. One increment per consumer, not
+            # per reviewer, so the count keeps meaning "consumers not
+            # evaluated". The log line names repo and reviewer only, never
+            # payload content (public repo).
             for reviewer in claude codex gemini; do
-              streak=$(jq -r --arg r "$reviewer" '
+              if ! streak=$(jq -r --arg r "$reviewer" '
                 def section($body):
                   ($body | split("\n### ")
                    | map(select(ascii_downcase | startswith($r)))
@@ -427,8 +435,12 @@ jobs:
                   | .body ]
                 | map(if is_error(.) then 1 else 0 end)
                 | (index(0) // length)
-              ' <<<"$prs_json" 2>/dev/null || echo 0)
-              if [ "${streak:-0}" -ge "$CONSECUTIVE_ERROR_THRESHOLD" ]; then
+              ' <<<"$prs_json" 2>/dev/null) || ! [[ "$streak" =~ ^[0-9]+$ ]]; then
+                echo "  [WARN] ${name}: streak check for reviewer ${reviewer} failed (jq error) -- not evaluated this run"
+                scan_errors=$((scan_errors + 1))
+                break
+              fi
+              if [ "$streak" -ge "$CONSECUTIVE_ERROR_THRESHOLD" ]; then
                 echo "  [FLAG] ${name}: reviewer ${reviewer} error verdict in ${streak} consecutive recent PRs"
                 flagged_lines+=("${name}: reviewer ${reviewer} failing ${streak} consecutive recent PRs")
               fi
@@ -440,14 +452,14 @@ jobs:
             flagged=1
           fi
           # all_ok=1 only when the scan actually completed for every
-          # consumer with no flags: a fetch failure is a check NOT performed,
-          # so it must not count as a confirmed recovery.
+          # consumer with no flags: a fetch or jq failure is a check NOT
+          # performed, so it must not count as a confirmed recovery.
           all_ok=0
           if [ "$flagged" = "0" ] && [ "$scan_errors" -eq 0 ]; then
             all_ok=1
           fi
           if [ "$flagged" = "0" ] && [ "$scan_errors" -gt 0 ]; then
-            echo "::notice::recovery not confirmed -- ${scan_errors} consumer(s) could not be fetched"
+            echo "::notice::recovery not confirmed -- ${scan_errors} consumer(s) could not be fetched or evaluated"
           fi
           {
             echo "flagged=${flagged}"
