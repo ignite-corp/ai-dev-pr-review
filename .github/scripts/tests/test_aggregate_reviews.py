@@ -16,6 +16,7 @@ import yaml
 
 from aggregate_reviews import (
     _get_available,
+    _has_full_reviewer_coverage,
     _prepare_failure_result,
     _head_is_stale,
     _size_skip_details,
@@ -653,6 +654,138 @@ class TestApproveQuorumGate:
 
         assert mock_post.call_args[0][1] == "approve"
         assert mock_post.call_args.kwargs["approve_quorum"] is True
+
+    def _run_main(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        reviews: dict[str, Any],
+        conclusions: dict[str, str],
+    ) -> Any:
+        """Drive main() over a reviewer payload set, returning the post mock."""
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(
+                f"REVIEWER_RESULT_{name.upper()}", conclusions.get(name, "success")
+            )
+
+        with (
+            patch("aggregate_reviews.load_reviews", return_value=reviews),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+        return mock_post
+
+    def test_main_absent_reviewer_withholds_formal_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AT-2124: two live reviewers clear MIN_REVIEWERS_FOR_VERDICT, so the
+        # verdict is "approve" -- but gemini never ran, and a formal APPROVED
+        # review would assert coverage that never happened.
+        monkeypatch.setenv("REVIEW_MODE", "parallel")
+        names = list(REVIEWER_NAMES)
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in names}
+        reviews["gemini"] = None
+
+        mock_post = self._run_main(monkeypatch, reviews, {"gemini": "failure"})
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is False
+
+    def test_main_absent_reviewer_leaves_verdict_and_exit_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The verdict gate is untouched: MIN_REVIEWERS_FOR_VERDICT is still 2,
+        # so one reviewer's outage must not turn the required check red.
+        monkeypatch.setenv("REVIEW_MODE", "parallel")
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        reviews["gemini"] = None
+
+        # main() returning at all is the exit-code assertion: an insufficient
+        # response set would have raised SystemExit(1).
+        mock_post = self._run_main(monkeypatch, reviews, {"gemini": "failure"})
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert "2/3 LLM responses" in mock_post.call_args[0][0]
+
+    def test_main_failed_status_reviewer_withholds_formal_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A payload with status "failed" is an infrastructure failure, never a
+        # performed review (AT-1799 contract), so coverage is incomplete.
+        monkeypatch.setenv("REVIEW_MODE", "parallel")
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        reviews["codex"] = _make_review(status="failed", error="provider 500")
+
+        mock_post = self._run_main(monkeypatch, reviews, {})
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is False
+
+    def test_main_early_exit_reviewer_counts_as_having_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An early exit is a judgement the reviewer reached after reading the
+        # diff. All three ran, so the full configured set is covered.
+        monkeypatch.setenv("REVIEW_MODE", "parallel")
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        reviews["claude"]["status"] = "early_exit"
+        reviews["claude"]["early_exit"] = True
+
+        mock_post = self._run_main(monkeypatch, reviews, {})
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is True
+
+    def test_main_sequential_early_exit_cascade_withholds_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Sequential mode: claude early-exits, so codex and gemini are skipped
+        # by design. Claude ran; the other two did not.
+        monkeypatch.setenv("REVIEW_MODE", "sequential")
+        reviews: dict[str, Any] = {n: None for n in REVIEWER_NAMES}
+        reviews["claude"] = _make_review(status="early_exit", early_exit=True)
+
+        mock_post = self._run_main(
+            monkeypatch,
+            reviews,
+            {"codex": "skipped", "gemini": "skipped"},
+        )
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is False
+
+    def test_main_sequential_skipped_tail_withholds_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Sequential mode: claude and codex ran (codex early-exited), which
+        # skips gemini. Two available payloads clear the verdict gate, but
+        # gemini never saw the diff.
+        monkeypatch.setenv("REVIEW_MODE", "sequential")
+        reviews: dict[str, Any] = {n: None for n in REVIEWER_NAMES}
+        reviews["claude"] = _make_named_review("claude", [])
+        reviews["codex"] = _make_review(status="early_exit", early_exit=True)
+
+        mock_post = self._run_main(monkeypatch, reviews, {"gemini": "skipped"})
+
+        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args.kwargs["approve_quorum"] is False
+
+
+class TestFullReviewerCoverage:
+    """AT-2124: approve_quorum is full coverage, not an availability count."""
+
+    def test_all_configured_reviewers_present_is_covered(self) -> None:
+        available = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        assert _has_full_reviewer_coverage(available) is True
+
+    def test_missing_reviewer_is_not_covered(self) -> None:
+        names = list(REVIEWER_NAMES)
+        available = {n: _make_named_review(n, []) for n in names[:-1]}
+        assert _has_full_reviewer_coverage(available) is False
+
+    def test_empty_available_is_not_covered(self) -> None:
+        assert _has_full_reviewer_coverage({}) is False
 
 
 class TestCommentOnlyToggle:
