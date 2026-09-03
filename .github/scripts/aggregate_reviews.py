@@ -752,6 +752,20 @@ def _format_issue_line(issue: dict[str, Any]) -> str:
     return line
 
 
+def _failed_status_detail(review: dict[str, Any]) -> str:
+    """Human-readable reason for a payload whose normalized status is "failed".
+
+    Used both on the headline and in a reviewer's own section: a normalized
+    status of "failed" means the reviewer's infrastructure broke and the
+    payload never counts as a performed review (AT-1799), regardless of
+    whether an ``error`` string happens to be attached.
+    """
+    err = review.get("error")
+    if isinstance(err, str) and err:
+        return err[:ERROR_TRUNCATE_LEN]
+    return "reviewer reported status=failed"
+
+
 def format_summary(
     reviews: dict[str, dict[str, Any] | None],
     verdict: str,
@@ -784,13 +798,7 @@ def format_summary(
             if conclusion and conclusion != "skipped":
                 missing_notes.append(f"{name}: {_missing_reason(conclusion)}")
         elif _normalize_status(name, review) == STATUS_FAILED:
-            err = review.get("error")
-            detail = (
-                err[:ERROR_TRUNCATE_LEN]
-                if isinstance(err, str) and err
-                else "reviewer reported status=failed"
-            )
-            missing_notes.append(f"{name}: {detail}")
+            missing_notes.append(f"{name}: {_failed_status_detail(review)}")
     reason_suffix = f" ({', '.join(missing_notes)})" if missing_notes else ""
 
     lines = [
@@ -831,11 +839,16 @@ def format_summary(
         issues = review.get("issues", [])
         summary = review.get("summary", "")
         status = _normalize_status(name, review)
-        header = f"### {name.title()} -- {len(issues)} issue(s)"
-        if review.get("error"):
-            header += f" [!] (partial: {review['error'][:ERROR_TRUNCATE_LEN]})"
-        elif status == STATUS_FAILED:
-            header += " [!] (failed: reviewer reported status=failed)"
+        # A normalized status of "failed" means the reviewer never produced a
+        # performed review (AT-1799) -- this takes priority over the generic
+        # `error` check below, even when both are present, because "N issue(s)"
+        # implies looking and a failed reviewer never looked (AT-2123).
+        if status == STATUS_FAILED:
+            header = f"### {name.title()} -- [ ] not run ({_failed_status_detail(review)})"
+        else:
+            header = f"### {name.title()} -- {len(issues)} issue(s)"
+            if review.get("error"):
+                header += f" [!] (partial: {review['error'][:ERROR_TRUNCATE_LEN]})"
         lines += ["", header, summary]
         for issue in issues:
             lines.append(_format_issue_line(issue))

@@ -1029,12 +1029,18 @@ class TestClaudeInfrastructureFailure:
         assert "2/3" in reason
 
     def test_failed_payload_named_on_headline_and_in_section(self) -> None:
+        # AT-2123: a payload with normalized status "failed" never counts as
+        # a performed review, so its section must not read as a count of
+        # findings ("N issue(s)") -- that framing implies looking, and a
+        # failed reviewer never looked. The reason still names it, on both
+        # the headline and the section header.
         reviews = self._reviews_with_dead_claude()
         conclusions = {name: "success" for name in REVIEWER_NAMES}
         verdict, reason, available = apply_verdict_rules(reviews)
         summary = format_summary(reviews, verdict, reason, available, conclusions)
         assert "claude: action_invocation_failed" in summary
-        assert "(partial: action_invocation_failed)" in summary
+        assert "### Claude -- [ ] not run (action_invocation_failed)" in summary
+        assert "issue(s)" not in summary.split("### Claude")[1].split("###")[0]
         assert "early-exit or no-output" not in summary
 
     def test_failed_payload_counts_as_partial(self) -> None:
@@ -1093,6 +1099,68 @@ class TestClaudeInfrastructureFailure:
         verdict, reason, _ = apply_verdict_rules(reviews)
         assert verdict == "comment"
         assert "benign skip" not in reason
+
+
+class TestNotRunVsPartialVsClean:
+    """AT-2123: a reviewer never invoked must not render as "N issue(s)".
+
+    Splits the old single ``error``-key handling into two distinct cases and
+    fixes the rendering for each, plus the unrelated case that must not
+    change: a reviewer that ran fully and genuinely found nothing.
+    """
+
+    def test_not_run_reviewer_has_no_issue_count(self) -> None:
+        # The pilot census regression case (AT-2123 comment): codex's own
+        # CLI never got past authentication, so it self-writes an error
+        # verdict with status "failed" and issues=[] -- it never looked.
+        review = _make_review(
+            summary="Codex review failed: CLI exited 2",
+            status="failed",
+            error="cli_invocation_failed",
+        )
+        summary = format_summary({"codex": review}, "comment", "reason", {})
+        section = summary.split("### Codex")[1]
+        assert "issue(s)" not in section
+        assert "### Codex -- [ ] not run (cli_invocation_failed)" in summary
+
+    def test_partial_reviewer_keeps_existing_rendering(self) -> None:
+        # Ran, died partway, but surfaced real issues before dying -- status
+        # stays "ok"/"early_exit" with an `error` alongside. This must keep
+        # rendering exactly as before: a count plus a `(partial: ...)` tag.
+        review = _make_review(
+            status="ok",
+            error="truncated",
+            issues=[_make_issue()],
+        )
+        summary = format_summary({"codex": review}, "comment", "reason", {})
+        assert "### Codex -- 1 issue(s) [!] (partial: truncated)" in summary
+
+    def test_clean_zero_issues_reviewer_still_says_zero(self) -> None:
+        # The regression case this ticket exists to protect: a reviewer that
+        # ran to completion and genuinely found nothing must still say
+        # "0 issue(s)" -- that is the truthful rendering for this case, and
+        # it must be visibly different from the not-run case above.
+        review = _make_review(status="ok")
+        summary = format_summary({"codex": review}, "comment", "reason", {})
+        assert "### Codex -- 0 issue(s)" in summary
+        assert "not run" not in summary
+
+    def test_all_three_cases_render_distinctly_in_one_summary(self) -> None:
+        reviews: dict[str, dict[str, Any] | None] = {
+            "codex": _make_review(
+                summary="Codex review failed: CLI exited 2",
+                status="failed",
+                error="cli_invocation_failed",
+            ),
+            "claude": _make_review(
+                status="ok", error="truncated", issues=[_make_issue()]
+            ),
+            "gemini": _make_review(status="ok"),
+        }
+        summary = format_summary(reviews, "comment", "reason", {})
+        assert "### Codex -- [ ] not run (cli_invocation_failed)" in summary
+        assert "### Claude -- 1 issue(s) [!] (partial: truncated)" in summary
+        assert "### Gemini -- 0 issue(s)" in summary
 
 
 _SINGLE_WORKFLOW = (
