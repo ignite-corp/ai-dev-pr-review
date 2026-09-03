@@ -1,0 +1,71 @@
+name: base-wrapper-drift
+
+# Base<->wrapper workflow drift check (AT-2122). The pilot wrapper
+# (ignite-pilot-org/ai-dev-pr-review-wrapper) reimplements this repo's review
+# pipeline inline, so every base change must be hand-ported; this compares the
+# extracted env-key and vars.* sets of the two trees (see
+# .github/scripts/check_base_wrapper_drift.py) and fails on an undeclared gap.
+#
+# Runs here rather than in the wrapper because base is where the change
+# originates and where the correspondence config lives; both repos are public,
+# so the findings (workflow step names, env keys, vars.* names) expose nothing
+# either tree does not already show.
+#
+# Deliberately NOT a required PR check -- do not add it to a ruleset. The
+# lockstep order is base release -> wrapper port -> wrapper release: the
+# wrapper pins a base release, so it can only port a change after that change
+# has merged and shipped here. A base PR that adds an env key or a vars.*
+# therefore cannot be made green by anything inside that PR, and requiring
+# this check would block every legitimate change to the review pipeline. A
+# red run on main, or on the daily schedule, between a base merge and the
+# wrapper port is the signal this workflow exists to give. Pull requests
+# trigger it only when they touch the check itself, so a config edit
+# validates against the live wrapper.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/drift-check/**
+      - .github/scripts/check_base_wrapper_drift.py
+      - .github/workflows/base-wrapper-drift.yml
+  schedule:
+    - cron: '0 1 * * *'  # daily, after consumer-health (00:00 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      # Wrapper main, not its latest release tag: main is where a port lands
+      # first, so comparing against it clears the signal as early as possible.
+      - name: Checkout wrapper (public)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ignite-pilot-org/ai-dev-pr-review-wrapper
+          ref: main
+          path: wrapper
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: .github/scripts/.python-version
+
+      - run: pip install -r .github/scripts/requirements.txt
+
+      - name: Compare base and wrapper
+        run: |
+          python3 .github/scripts/check_base_wrapper_drift.py \
+            --base-dir .github/workflows \
+            --wrapper-dir wrapper/.github/workflows \
+            --correspondence .github/drift-check/correspondence.yml \
+            --exceptions .github/drift-check/exceptions.yml
