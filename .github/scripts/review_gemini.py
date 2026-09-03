@@ -251,6 +251,16 @@ or error handling), report it at the nearest affected remaining line and quote
 the removed (`-`) line as evidence. Context lines (space-prefixed) that this PR
 does not touch are out of scope -- do NOT raise issues about them.
 
+LINE NUMBERS: The `line` you report MUST be the target file's OWN line number
+(the right-hand/new-file line -- the number you would see in `git blame` or
+when opening the file directly), NOT the line's position within the `pr.diff`
+document you are reading. Unified diff hunk headers look like
+`@@ -a,b +c,d @@`; the new-file line number starts at `c` for the first line
+after that header and increments by one for each `+` or context (space-
+prefixed) line in the hunk -- it does NOT increment for `-` lines. When a PR
+touches multiple files, each file's line numbering restarts independently of
+where that file's diff appears in the combined document.
+
 Respond ONLY with a valid JSON object -- no markdown fences, no explanation.
 
 The JSON schema is defined in .github/schemas/review-schema.json:
