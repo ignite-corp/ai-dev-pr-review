@@ -210,9 +210,27 @@ def steps_with_env(doc: dict[str, Any]) -> list[str | None]:
     return [step.get("name") for step in _iter_steps(doc) if _env_keys(step)]
 
 
-def extract_vars_consumed(text: str) -> set[str]:
-    """Every distinct ``vars.NAME`` token referenced anywhere in the text."""
-    return set(VARS_RE.findall(text))
+def extract_vars_consumed(node: Any) -> set[str]:
+    """Every distinct ``vars.NAME`` token inside the string values of a parsed
+    workflow document.
+
+    The walk is over the YAML tree, not the file text: a ``vars.NAME`` in a
+    comment is documentation, not consumption, and counting it would let a
+    prose mention in base turn the check red for a variable no job reads.
+    """
+    if isinstance(node, str):
+        return set(VARS_RE.findall(node))
+    if isinstance(node, dict):
+        found: set[str] = set()
+        for value in node.values():
+            found |= extract_vars_consumed(value)
+        return found
+    if isinstance(node, list):
+        found = set()
+        for item in node:
+            found |= extract_vars_consumed(item)
+        return found
+    return set()
 
 
 def _reason(entry: Any) -> str:
@@ -231,7 +249,15 @@ def load_correspondence(path: Path) -> DriftConfig:
     """
     doc = _load_yaml(path)
     steps: list[StepCorrespondence] = []
-    for raw in doc.get("steps") or []:
+    for index, raw in enumerate(doc.get("steps") or []):
+        if not isinstance(raw, dict):
+            raise MalformedConfigError(f"correspondence entry {index} is not a mapping")
+        for field in ("base_file", "base_step", "wrapper_file"):
+            if not str(raw.get(field) or "").strip():
+                where = f"entry {index}"
+                if field != "base_step" and str(raw.get("base_step") or "").strip():
+                    where += f" ({raw['base_step']!r})"
+                raise MalformedConfigError(f"correspondence {where} is missing {field!r}")
         entry = StepCorrespondence(
             base_file=str(raw["base_file"]),
             base_step=str(raw["base_step"]),
@@ -351,10 +377,10 @@ def check_vars_consumed(
     """Returns (findings, acknowledged-exception notes, wrapper-only info notes)."""
     base_vars: set[str] = set()
     for name in config.base_files:
-        base_vars |= extract_vars_consumed((base_dir / name).read_text(encoding="utf-8"))
+        base_vars |= extract_vars_consumed(_load_yaml(base_dir / name))
     wrapper_vars: set[str] = set()
     for name in config.wrapper_files:
-        wrapper_vars |= extract_vars_consumed((wrapper_dir / name).read_text(encoding="utf-8"))
+        wrapper_vars |= extract_vars_consumed(_load_yaml(wrapper_dir / name))
 
     findings: list[str] = []
     notes: list[str] = []

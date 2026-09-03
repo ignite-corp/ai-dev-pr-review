@@ -96,10 +96,14 @@ def _write(path: Path, text: str) -> None:
     path.write_text(textwrap.dedent(text), encoding="utf-8")
 
 
-def _load_yaml(path: Path) -> dict:
+def _parse(text: str) -> dict:
     import yaml
 
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return yaml.safe_load(textwrap.dedent(text)) or {}
+
+
+def _load_yaml(path: Path) -> dict:
+    return _parse(path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +148,19 @@ def test_steps_with_env_lists_only_env_bearing_steps_and_flags_unnamed() -> None
 
 def test_extract_vars_consumed_collects_distinct_names() -> None:
     text = "if: ${{ vars.REVIEW_MODE == 'sequential' }}\nenv:\n  X: ${{ vars.JACCARD_THRESHOLD || '0.6' }}\n"
-    assert extract_vars_consumed(text) == {"REVIEW_MODE", "JACCARD_THRESHOLD"}
+    assert extract_vars_consumed(_parse(text)) == {"REVIEW_MODE", "JACCARD_THRESHOLD"}
+
+
+def test_extract_vars_consumed_walks_nested_lists_and_mappings() -> None:
+    doc = {"jobs": {"a": {"steps": [{"run": "echo ${{ vars.ONE }}", "with": {"x": "${{ vars.TWO }}"}}]}}}
+    assert extract_vars_consumed(doc) == {"ONE", "TWO"}
+
+
+def test_extract_vars_consumed_ignores_a_variable_named_only_in_a_comment() -> None:
+    """A prose mention is documentation, not consumption; counting it would
+    turn the check red for a variable no job reads."""
+    text = "# vars.COMMENT_ONLY controls nothing here\nenv:\n  X: ${{ vars.REAL }}  # not vars.TRAILING either\n"
+    assert extract_vars_consumed(_parse(text)) == {"REAL"}
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +454,19 @@ def test_load_correspondence_reads_mapped_and_structural_entries(tmp_path: Path)
     assert config.steps[0].reason == ""
     assert config.steps[1].has_no_counterpart
     assert config.steps[1].reason == "no counterpart on purpose"
+
+
+@pytest.mark.parametrize("field", ["base_file", "base_step", "wrapper_file"])
+def test_load_correspondence_rejects_an_entry_missing_a_required_field(tmp_path: Path, field: str) -> None:
+    """A missing required key is a malformed config, reported through the
+    same MalformedConfigError path as a missing reason -- not a KeyError."""
+    entry = {"base_file": "a.yml", "base_step": "One", "wrapper_file": "wrapper.yml", "wrapper_steps": ["One"]}
+    del entry[field]
+    path = tmp_path / "correspondence.yml"
+    lines = ["steps:", "  - " + "\n    ".join(f"{k}: {v}" for k, v in entry.items())]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(MalformedConfigError, match=f"entry 0.*missing '{field}'"):
+        load_correspondence(path)
 
 
 def test_load_correspondence_rejects_no_counterpart_without_reason(tmp_path: Path) -> None:
