@@ -401,7 +401,11 @@ jobs:
             # (the Codex run step was skipped for another upstream failure)
             # -- and the wrapper has no by-design skip that uses this kind,
             # so every occurrence is an operational fault, which is what the
-            # streak counts. The wrapper-only kinds exist here and not in
+            # streak counts. If a future wrapper change adds a by-design path
+            # that emits `reviewer_not_run` (reviewer disabled by config, a
+            # deliberate skip), this bare match needs a discriminator on the
+            # reason -- that is the trigger for revisiting it.
+            # The wrapper-only kinds exist here and not in
             # the corp regex because corp consumers run base, which never
             # emits them.
             for reviewer in claude codex gemini; do
