@@ -1,0 +1,44 @@
+From 82d261d08ea1449d8db8f70756b894fd51eecc38 Mon Sep 17 00:00:00 2001
+From: Hyuk Hur <hyukhur@ignite.co.kr>
+Date: Thu, 3 Sep 2026 11:04:48 +0900
+Subject: [PATCH] fix(AT-2120): wire round-cutoff vars into wrapper inline
+ comment steps
+
+---
+ .github/workflows/wrapper.yml | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/.github/workflows/wrapper.yml b/.github/workflows/wrapper.yml
+index a9c9d95..ae0eff0 100644
+--- a/.github/workflows/wrapper.yml
++++ b/.github/workflows/wrapper.yml
+@@ -591,6 +591,8 @@ jobs:
+           GITHUB_REPOSITORY: ${{ github.repository }}
+           REVIEWER: claude
+           JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
++          ROUND_CUTOFF_N: ${{ vars.ROUND_CUTOFF_N || '5' }}
++          ROUND_CUTOFF_ENABLED: ${{ vars.ROUND_CUTOFF_ENABLED || 'true' }}
+         run: |
+           if [ -f review-claude.json ]; then
+             python3 .ai-dev-pr-review/.github/scripts/post_inline_comments.py \
+@@ -861,6 +863,8 @@ jobs:
+           GITHUB_REPOSITORY: ${{ github.repository }}
+           REVIEWER: codex
+           JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
++          ROUND_CUTOFF_N: ${{ vars.ROUND_CUTOFF_N || '5' }}
++          ROUND_CUTOFF_ENABLED: ${{ vars.ROUND_CUTOFF_ENABLED || 'true' }}
+         run: |
+           if [ -f review-codex.json ]; then
+             python3 .ai-dev-pr-review/.github/scripts/post_inline_comments.py \
+@@ -923,6 +927,8 @@ jobs:
+           GITHUB_REPOSITORY: ${{ github.repository }}
+           REVIEWER: gemini
+           JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
++          ROUND_CUTOFF_N: ${{ vars.ROUND_CUTOFF_N || '5' }}
++          ROUND_CUTOFF_ENABLED: ${{ vars.ROUND_CUTOFF_ENABLED || 'true' }}
+         run: |
+           if [ -f review-gemini.json ]; then
+             python3 .ai-dev-pr-review/.github/scripts/post_inline_comments.py \
+-- 
+2.43.0
+

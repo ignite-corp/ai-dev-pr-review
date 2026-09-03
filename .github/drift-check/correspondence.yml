@@ -1,0 +1,183 @@
+# Base<->wrapper step correspondence for check_base_wrapper_drift.py (AT-2122).
+#
+# Every base step that carries an `env:` block must appear here (the check
+# fails on an unmapped one). A step maps either to the wrapper step(s) that
+# reimplement it -- the union of their env keys must cover the base step's --
+# or to no wrapper step at all, in which case `reason` is mandatory and states
+# why the single-job wrapper legitimately has no counterpart. `if:` conditions
+# are deliberately not compared (see the script's module docstring).
+#
+# Step names are the join key on both sides, so renaming a step in either
+# repo must be mirrored here; a stale name fails the check rather than
+# silently passing it.
+
+base_files:
+  - base-ai-review-prepare.yml
+  - base-ai-review-orchestrator.yml
+  - base-ai-review-single.yml
+  - base-ai-review-aggregate.yml
+wrapper_files:
+  - wrapper.yml
+
+steps:
+  # ---- base-ai-review-prepare.yml: copied step for step, same names ----
+  - base_file: base-ai-review-prepare.yml
+    base_step: Validate PR number
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Validate PR number]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Check PR size
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Check PR size]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Resolve PR refs
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Resolve PR refs]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Fetch PR head (when pr_number provided manually)
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Fetch PR head (when pr_number provided manually)]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Put the working tree on the PR head
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Put the working tree on the PR head]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Extract diff and context
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Extract diff and context]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Append prior review context
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Append prior review context]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Append verified action SHA pins
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Append verified action SHA pins]
+  - base_file: base-ai-review-prepare.yml
+    base_step: Collect unresolved review threads
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Collect unresolved review threads]
+
+  # ---- base-ai-review-single.yml: one reusable job per reviewer in base,
+  #      three consecutive reviewer step groups in wrapper ----
+  - base_file: base-ai-review-single.yml
+    base_step: Validate reviewer input
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Base takes the reviewer as a workflow_call input and validates it; the
+      wrapper hardcodes REVIEWER per reviewer step group, so there is no input
+      to validate.
+  - base_file: base-ai-review-single.yml
+    base_step: Confirm the tree matches the diff
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Base checks out the PR head again in every reviewer job and must confirm
+      it still matches the diff prepare produced; the wrapper's single job put
+      the tree on the PR head once (step 'Put the working tree on the PR head')
+      and never checks out again.
+  - base_file: base-ai-review-single.yml
+    base_step: Build Claude prompt with existing threads
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Build Claude prompt with existing threads]
+  - base_file: base-ai-review-single.yml
+    base_step: Extract Claude review from execution log (fallback)
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Extract Claude review from execution log (fallback)]
+  - base_file: base-ai-review-single.yml
+    base_step: Emit Claude error verdict (no verdict file)
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Emit Claude error verdict (no verdict file)]
+  # The AT-1606 usage-limit auth switch is three base steps. Only the first
+  # and third carry env keys, but all three are listed so the exemption is
+  # visible as a unit in the check's output.
+  - base_file: base-ai-review-single.yml
+    base_step: Check reviewer App key present (auth switch)
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Cannot apply on the wrapper path: the AT-1606 usage-limit auth switch
+      works by writing CLAUDE_FORCE_API as an ignite-corp organization
+      variable (switch_claude_auth.py), and a pilot-org run has no valid
+      target for a cross-org variable write -- it can neither set that
+      variable nor have ignite-pilot-org consumers read it. The wrapper still
+      honours a manually set vars.CLAUDE_FORCE_API on the OAuth path itself.
+  - base_file: base-ai-review-single.yml
+    base_step: Mint corp App token (auth switch)
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Part of the AT-1606 auth switch; see 'Check reviewer App key present
+      (auth switch)'. The token it mints exists only to write the ignite-corp
+      organization variable, which a pilot-org run has no valid target for.
+  - base_file: base-ai-review-single.yml
+    base_step: Switch Claude auth on usage limit
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Part of the AT-1606 auth switch; see 'Check reviewer App key present
+      (auth switch)'. Its effect is an ignite-corp organization variable
+      write, which a pilot-org run has no valid target for.
+  - base_file: base-ai-review-single.yml
+    base_step: Run Gemini review
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Run Gemini review]
+  - base_file: base-ai-review-single.yml
+    base_step: Authenticate Codex CLI with API key
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Authenticate Codex CLI with API key]
+  - base_file: base-ai-review-single.yml
+    base_step: Run Codex review
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Run Codex review]
+  - base_file: base-ai-review-single.yml
+    base_step: Restore sysctl after Codex
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Restore sysctl after Codex]
+  - base_file: base-ai-review-single.yml
+    base_step: Normalize review file name
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Normalize Codex review file name]
+  - base_file: base-ai-review-single.yml
+    base_step: Verify Codex verdict file
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      The wrapper's 'Run Codex review' step writes the error verdict itself
+      when the CLI leaves no verdict file, so the separate verification step
+      has nothing left to verify.
+  - base_file: base-ai-review-single.yml
+    base_step: Post inline comments
+    wrapper_file: wrapper.yml
+    wrapper_steps:
+      - Post Claude inline comments
+      - Post Codex inline comments
+      - Post Gemini inline comments
+  - base_file: base-ai-review-single.yml
+    base_step: Extract early exit flag
+    wrapper_file: wrapper.yml
+    wrapper_steps:
+      - Read Claude early_exit
+      - Read Codex early_exit
+
+  # ---- base-ai-review-aggregate.yml ----
+  - base_file: base-ai-review-aggregate.yml
+    base_step: Confirm the tree matches the diff
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Same as the single.yml step of that name: the wrapper's single job never
+      checks the PR head out a second time.
+  - base_file: base-ai-review-aggregate.yml
+    base_step: Check reviewer App key present
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      The wrapper gates 'Mint reviewer App token' on vars.REVIEWER_APP_ID and
+      continue-on-error instead of probing the private key in a step of its
+      own; a missing key fails the mint, which the aggregate step tolerates.
+  - base_file: base-ai-review-aggregate.yml
+    base_step: Aggregate and post verdict
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Aggregate and post verdict]

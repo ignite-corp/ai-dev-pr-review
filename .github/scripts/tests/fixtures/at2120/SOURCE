@@ -1,0 +1,20 @@
+Provenance of the AT-2120 regression fixtures (see test_check_base_wrapper_drift.py).
+Both files are verbatim artefacts of the public repository
+ignite-pilot-org/ai-dev-pr-review-wrapper; a comment inside either would
+change its bytes, so the record lives here.
+
+wrapper-post/wrapper.yml
+  commit  82d261d08ea1449d8db8f70756b894fd51eecc38
+          fix(AT-2120): wire round-cutoff vars into wrapper inline comment steps
+  path    .github/workflows/wrapper.yml
+  verify  git show 82d261d08ea1449d8db8f70756b894fd51eecc38:.github/workflows/wrapper.yml | cmp - wrapper-post/wrapper.yml
+  sha256  6d137ac68f365bdcdfa02409da2bb9db5de60f07b1e49e8856617ee4c69cd460
+
+at-2120-fix.patch
+  commit  82d261d08ea1449d8db8f70756b894fd51eecc38 (the same commit, as a patch)
+  verify  git format-patch -1 82d261d08ea1449d8db8f70756b894fd51eecc38 --stdout | cmp - at-2120-fix.patch
+  use     reverse-applied to wrapper-post/wrapper.yml at test time to rebuild
+          the pre-fix tree, wrapper.yml at 7de4d6e8671770fa71b9a36de8e8ed989167df52
+
+Base-side baseline: this repository at 1c57d2282f1880d471a028adb12e8651b8c33d68,
+read with git show at test time; nothing of it is vendored here.
