@@ -213,6 +213,330 @@ jobs:
           echo "::error::One or more reviewer provider credentials failed the probe"
           exit 1
 
+  # Passive credential-failure scan for ignite-pilot-org wrapper consumers
+  # (AT-2121). credential-probe above validates the CORP org secret values by
+  # calling providers directly; it cannot do the same for pilot consumers
+  # because ignite-pilot-org has no org secrets -- each pilot repo holds its
+  # own repo-level secret (docs/pilot-usage.md), secrets are write-only, and
+  # this repo has no way to hold or curl a pilot repo's actual key value.
+  #
+  # Instead this job reads the OUTCOME of review runs that already happened.
+  # When a reviewer step hits an invalid credential it emits a "failed"
+  # verdict with a known error kind into the PR's own verdict comment/review
+  # body. The kinds come from the wrapper's inline copy of
+  # base-ai-review-single.yml (ai-dev-pr-review-wrapper/wrapper.yml), which
+  # is what pilot consumers actually run: action_invocation_failed /
+  # output_unparseable (Claude, no verdict file), cli_invocation_failed /
+  # output_unparseable (Codex CLI), plus two the wrapper synthesizes and base
+  # never emits -- reviewer_produced_no_verdict (reviewer ran, wrote nothing)
+  # and `reviewer_not_run: authentication failed` (a dead OPENAI_API_KEY
+  # fails `codex login --with-api-key`, so the Codex run step is skipped and
+  # never reaches cli_invocation_failed). Gemini has no fixed kind --
+  # review_gemini.py stores the exception text as `error` -- so for Gemini
+  # the marker is its summary prefix `Review failed:`. That verdict is produced
+  # only after a real API call was attempted with the real secret value, so a
+  # sustained streak of it reflects that value's actual behavior against the
+  # provider, the same way credential-probe's direct call does -- unlike an
+  # emptiness check, it also catches a non-empty but WRONG value (AT-1796's
+  # silently-replaced org secret, and the 2026-09-03 literal "-" secret
+  # value: both pass every `[ -z ]` guard and would pass a presence check
+  # here too). This is the same reviewer-error-streak heuristic the health
+  # job below already applies to corp consumers (its step 4) -- duplicated
+  # here rather than shared, because it runs against a different org under a
+  # different App-token owner scope, and consumer-health.yml has no existing
+  # mechanism to share a bash/jq block across jobs.
+  #
+  # Detection latency: this reuses credential-probe's weekly Friday schedule
+  # rather than a tighter one. AT-2114 removed the accidental immediate-red
+  # signal a dead credential used to produce on every PR, so this job (like
+  # credential-probe) is the actual replacement guarantee now in place, and
+  # inheriting a schedule without deciding it is not a judgment (AT-2121
+  # comment 85147). The choice here is deliberate: pilot PR volume is sparse
+  # enough (AT-1982: 6 of 17 wrapper consumers had zero successful runs) that
+  # a tighter cron would not shorten real detection time -- a 5-consecutive-
+  # PR streak needs 5 PRs to arrive regardless of how often the cron polls,
+  # so the bottleneck is PR arrival rate, not scan frequency. Sharing
+  # credential-probe's cadence also keeps this fleet to one alert schedule
+  # instead of two independently-timed ones. Accepted latency: up to 7 days,
+  # same as credential-probe -- worse than the pre-AT-2114 immediate red, but
+  # a large improvement over the 12+ day AT-1796 incident that motivated this
+  # ticket, which nothing had caught through any channel.
+  #
+  # CLAUDE_CODE_OAUTH_TOKEN: AT-1796 leaves it unprobed because no endpoint
+  # verifies it outside the Claude Code CLI itself. That constraint does not
+  # apply here -- this job never calls a provider directly, it reads whether
+  # the Claude Code CLI, run for real inside a pilot PR, produced a failure
+  # verdict. That makes this the first mechanism able to surface a dead
+  # Claude OAuth credential at all; credential-probe structurally cannot.
+  pilot-credential-scan:
+    if: github.event.schedule == '0 0 * * 5' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A workflow_dispatch run must not overlap the Friday cron and
+    # double-create the alert issue.
+    concurrency:
+      group: pilot-credential-scan
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # ignite-actions-token-app (used by the health job below) has no
+      # installation on ignite-pilot-org -- confirmed via
+      # `gh api orgs/ignite-pilot-org/installations`, which lists only
+      # ignite-ai-review-approver (4196135) and fsb-repository-publisher
+      # (4699287). The reviewer App (ignite-ai-review-approver) is the only
+      # App this repo already has cross-org access through: it holds
+      # `pull_requests: write` on both ignite-corp and ignite-pilot-org
+      # (installed on both since AT-1512/1606/1607, which already mint an
+      # owner-scoped token per org from it for the same reason). Its
+      # `vars.REVIEWER_APP_ID` / `secrets.REVIEWER_APP_PRIVATE_KEY` are
+      # already reachable from this repo (org var visibility=all; org secret
+      # visibility=selected, and ai-dev-pr-review is on that selected list).
+      # It does NOT hold `actions: read`, so unlike the health job below this
+      # scan cannot check pilot consumers' Actions run conclusions -- it is
+      # limited to PR review/comment body content, which is what the
+      # verdict-payload signature scan below needs.
+      - name: Mint pilot-org App token
+        id: pilot-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-pilot-org
+
+      - name: Scan pilot consumers for dead-credential signatures
+        id: scan
+        env:
+          GH_TOKEN: ${{ steps.pilot-token.outputs.token }}
+        run: |
+          set -u
+          # Streak length (consecutive recent PRs) needed to flag a reviewer,
+          # and how much PR/timeline history is inspected per consumer --
+          # same defaults as the corp reviewer-error-streak check below.
+          CONSECUTIVE_ERROR_THRESHOLD=5
+          RECENT_PR_COUNT=10
+          TIMELINE_ITEM_COUNT=10
+
+          # ignite-pilot-org repo names are already public in this repo's own
+          # docs/pilot-usage.md census (all 32 non-archived repos are named
+          # there). Unlike RULESET_CONFIG (AT-1956: "the protection that
+          # actually holds is the mapping, not the names"), there is no
+          # secret mapping to protect for pilot consumers, so names are safe
+          # to log directly here -- no index-only obfuscation needed. This
+          # is a recorded deviation from AT-2121's index-only condition, and
+          # it holds only while that census exists: if docs/pilot-usage.md
+          # ever stops naming the pilot consumers, printing them here becomes
+          # a new disclosure, and these log lines and the alert issue body
+          # must switch to index-only the way the corp check below does.
+          ALL_REPOS_FILE=$(mktemp)
+          if ! gh api --paginate "orgs/ignite-pilot-org/repos" \
+            --jq '.[] | select(.archived==false) | .name' > "$ALL_REPOS_FILE"; then
+            echo "::error::cannot list ignite-pilot-org repos; pilot credential scan unjudgeable"
+            exit 1
+          fi
+          mapfile -t ALL_REPOS < "$ALL_REPOS_FILE"
+          if [ "${#ALL_REPOS[@]}" -eq 0 ]; then
+            echo "::error::ignite-pilot-org repo listing returned zero repos; pilot credential scan unjudgeable"
+            exit 1
+          fi
+
+          # Classify by uses: line, same method docs/pilot-usage.md's own
+          # re-survey instructions use -- avoids hardcoding a repo-name
+          # snapshot that drifts as pilot repos onboard/offboard the wrapper.
+          # Scope: wrapper consumers only (17 today), matching this ticket;
+          # the 2 base-direct pilot consumers (spec-interview,
+          # factory-process-maker) already track the base repo's own release
+          # tag and are out of scope here.
+          WRAPPER_CONSUMERS=()
+          for name in "${ALL_REPOS[@]}"; do
+            content_b64=$(gh api "repos/ignite-pilot-org/${name}/contents/.github/workflows/ai-review.yml" 2>/dev/null | jq -r '.content // empty')
+            [ -z "$content_b64" ] && continue
+            if echo "$content_b64" | base64 -d 2>/dev/null | grep -q 'ai-dev-pr-review-wrapper/\.github/workflows/wrapper\.yml'; then
+              WRAPPER_CONSUMERS+=("$name")
+            fi
+          done
+          echo "wrapper consumers found: ${#WRAPPER_CONSUMERS[@]}"
+          if [ "${#WRAPPER_CONSUMERS[@]}" -eq 0 ]; then
+            echo "::error::no wrapper-consumer pilot repos identified; contents read may be failing -- pilot credential scan unjudgeable"
+            exit 1
+          fi
+
+          flagged_lines=()
+          scan_errors=0
+          for name in "${WRAPPER_CONSUMERS[@]}"; do
+            if ! prs_json=$(gh api graphql \
+              -f query='query($owner: String!, $name: String!, $count: Int!, $timelineCount: Int!) {
+                repository(owner: $owner, name: $name) {
+                  pullRequests(first: $count, orderBy: {field: CREATED_AT, direction: DESC}) {
+                    nodes {
+                      reviews(last: $timelineCount) { nodes { body submittedAt } }
+                      comments(last: $timelineCount) { nodes { body createdAt } }
+                    }
+                  }
+                }
+              }' \
+              -f owner="ignite-pilot-org" -f name="$name" -F count="$RECENT_PR_COUNT" \
+              -F timelineCount="$TIMELINE_ITEM_COUNT" 2>/dev/null); then
+              echo "  [WARN] ${name}: could not fetch recent PR data -- not evaluated this run"
+              scan_errors=$((scan_errors + 1))
+              continue
+            fi
+            # Same section extraction as the health job's corp
+            # reviewer-error-streak check (step 4 below). The error-marker
+            # regex is that check's set plus the error kinds named in this
+            # job's header comment. Claude, Codex and the wrapper-synthesized
+            # verdicts carry a fixed kind, so those are matched as kinds and
+            # do not depend on summary wording; Gemini's kind is the raw
+            # exception text (review_gemini.py, `error: str(exc)`), so its
+            # only stable marker is the summary prefix "Review failed:" --
+            # that is what `review failed:` (case-insensitive) is for, and it
+            # is also the corp check's legacy marker. Both rendered header
+            # shapes carry the kind: `[ ] not run (<kind>)` (AT-2123) and
+            # the older `[!] (partial: <kind>)`.
+            # `reviewer_not_run` is matched bare on purpose: wrapper.yml puts
+            # exactly two reasons after it -- "authentication failed" (the
+            # `codex login --with-api-key` step failed, which includes an
+            # empty OPENAI_API_KEY) and "a preceding step did not succeed"
+            # (the Codex run step was skipped for another upstream failure)
+            # -- and the wrapper has no by-design skip that uses this kind,
+            # so every occurrence is an operational fault, which is what the
+            # streak counts. If a future wrapper change adds a by-design path
+            # that emits `reviewer_not_run` (reviewer disabled by config, a
+            # deliberate skip), this bare match needs a discriminator on the
+            # reason -- that is the trigger for revisiting it.
+            # The wrapper-only kinds exist here and not in
+            # the corp regex because corp consumers run base, which never
+            # emits them.
+            # A jq failure (malformed payload, jq itself broken) is a check
+            # NOT performed, exactly like a fetch failure above: it must
+            # land in scan_errors so all_ok stays 0 and the recovery step
+            # cannot close an open alert on it. Masking it as streak 0 would
+            # read as a healthy reviewer. One increment per consumer, not
+            # per reviewer, so the count keeps meaning "consumers not
+            # evaluated". The log line names repo and reviewer only, never
+            # payload content (public repo).
+            for reviewer in claude codex gemini; do
+              if ! streak=$(jq -r --arg r "$reviewer" '
+                def section($body):
+                  ($body | split("\n### ")
+                   | map(select(ascii_downcase | startswith($r)))
+                   | first) // "";
+                def is_error($body):
+                  section($body)
+                  | (split("\n") | .[:2] | join("\n"))
+                  | test("action_invocation_failed|cli_invocation_failed|output[ _]unparseable|reviewer_produced_no_verdict|reviewer_not_run|review failed:|unavailable \\(quota/auth error\\)"; "i");
+                [ .data.repository.pullRequests.nodes[]?
+                  | [ (.reviews.nodes[]?, .comments.nodes[]?)
+                      | select(.body | contains("<!-- multi-llm-review -->")) ]
+                  | sort_by(.submittedAt // .createdAt)
+                  | last
+                  | select(. != null)
+                  | .body ]
+                | map(if is_error(.) then 1 else 0 end)
+                | (index(0) // length)
+              ' <<<"$prs_json" 2>/dev/null) || ! [[ "$streak" =~ ^[0-9]+$ ]]; then
+                echo "  [WARN] ${name}: streak check for reviewer ${reviewer} failed (jq error) -- not evaluated this run"
+                scan_errors=$((scan_errors + 1))
+                break
+              fi
+              if [ "$streak" -ge "$CONSECUTIVE_ERROR_THRESHOLD" ]; then
+                echo "  [FLAG] ${name}: reviewer ${reviewer} error verdict in ${streak} consecutive recent PRs"
+                flagged_lines+=("${name}: reviewer ${reviewer} failing ${streak} consecutive recent PRs")
+              fi
+            done
+          done
+
+          flagged=0
+          if [ "${#flagged_lines[@]}" -gt 0 ]; then
+            flagged=1
+          fi
+          # all_ok=1 only when the scan actually completed for every
+          # consumer with no flags: a fetch or jq failure is a check NOT
+          # performed, so it must not count as a confirmed recovery.
+          all_ok=0
+          if [ "$flagged" = "0" ] && [ "$scan_errors" -eq 0 ]; then
+            all_ok=1
+          fi
+          if [ "$flagged" = "0" ] && [ "$scan_errors" -gt 0 ]; then
+            echo "::notice::recovery not confirmed -- ${scan_errors} consumer(s) could not be fetched or evaluated"
+          fi
+          {
+            echo "flagged=${flagged}"
+            echo "all_ok=${all_ok}"
+            echo "summary<<SCAN_EOF"
+            if [ "$flagged" = "1" ]; then
+              printf -- '- %s\n' "${flagged_lines[@]}"
+            fi
+            echo "SCAN_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update pilot credential alert issue
+        if: steps.scan.outputs.flagged == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY: ${{ steps.scan.outputs.summary }}
+        run: |
+          set -u
+          TITLE='[pilot-credential-scan] pilot consumer reviewer credential likely dead'
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search 'pilot-credential-scan in:title' --json number,title \
+            --jq 'map(select(.title | startswith("[pilot-credential-scan]"))) | .[0].number // empty')
+          body=$(cat <<BODY_EOF
+          <!-- pilot-credential-scan -->
+          Weekly pilot consumer scan found a sustained reviewer-failure signature at ${NOW} ([run](${RUN_URL})).
+
+          Flagged consumers (repo: reviewer failing N consecutive recent PRs):
+          ${SUMMARY}
+
+          This is a passive signal, not a direct credential probe: a persistent
+          run of infrastructure-shaped error verdicts is consistent with a dead
+          or replaced repo-level secret, but the same pattern can also come from
+          another sustained infra failure. Confirm before rotating:
+          - Open the flagged repo's most recent AI Code Review workflow run and
+            check the reviewer step's own failure detail.
+          - If it looks credential-related, validate the replacement key with
+            curl (expect HTTP 200) BEFORE storing it, and set it on that repo's
+            own \`Settings -> Secrets and variables -> Actions\` (pilot repos
+            have no org secrets -- see docs/pilot-usage.md).
+          - Re-run consumer-health (workflow_dispatch) to confirm; this issue
+            closes automatically once the flagged reviewer clears its streak.
+          BODY_EOF
+          )
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi
+
+      - name: Close pilot credential alert issue on recovery
+        # Gate on all_ok, not merely flagged==0: a fetch failure leaves the
+        # scan unconfirmed for that consumer, so the issue stays open.
+        if: steps.scan.outputs.all_ok == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search 'pilot-credential-scan in:title' --json number,title \
+            --jq 'map(select(.title | startswith("[pilot-credential-scan]"))) | .[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
+              --comment "No flagged reviewer-credential streaks at ${NOW} ([run](${RUN_URL})). Recovered."
+          else
+            echo "No open pilot-credential-scan issue; nothing to close."
+          fi
+
+      - name: Fail run on flagged pilot consumers
+        if: steps.scan.outputs.flagged == '1'
+        run: |
+          echo "::error::One or more pilot consumers show a sustained reviewer-credential failure signature"
+          exit 1
+
   health:
     # Daily cron only: without this gate the weekly Friday cron event would
     # run the consumer loop a second time on Fridays.
@@ -224,7 +548,7 @@ jobs:
 
       - name: Mint App token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_ID }}
           private-key: ${{ secrets.IGNITE_ACTIONS_TOKEN_APP_PRIVATE_KEY }}
