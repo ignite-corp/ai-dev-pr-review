@@ -166,6 +166,47 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 And vice versa. Both refs always resolve.
 
+### Known exception: a second consumption path in the same consumer (AT-2109)
+
+The two options above assume one consumption path per consumer: a `uses:` line
+that calls this repo's reusable workflow. A few consumers have a **second,
+independent** path in the same repo -- a separate workflow that `actions/checkout`s
+this repo directly (not a `workflow_call`) to reach `.github/actions/claude-review`,
+the shared composite action, then runs it via the local path
+`uses: ./.ai-dev-pr-review/.github/actions/claude-review`. That checkout carries
+its own ref, chosen independently of whatever the same consumer pins its
+orchestrator call to.
+
+Known instances (census taken for AT-2109, 2026-09-03): `ignite-corp/ai-tf-t2a`
+(`claude-code-review.yml`) and `ignite-corp/ai-dev-infra-common`
+(`base-claude-review.yml`, called by `review-claude.yml`). Both are disabled
+duplicate workflows (`workflow_dispatch`-only, superseded by `review-ai.yml`) as
+of this writing, not part of the active PR-triggered review path. No consumer in
+`ignite-pilot-org` has this shape.
+
+In both known instances, this second path floats `ref: v1` **on purpose**, even
+where the same consumer's orchestrator path is SHA-pinned per the policy above
+(t2a's `review-ai.yml` is SHA-pinned, per PR #525). This is a deliberate, accepted
+exception, not a missed pin: the composite action is meant to be the fleet's
+single source of truth for Claude auth-provider priority and action-version
+selection, and pinning this checkout would require hand-mirroring every upstream
+change into the consumer -- the exact failure mode that produced `ai-dev-cab`'s
+6-week composite drift (AT-2102). So one consumer repo can legitimately run two
+different pin policies at once: SHA-pinned on the reusable-workflow-call path,
+floating on the direct-checkout-of-composite path. Each new instance of this
+shape should get the same "why" comment at its checkout step that
+`ai-tf-t2a/.github/workflows/claude-code-review.yml` carries.
+
+This is a different thing from the pilot wrapper's own internal checkout
+(`actions/checkout ignite-corp/ai-dev-pr-review@${{ inputs.upstream_ref }}` inside
+`wrapper.yml`, see [pilot usage](docs/pilot-usage.md)) -- that is the wrapper's
+own single mechanism for every wrapper consumer, not a second path living
+alongside another pin in one consumer's own tree.
+
+`consumer-health.yml`'s pin-freshness check is structurally blind to this
+path -- see the comment at its pin-extraction regex for why, and why that is
+currently accepted rather than fixed.
+
 ## Input contract reference
 
 All workflows accept `workflow_call` inputs:

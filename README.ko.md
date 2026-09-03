@@ -155,6 +155,47 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 그 반대도 마찬가지입니다. 두 ref 모두 항상 해석됩니다.
 
+### 알려진 예외: 한 소비자 안의 두 번째 소비 경로 (AT-2109)
+
+위의 두 옵션은 소비자당 소비 경로가 하나 — 이 레포의 재사용 워크플로우를
+호출하는 `uses:` 한 줄 — 라고 가정합니다. 일부 소비자는 같은 레포 안에 **두
+번째, 독립적인** 경로를 갖고 있습니다. 공유 컴포지트 액션인
+`.github/actions/claude-review`에 닿기 위해 (`workflow_call`이 아니라) 이 레포를
+`actions/checkout`으로 직접 체크아웃한 뒤 로컬 경로
+`uses: ./.ai-dev-pr-review/.github/actions/claude-review`로 실행하는 별도
+워크플로우입니다. 그 체크아웃은 같은 소비자가 orchestrator 호출에 어떤 핀을
+쓰든 그와 무관하게 자기만의 ref를 따로 가집니다.
+
+알려진 인스턴스(AT-2109 전수 조사, 2026-09-03): `ignite-corp/ai-tf-t2a`
+(`claude-code-review.yml`)와 `ignite-corp/ai-dev-infra-common`
+(`base-claude-review.yml`, `review-claude.yml`이 호출). 이 글을 쓰는 시점에 둘 다
+비활성화된 중복 워크플로우(`workflow_dispatch` 전용, `review-ai.yml`로 대체됨)이며,
+활성 PR 트리거 리뷰 경로의 일부가 아닙니다. `ignite-pilot-org`에는 이 형태의
+소비자가 없습니다.
+
+두 인스턴스 모두 이 두 번째 경로는 **의도적으로** `ref: v1`을 플로팅합니다 —
+같은 소비자의 orchestrator 경로가 위 정책대로 SHA 핀되어 있더라도 그렇습니다
+(t2a의 `review-ai.yml`은 PR #525에 따라 SHA 핀). 이는 핀 누락이 아니라 의도된,
+인정된 예외입니다: 컴포지트 액션은 Claude 인증 공급자 우선순위와 액션 버전
+선택에 대한 fleet의 단일 진실원(single source of truth)이어야 하고, 이 체크아웃을
+핀하면 모든 upstream 변경을 소비자에 손으로 미러링해야 합니다 — 바로 그것이
+`ai-dev-cab`의 6주짜리 컴포지트 드리프트(AT-2102)를 만든 실패 방식입니다.
+따라서 하나의 소비자 레포가 두 가지 핀 정책을 동시에 정당하게 운용할 수 있습니다:
+재사용 워크플로우 호출 경로는 SHA 핀, 컴포지트 직접 체크아웃 경로는 플로팅.
+이 형태의 새 인스턴스는 각각
+`ai-tf-t2a/.github/workflows/claude-code-review.yml`이 체크아웃 스텝에 달고 있는
+것과 같은 "왜" 주석을 달아야 합니다.
+
+이는 파일럿 래퍼 자체의 내부 체크아웃(`wrapper.yml` 안의
+`actions/checkout ignite-corp/ai-dev-pr-review@${{ inputs.upstream_ref }}`,
+[파일럿 사용법](docs/pilot-usage.md) 참조)과는 다른 것입니다 — 그것은 모든 래퍼
+소비자를 위한 래퍼 자신의 단일 메커니즘이지, 한 소비자의 트리 안에서 다른 핀
+옆에 나란히 사는 두 번째 경로가 아닙니다.
+
+`consumer-health.yml`의 핀 최신성 검사는 구조적으로 이 경로를 볼 수 없습니다 —
+그 이유와, 왜 현재는 고치지 않고 받아들이는지는 핀 추출 정규식에 달린 주석을
+참조하세요.
+
 ## 입력 계약 레퍼런스
 
 모든 워크플로우는 `workflow_call` 입력을 받습니다:

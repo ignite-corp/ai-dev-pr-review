@@ -705,6 +705,32 @@ jobs:
               # held to the latest release exactly, since automation moves it
               # (AT-2088; rationale in the module docstring).
               # Its output names only this public repo's own pins and tags.
+              #
+              # AT-2109: this regex only matches the reusable-workflow-call
+              # shape (`ai-dev-pr-review/.github/workflows/<name>.yml@<ref>`)
+              # inside the one workflow file `$wf` already names. It is
+              # structurally blind to a second consumption shape some
+              # consumers carry: a separate workflow that `actions/checkout`s
+              # this repo directly to reach `.github/actions/claude-review`
+              # (README.md "Known exception: a second consumption path in the
+              # same consumer"). Widening the character class here would not
+              # fix that -- the blind spot is that such a checkout lives in a
+              # workflow file this loop never fetches (`$wf` is chosen by name
+              # or by scanning for a `base-ai-review-orchestrator` reference,
+              # never for a direct checkout), not that the pattern is too
+              # narrow within the file it does fetch. Seeing it would mean
+              # fetching every workflow file per consumer and matching a
+              # different, multi-line shape (`uses: actions/checkout@<sha>`
+              # paired with `repository: ignite-corp/ai-dev-pr-review` on a
+              # separate line) -- a materially larger, multi-fold increase in
+              # daily API calls across every consumer. Both known instances of
+              # this shape (t2a, ai-dev-infra-common) are on disabled,
+              # workflow_dispatch-only duplicate workflows outside the active
+              # PR-triggered review path, and the census found only these two
+              # among ~26 active consumers, so that cost is not paid for now.
+              # Documented as an accepted blind spot rather than widened;
+              # revisit if a third instance appears or either workflow is
+              # re-enabled.
               if [ "$is_base_repo" = 1 ]; then
                 echo "  pin: n/a (base repo calls the orchestrator by local path)"
               else
