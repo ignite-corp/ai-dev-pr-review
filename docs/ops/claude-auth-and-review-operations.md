@@ -102,7 +102,7 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
 
     ```bash
     for r in $(gh api orgs/ignite-pilot-org/repos --paginate --jq '.[].name'); do
-      gh api "repos/ignite-pilot-org/$r/actions/variables" --jq \
+      gh api --paginate "repos/ignite-pilot-org/$r/actions/variables" --jq \
         '[.variables[]|select((.name=="ALLOW_AUTO_APPROVE" and .value=="true")
            or .name=="REVIEWER_APP_ID")]|length' 2>/dev/null | grep -qx 2 || continue
       gh api "repos/ignite-pilot-org/$r/contents/.github/workflows/ai-review.yml" \
