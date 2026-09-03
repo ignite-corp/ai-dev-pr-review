@@ -39,8 +39,13 @@ jobs:
   review:
     name: "${{ inputs.reviewer }} review"
     runs-on: ubuntu-latest
-    # Upper bound for the whole job: the claude composite's inner step is not
-    # bounded by the caller step's timeout-minutes (actions/runner#1979).
+    # Upper bound for the whole job. The 10-minute timeout-minutes on the
+    # reviewer steps below does bind the claude composite's inner steps: the
+    # runner hands the caller step's remaining timeout to every composite
+    # child (ExecutionContext.CreateEmbeddedChild -> GetRemainingTimeout(),
+    # actions/runner v2.336.0; in place since #599, v2.272.0).
+    # actions/runner#1979 (open) is about timeout-minutes keys written inside
+    # composite steps being ignored, not about the caller's step timeout.
     timeout-minutes: 15
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
