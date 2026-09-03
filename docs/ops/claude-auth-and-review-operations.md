@@ -55,6 +55,65 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
 - Releases are **manual**: cut `vX.Y.Z` on the merge commit; `move-major-tag`
   floats `v1` to it. Merged base changes stay inert for consumers until release
   + pin bump, so accumulating on main is safe.
+- **Release gate - before moving `v1`, confirm the base `approve_quorum`
+  separation (AT-2124) has landed. The gate is not the whole mitigation: the
+  base path is already exposed and reaches consumers with no release at all.**
+  `approve_quorum` reuses the verdict-gate availability count
+  (`aggregate_reviews.py:1127`, against `MIN_REVIEWERS_FOR_VERDICT = 2` at line
+  59), so **2 of 3** reviewers satisfies it and auto-approve fires on a
+  **degraded reviewer set** - a formal `APPROVED` review from the reviewer App
+  on a PR that a configured reviewer never ran against. A green check is
+  passive - it says nothing is stopping you. A formal `APPROVED` review is an
+  affirmative, attributable claim that the code was reviewed; on that PR it is
+  a false attestation.
+  - **What the release gate covers.** Pilot consumers track `wrapper.yml@v1`,
+    and `v1` floats to release tags rather than to `main`, so merging changes
+    nothing for them - they begin running the new behaviour when the float
+    moves. Wrapper PR #28 (AT-2114, merged) stops one reviewer's auth failure
+    from skipping the other reviewers, so a codex outage on the wrapper path
+    leaves **2** reviewers available instead of 1.
+  - **What it does not cover - AT-2124 is urgent independently of release
+    timing.** Base already runs the three reviewers as independent parallel
+    jobs (`review-gemini-p`, `review-codex-p`, `review-claude-p` in
+    `base-ai-review-orchestrator.yml`, each `needs: prepare` and nothing else),
+    and in sequential mode `review-gemini-s` runs even when codex fails. Either
+    way one reviewer dropping out already leaves 2 available, quorum is already
+    satisfied, and approval on a degraded set is **current base behaviour** -
+    AT-2114 extends an existing base defect to the wrapper path, it does not
+    create it. ignite-corp consumers call the orchestrator directly and inherit
+    `ALLOW_AUTO_APPROVE=true` from the org unless a repo-level variable
+    overrides it, so no release ever has to happen for them to be exposed and a
+    release-time gate never reaches them. Do not read "release precondition" as
+    "there is time".
+  - Not hypothetical. Across the seven ignite-corp consumers, 2026-07-02 ->
+    2026-09-02, the reviewer App posted 1150 `APPROVED` reviews, **229 (19.9%)
+    of them at `2/3 LLM responses`**, and **102 merged PRs** carry such an
+    approval as the last-standing approving review with no human approving
+    review at all. Most recent: `ai-dev-infra-common#743`, approved
+    2026-08-24T02:37:21Z at `2/3 LLM responses` and merged two minutes later.
+  - Pilot exposure at the float when this was written is **six repos**:
+    `aws-simple-deploy`, `ig-config-manager`, `mg_wrap`, `wesource`,
+    `wesource-be`, `wesource-fe`. Do not trust that list - re-measure it. A
+    repo is exposed when it has `ALLOW_AUTO_APPROVE=true` AND `REVIEWER_APP_ID`
+    set AND is on `wrapper.yml@v1`.
+  - **Repo-level Actions variables read with a plain `repo` scope** - only
+    *org*-level variables need `admin:org` - so the list is measurable from an
+    ordinary token:
+
+    ```bash
+    for r in $(gh api orgs/ignite-pilot-org/repos --paginate --jq '.[].name'); do
+      gh api --paginate "repos/ignite-pilot-org/$r/actions/variables" --jq \
+        '[.variables[]|select((.name=="ALLOW_AUTO_APPROVE" and .value=="true")
+           or .name=="REVIEWER_APP_ID")]|length' 2>/dev/null | grep -qx 2 || continue
+      gh api "repos/ignite-pilot-org/$r/contents/.github/workflows/ai-review.yml" \
+        --jq .content 2>/dev/null | base64 -d | grep -q 'wrapper.yml@v1' && echo "$r"
+    done
+    ```
+
+    Runs under a plain `repo` scope; echoes repository names only, never
+    variable values.
+
+    Adjust the workflow filename for any consumer not using `ai-review.yml`.
 - base <-> wrapper keep **MAJOR.MINOR in lockstep**; patch versions independent.
   The wrapper reimplements the single-review job inline instead of calling base's
   reusable workflows, so a `base-ai-review-single.yml` change must be hand-ported
