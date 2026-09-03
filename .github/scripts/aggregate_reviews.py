@@ -269,6 +269,32 @@ def _has_early_exit(available: dict[str, dict[str, Any]]) -> bool:
     )
 
 
+def _has_full_reviewer_coverage(available: dict[str, dict[str, Any]]) -> bool:
+    """True only when every configured reviewer produced a verdict (AT-2124).
+
+    Deliberately independent of MIN_REVIEWERS_FOR_VERDICT. That threshold
+    governs the verdict and the merge-gate exit code, where one reviewer's
+    outage must not block every PR in the fleet. A green check is passive --
+    it says only that nothing is stopping you. A formal APPROVED review is an
+    affirmative, attributable claim that the code was reviewed, so it may be
+    posted only when the full configured reviewer set actually ran; on a PR a
+    configured reviewer never ran against, it is a false attestation.
+
+    The failure directions are not symmetric: requiring the full set degrades
+    to comment-only and a human approves, while reusing the availability
+    count degrades toward silently approving more. A gate must fail toward
+    passing less.
+
+    The configured set is REVIEWERS (claude, codex, gemini) -- fixed for
+    every run in both REVIEW_MODE=parallel and =sequential; neither mode
+    selects a subset. "Produced a verdict" means the payload survived
+    ``_get_available``, i.e. normalized status "ok" or "early_exit". An early
+    exit is a judgement the reviewer reached after reading the diff, so that
+    reviewer ran; status "failed", missing and malformed payloads did not.
+    """
+    return set(available) == set(REVIEWERS)
+
+
 _PARTIAL_SUMMARY_PREFIX = "partial:"
 
 
@@ -956,21 +982,19 @@ def post_verdict(
 
     _minimize_stale_bot_items(pr_number, repo)
 
-    # Never send a formal APPROVED review without a minimum quorum of live
-    # reviewer payloads: an approval would assert coverage that never
+    # Never send a formal APPROVED review unless every configured reviewer
+    # produced a verdict: an approval would assert coverage that never
     # happened. The verdict (and thus the merge-gate exit code) is
     # unchanged; only the posted event is downgraded to a comment.
     if verdict == "approve" and not approve_quorum:
         print(
-            "::notice::Auto-approve withheld -- fewer than"
-            f" {MIN_REVIEWERS_FOR_VERDICT} reviewer responses available;"
-            " posting comment instead of approval.",
+            "::notice::Auto-approve withheld -- not every configured reviewer"
+            " produced a verdict; posting comment instead of approval.",
             file=sys.stderr,
         )
         note = (
-            "\n\n> [!] Auto-approve withheld: fewer than"
-            f" {MIN_REVIEWERS_FOR_VERDICT} reviewer responses available;"
-            " posted as comment."
+            "\n\n> [!] Auto-approve withheld: not every configured reviewer"
+            " produced a verdict; posted as comment."
         )
         if not _post_comment(pr_number, repo, comment + note):
             print("Failed to post comment", file=sys.stderr)
@@ -1124,7 +1148,7 @@ def main() -> None:
         comment,
         verdict,
         comment_only=comment_only,
-        approve_quorum=len(available) >= MIN_REVIEWERS_FOR_VERDICT,
+        approve_quorum=_has_full_reviewer_coverage(available),
     )
     print(f"Final verdict: {verdict} -- {reason}")
 
