@@ -7,6 +7,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # test_check_base_wrapper_drift.py reads the AT-2120 regression
+          # baseline out of this repo's history (git show <pinned sha>:...),
+          # which a depth-1 checkout does not carry.
+          fetch-depth: 0
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: .github/scripts/.python-version

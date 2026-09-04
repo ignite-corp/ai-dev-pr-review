@@ -1,0 +1,51 @@
+# Per-key and per-variable escape hatch for check_base_wrapper_drift.py
+# (AT-2122). Every entry needs a non-empty `reason`; a blank one fails the
+# check. Structural exceptions (a whole base step with no wrapper counterpart)
+# live in correspondence.yml instead.
+#
+# Two kinds of reason appear here and must stay distinguishable:
+#   - by design: the single-job wrapper legitimately never needs the value;
+#   - open drift: a real gap with a ticket, listed so the check stays green
+#     while the port is decided. Remove the entry when the ticket closes.
+
+vars:
+  REVIEW_MODE:
+    reason: >-
+      By design. The wrapper is one job with the reviewers as consecutive
+      steps, so it cannot fan out; it hands the aggregator a literal
+      REVIEW_MODE: sequential and never reads the variable (AT-2105,
+      docs/pilot-usage.md "REVIEW_MODE does nothing on the wrapper path").
+
+env:
+  base-ai-review-single.yml:
+    Normalize review file name:
+      REVIEWER:
+        reason: >-
+          By design. Base parameterises the step on its reviewer input; the
+          wrapper's 'Normalize Codex review file name' runs for codex only and
+          hardcodes the file name.
+    Extract early exit flag:
+      REVIEWER:
+        reason: >-
+          By design. Base parameterises the step on its reviewer input; the
+          wrapper's 'Read Claude early_exit' / 'Read Codex early_exit' steps
+          each hardcode their reviewer's file.
+  base-ai-review-aggregate.yml:
+    Aggregate and post verdict:
+      PREPARE_RESULT:
+        reason: >-
+          By design. Base's aggregate is a separate job that cannot be gated on
+          prepare (its name is the required status context, AT-2087), so it
+          receives prepare's result and explains a failure itself. In the
+          wrapper a failing prepare step fails the single job before this step
+          runs, with the failing step named in the run.
+      RUN_URL:
+        reason: >-
+          By design. Only used inside the prepare-failure verdict body that
+          PREPARE_RESULT selects; see that entry.
+      HEAD_SHA:
+        reason: >-
+          Open drift, tracked in AT-2117: the wrapper does not pass HEAD_SHA,
+          so base's head-staleness guard (_head_is_stale) is inert on the
+          wrapper path and !cancelled() stands in for it. AT-2117 decides
+          whether to port, keep, or layer both; remove this entry when it does.

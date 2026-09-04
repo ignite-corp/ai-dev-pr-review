@@ -53,13 +53,36 @@ consumer repo  .github/workflows/ai-review.yml
   is a starter template copied once at install time, not a runtime source.
 - **A change to `base-ai-review-single.yml` does not reach pilot consumers automatically.**
   The workflow body is duplicated, so it must be hand-ported into `wrapper.yml` and shipped
-  as a lockstep wrapper release — see [Tag pinning](../README.md#tag-pinning). **Seven**
-  drift incidents have been confirmed this way (AT-1800, AT-1955, AT-1837 and AT-1979
-  among them). The seventh — the wrapper's PR-too-large comment wording, diverged from
-  `base-ai-review-prepare.yml` and recorded in AT-1982 comment 85007 — **is closed**: the
-  two `--body "[!] PR too large ..."` lines are now identical once indentation is ignored
-  (re-checked 2026-09-02, wrapper `c900a95` against base `8266040`). None of the seven was
-  caught by an automated check; every one was found by hand while doing something else.
+  as a lockstep wrapper release — see [Tag pinning](../README.md#tag-pinning). **Eight**
+  drift incidents have been confirmed this way (AT-1800, AT-1955, AT-1837, AT-1979, and
+  AT-2120's missing `ROUND_CUTOFF_N`/`ROUND_CUTOFF_ENABLED` — six MINOR releases and seven
+  manual investigations passed before it was noticed; closed by wrapper `82d261d`, v1.7.1 —
+  among them). The seventh — the
+  wrapper's PR-too-large comment wording, diverged from `base-ai-review-prepare.yml` and
+  recorded in AT-1982 comment 85007 — **is closed**: the two `--body "[!] PR too large
+  ..."` lines are now identical once indentation is ignored (re-checked 2026-09-02, wrapper
+  `c900a95` against base `8266040`). All eight were found by hand while doing something
+  else, none by an automated check, at the time each happened. Since AT-2122 an automated
+  check covers part of that gap: `.github/workflows/base-wrapper-drift.yml` in **this**
+  repo checks out wrapper `main` and runs `.github/scripts/check_base_wrapper_drift.py`
+  daily, on every push to base `main`, and on dispatch. It diffs each base review step's
+  `env:` key set against the union of its corresponding wrapper step(s)', and the full
+  `vars.*`-consumed set of base's four `base-ai-review-*.yml` files against wrapper's
+  `wrapper.yml` — exactly the two axes that, applied by hand, caught AT-2120, and the check
+  is regression-tested against the real pre-fix wrapper tree (`7de4d6e`) to prove it does.
+  The step correspondence and every declared exception live in `.github/drift-check/`;
+  each exception carries a mandatory reason, and a base step that sets env keys but has
+  no entry there fails the check. It runs in base rather than in the wrapper because base
+  is where a change originates and both repos are public, so there is no log-exposure
+  asymmetry to route around (the AT-1944 concern does not apply). It is deliberately not
+  a required PR check: the lockstep order is base release → wrapper port → wrapper release,
+  so nothing inside a base PR can make it green — a red run on `main` between a base merge
+  and the wrapper port *is* the signal. It does **not** check `if:`-condition equivalence
+  between base's job-level gating and wrapper's step-level gating: the two architectures
+  differ legitimately often enough (AT-2092's base fix reverted `!cancelled()` to
+  `always()` in one place for reasons that do not transfer from a job to a step) that
+  telling a legitimate difference from real drift on that axis is not solved yet. A drift
+  on that axis would still only be found by hand.
 - Direct-to-base consumers: `spec-interview` and `factory-process-maker` call the upstream
   orchestrator directly rather than through the wrapper, tracking the floating `@v1` tag.
   This is the normal, designed pattern for a public repo, not a workaround: per AT-1210's
@@ -153,7 +176,11 @@ go on reviewing sequentially and report `success`, so the setting looks accepted
 failure is entirely silent. `REVIEW_MODE` is the *only* such variable: grepping
 `vars.[A-Z_]*` out of `wrapper.yml` and differencing it against the README's `vars.*`
 table leaves `REVIEW_MODE` and nothing else unread. Every other variable the README
-documents does work here.
+documents does work here. That README-table difference could not see AT-2120's
+`ROUND_CUTOFF_*` (missing from the table and the wrapper alike); since AT-2122 the
+`vars.*` difference is taken against base's workflow files instead, by the drift check
+described under [Architecture](#architecture-the-wrapper-reimplements-it-does-not-delegate),
+and `REVIEW_MODE` is its one declared `vars.*` exception (`.github/drift-check/exceptions.yml`).
 
 ## Actions allowlist (org setting)
 
