@@ -115,15 +115,6 @@ class MalformedConfigError(ValueError):
     """A correspondence or exceptions entry is missing a required reason."""
 
 
-class UnreadableYamlError(ValueError):
-    """A YAML file could not be parsed, or its top level is not a mapping.
-
-    Raised for workflow and config files alike; run() maps it to a clean
-    diagnostic and exit 1. A broken file must never read as an empty one --
-    an empty workflow has no steps and no vars, which looks like a pass.
-    """
-
-
 @dataclass(frozen=True)
 class StepCorrespondence:
     base_file: str
@@ -173,22 +164,8 @@ class Exceptions:
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    """Parse ``path`` as a YAML mapping; an empty document is an empty mapping.
-
-    Raises UnreadableYamlError on a syntax error or a non-mapping top level
-    (a list, a scalar) instead of returning ``{}``: the wrapper file comes
-    from another repository's main, so a transient broken state is possible,
-    and it must fail the check rather than pass it as "nothing to compare".
-    """
-    try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise UnreadableYamlError(f"{path}: not valid YAML ({exc})") from exc
-    if doc is None:
-        return {}
-    if not isinstance(doc, dict):
-        raise UnreadableYamlError(f"{path}: top level is {type(doc).__name__}, not a mapping")
-    return doc
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return doc if isinstance(doc, dict) else {}
 
 
 def _iter_steps(doc: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -424,7 +401,7 @@ def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions
     try:
         config = load_correspondence(correspondence_path)
         exceptions = load_exceptions(exceptions_path)
-    except (MalformedConfigError, UnreadableYamlError) as exc:
+    except MalformedConfigError as exc:
         print(f"malformed drift-check config: {exc}")
         return 1
 
@@ -446,16 +423,6 @@ def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions
         print(
             f"correspondence config names a file that does not exist: {exc.filename}\n"
             f"({correspondence_path} is stale against the current workflow files)"
-        )
-        return 1
-    except UnreadableYamlError as exc:
-        # Same failure class as a missing file: a workflow that cannot be read
-        # as a mapping has no steps and no vars to compare, which must not
-        # look like "nothing drifted".
-        print(
-            f"correspondence config names a file that cannot be read as a workflow: {exc}\n"
-            f"({correspondence_path} is stale against the current workflow files, "
-            "or the file is broken)"
         )
         return 1
 

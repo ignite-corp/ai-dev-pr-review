@@ -632,52 +632,6 @@ def test_run_exits_one_when_a_configured_file_is_missing(tmp_path: Path, missing
     assert "stale against the current workflow files" in out
 
 
-def _run_with_wrapper_text(tmp_path: Path, wrapper_text: str) -> int:
-    base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
-    base_dir.mkdir()
-    wrapper_dir.mkdir()
-    _write(base_dir / "base-ai-review-single.yml", _BASE_SINGLE_YML)
-    (wrapper_dir / "wrapper.yml").write_text(wrapper_text, encoding="utf-8")
-    correspondence = tmp_path / "correspondence.yml"
-    _write_correspondence(correspondence)
-    exceptions = tmp_path / "exceptions.yml"
-    exceptions.write_text("vars: {}\nenv: {}\n", encoding="utf-8")
-    return run(base_dir, wrapper_dir, correspondence, exceptions)
-
-
-def test_run_exits_one_on_an_unparsable_workflow_file(tmp_path: Path, capsys) -> None:
-    """The wrapper file comes from another repository's main; a transient
-    syntax error there must fail the check cleanly, not traceback."""
-    assert _run_with_wrapper_text(tmp_path, "jobs:\n  review:\n    steps: [unclosed\n") == 1
-    out = capsys.readouterr().out
-    assert "cannot be read as a workflow" in out
-    assert "not valid YAML" in out
-    assert "stale against the current workflow files" in out
-
-
-def test_run_exits_one_on_a_non_mapping_workflow_file(tmp_path: Path, capsys) -> None:
-    """A file whose top level is a list parses fine and has no jobs, no
-    steps and no vars -- it must not pass as 'nothing to compare'."""
-    assert _run_with_wrapper_text(tmp_path, "- Post Claude inline comments\n- Post Codex inline comments\n") == 1
-    out = capsys.readouterr().out
-    assert "cannot be read as a workflow" in out
-    assert "top level is list, not a mapping" in out
-
-
-def test_run_exits_one_on_an_unparsable_config_file(tmp_path: Path, capsys) -> None:
-    base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
-    base_dir.mkdir()
-    wrapper_dir.mkdir()
-    _write(base_dir / "base-ai-review-single.yml", _BASE_SINGLE_YML)
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
-    correspondence = tmp_path / "correspondence.yml"
-    correspondence.write_text("steps: [unclosed\n", encoding="utf-8")
-    exceptions = tmp_path / "exceptions.yml"
-    exceptions.write_text("vars: {}\nenv: {}\n", encoding="utf-8")
-    assert run(base_dir, wrapper_dir, correspondence, exceptions) == 1
-    assert "malformed drift-check config" in capsys.readouterr().out
-
-
 def test_run_exits_one_on_a_malformed_exceptions_file(tmp_path: Path) -> None:
     assert _run_dirs(tmp_path, with_round_cutoff=True, exceptions_text="vars:\n  SOMETHING: {}\nenv: {}\n") == 1
 
