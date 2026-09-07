@@ -44,9 +44,13 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
 - `vars.CLAUDE_MODEL` resolves in the **CALLER** repo and its org
   (reusable-workflow context), NOT the base repo.
 - **ignite-corp** sets one org var (visibility all) that covers all its
-  consumers. **ignite-pilot-org has no org-level vars** (plan restriction) ->
-  each wrapper consumer needs its own repo-level `CLAUDE_MODEL`, else it falls
-  back to the composite default (`claude-sonnet-4-6`).
+  consumers. **ignite-pilot-org has no org-level `CLAUDE_MODEL` or
+  `CODEX_MODEL`** -> each wrapper consumer needs its own repo-level
+  `CLAUDE_MODEL` AND `CODEX_MODEL`, else it falls through to the workflow's
+  hard-coded default.
+  The defaults, the onboarding commands, and the AT-2202 cost incident are
+  under "Op hazard - pilot consumer onboarding must set CODEX_MODEL and
+  CLAUDE_MODEL repo vars" below.
 - **Avoid `gemini-2.5-flash-lite` for review** - it confabulates (fabricated 59
   "not English" flags on English text). Use `gemini-2.5-pro`.
 
@@ -224,3 +228,92 @@ Correct sequence:
 Recovery if it happens: restore the ref at `headRefOid`
 (`gh api --method POST repos/O/R/git/refs -f ref=refs/heads/<b> -f sha=$HEAD`)
 then `gh pr reopen N` - reviews/approvals on that SHA are preserved.
+
+## Op hazard - probe repositories are one-way
+
+The session tokens have no `delete_repo` scope, so `gh repo delete` returns
+403. A repository a session creates, no session can remove: creation is
+irreversible from where it was done, and leftovers accumulate in
+`ignite-pilot-org` not because nobody would clean them but because nobody with
+a token can. Two `fsb-*` scratch repos from the 2026-08-24 onboarding round
+(AT-2113) are still there for that reason, and a `*-repro-*` probe repo for an
+AT-2125 measurement hit the same wall on 2026-09-02. (AT-2127.)
+
+**Convention: never create a repository for a probe.** Probe against things
+that already have an exit path:
+
+- an existing repository - a throwaway branch on an existing scratch repo, or
+  a branch plus PR that can be closed and deleted afterwards (the AT-2092
+  observation finished at branch/PR level);
+- a manual dispatch instead of a synthetic event - the thin trigger in the
+  consumer (`ai-review.yml`; `self-review.yml` here) owns `workflow_dispatch`
+  and forwards `pr_number` to the reusable orchestrator or `wrapper.yml`, which
+  are `workflow_call` only (the wrapper also takes `upstream_ref`), so a review
+  can be run against an existing PR at a chosen ref without creating anything
+  (README, "Input contract reference");
+- the runtime dry-run under "GHA expression pitfall" above: set a gate
+  variable briefly, dispatch a real review, read the resolved inputs from the
+  job log, delete the variable.
+
+**The general lesson: verify the exit path BEFORE the action whenever the
+safety argument rests on it.** The approved plan for the AT-2125 probe read
+"the throwaway keys can stay throwaway; the repo is deleted at the end". The
+second clause was false, and the whole safety argument stood on it. Only one
+repo was stranded, and none holding a live provider key set, because the
+implementer ran the delete probe before minting any credential - tested the
+plan's exit condition first and found it closed. Create-then-delete would have
+left a repository with a key set in it permanently. The order decided the
+outcome.
+
+Options not taken (AT-2127):
+
+- Acquire `delete_repo` scope - rejected: it deletes any repository in the
+  org, an org-wide destructive scope on a shared token for a cleanup
+  convenience.
+- A periodic cleanup pass over `*-repro-*` / `*-smoke-*` names - not adopted:
+  with the convention above nothing new accumulates, and deleting anything
+  would need the scope above anyway.
+
+The two existing `fsb-*` repos are not deleted on name or age alone. They
+belong to another operator's onboarding work; a human confirms they are dead
+before anything is removed.
+
+## Op hazard - pilot consumer onboarding must set CODEX_MODEL and CLAUDE_MODEL repo vars
+
+`ignite-pilot-org` has no org-level `CODEX_MODEL` or `CLAUDE_MODEL`: its org
+variable list holds only `PR_SIZE_LIMIT` and `REVIEW_MODE` (measured
+2026-09-07; what the org lacks outright is org-level secrets, not variables).
+Reading that list needs `admin:org`, so a 403 there is not evidence a var is
+absent. A pilot consumer missing a model variable therefore inherits nothing -
+it falls through to the hard-coded default in the workflow:
+`vars.CODEX_MODEL || 'gpt-5.6-luna'` and `vars.CLAUDE_MODEL || 'claude-sonnet-4-6'`
+in both base and wrapper v1.8.0 (the Claude value is also the `model` input
+default of the `claude-review` composite). The fallthrough is silent - `vars.X || default` logs nothing - and
+the default is whatever the workflow author pinned at release time, not
+necessarily the model the fleet is meant to run on.
+
+Incident (AT-2202, 2026-09-07): five pilot consumers had no `CODEX_MODEL` set
+and fell through to the default of the time, `gpt-5.5`, roughly 20x the OpenAI
+spend per run of the intended model.
+
+Onboarding step, per repo, before the first review runs:
+
+```bash
+gh variable set CODEX_MODEL --repo ignite-pilot-org/<repo> --body <model>
+gh variable set CLAUDE_MODEL --repo ignite-pilot-org/<repo> --body <model>
+```
+
+Verify:
+
+```bash
+gh api --paginate --slurp "repos/ignite-pilot-org/<repo>/actions/variables" \
+  | jq '{total: .[0].total_count, names: [.[].variables[].name]}'
+```
+
+`names` must contain both variables, and its length must equal `total`.
+`--paginate` matters: the endpoint pages at 10 by default and caps `per_page`
+at 30, so a plain call on a repo with more variables than that hides a missing
+one behind a truncated list. `--slurp` folds the pages into one array so the
+count comes from the same response as the names.
+Where `vars.*` resolve (caller repo and its org, never the base repo) is under
+"Model selection" above.
