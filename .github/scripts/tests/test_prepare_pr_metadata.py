@@ -189,9 +189,18 @@ def _dispatch_context(pr_number: str = "35") -> dict[str, str]:
         "github.head_ref": "",
         "github.event.pull_request.user.login": "",
         "github.event.pull_request.head.sha": "",
+        "github.event.pull_request.merged": "",
+        "github.event.pull_request.merge_commit_sha": "",
+        "github.event.pull_request.commits": "",
         "inputs.pr_number || github.event.pull_request.number": pr_number,
         "github.repository": "ignite-corp/ai-dev-pr-review",
     }
+
+
+# GitHub's test-merge commit: present on every open PR's payload and on the
+# REST object, and NOT anything that landed on the base branch.
+_TEST_MERGE_SHA = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
+_MERGE_SHA = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
 
 
 def _pull_request_context(
@@ -200,6 +209,8 @@ def _pull_request_context(
     head_ref: str = "dependabot/pip/urllib3-2.2.2",
     author: str = "dependabot[bot]",
     head_sha: str = "4df6c3199ff9b1d8f0f7f2a05e6c8b1d3e5a7c90",
+    merged: str = "false",
+    merge_commit_sha: str = _TEST_MERGE_SHA,
 ) -> dict[str, str]:
     return {
         "github.token": "gh-token",
@@ -207,6 +218,9 @@ def _pull_request_context(
         "github.head_ref": head_ref,
         "github.event.pull_request.user.login": author,
         "github.event.pull_request.head.sha": head_sha,
+        "github.event.pull_request.merged": merged,
+        "github.event.pull_request.merge_commit_sha": merge_commit_sha,
+        "github.event.pull_request.commits": "2",
         "inputs.pr_number || github.event.pull_request.number": "35",
         "github.repository": "ignite-corp/ai-dev-pr-review",
     }
@@ -275,7 +289,59 @@ class TestDispatchPath:
             "head_sha": "",
             "head_ref": "",
             "pr_author": "",
+            "pr_merged": "false",
+            "merge_commit_sha": "",
+            "pr_commits": "",
         }
+
+
+@requires_jq
+class TestMergeState:
+    """The diff step learns that a PR is merged, and only then which commit landed (AT-2201)."""
+
+    def test_dispatch_on_a_merged_pr_exports_the_merge_commit(self, tmp_path: Path) -> None:
+        rest = {**_DEPENDABOT_REST, "merged": True, "merge_commit_sha": _MERGE_SHA, "commits": 3}
+        outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
+        assert outputs["pr_merged"] == "true"
+        assert outputs["merge_commit_sha"] == _MERGE_SHA
+        # The commit count is what tells a one-commit squash or rebase, whose
+        # landed commit is the whole PR, from a longer one that is not.
+        assert outputs["pr_commits"] == "3"
+
+    def test_dispatch_on_an_open_pr_withholds_the_test_merge_commit(
+        self, tmp_path: Path
+    ) -> None:
+        # An open PR's merge_commit_sha is GitHub's test merge. Diffing it
+        # against its parent would review a commit that never landed.
+        rest = {**_DEPENDABOT_REST, "merged": False, "merge_commit_sha": _TEST_MERGE_SHA}
+        outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
+        assert outputs["pr_merged"] == "false"
+        assert outputs["merge_commit_sha"] == ""
+
+    def test_dispatch_never_yields_the_literal_null(self, tmp_path: Path) -> None:
+        rest = {**_DEPENDABOT_REST, "merged": True, "merge_commit_sha": None}
+        outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
+        assert outputs["pr_merged"] == "true"
+        assert outputs["merge_commit_sha"] == ""
+
+    def test_pull_request_event_on_an_open_pr_withholds_the_test_merge_commit(
+        self, tmp_path: Path
+    ) -> None:
+        outputs, calls = _run_refs_step(tmp_path, context=_pull_request_context())
+        assert outputs["pr_merged"] == "false"
+        assert outputs["merge_commit_sha"] == ""
+        assert calls == []
+
+    def test_pull_request_event_on_a_merged_pr_exports_the_merge_commit(
+        self, tmp_path: Path
+    ) -> None:
+        # A consumer that triggers on `closed` reaches this path merged.
+        context = _pull_request_context(merged="true", merge_commit_sha=_MERGE_SHA)
+        outputs, calls = _run_refs_step(tmp_path, context=context)
+        assert outputs["pr_merged"] == "true"
+        assert outputs["merge_commit_sha"] == _MERGE_SHA
+        assert outputs["pr_commits"] == "2"
+        assert calls == []
 
 
 @requires_jq
