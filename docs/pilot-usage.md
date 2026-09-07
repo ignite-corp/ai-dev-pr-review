@@ -189,6 +189,33 @@ documents does work here. That README-table difference could not see AT-2120's
 described under [Architecture](#architecture-the-wrapper-reimplements-it-does-not-delegate),
 and `REVIEW_MODE` is its one declared `vars.*` exception (`.github/drift-check/exceptions.yml`).
 
+### Head-staleness guard on the wrapper path (AT-2117)
+
+Base's `aggregate_reviews.py` refuses to post when the PR head has moved since the run
+started: `_head_is_stale()` compares the `HEAD_SHA` env it was handed against the PR's
+current head. Since wrapper PR #36 the wrapper passes `HEAD_SHA` to its inline
+`Aggregate and post verdict` step, so the guard is live on this path too. A run that
+finishes after a newer commit was pushed exits 1, logs
+
+```
+::notice title=Aggregate::the head this run reviewed has been superseded -- no verdict posted
+```
+
+and posts nothing; the run reviewing the current head posts the verdict.
+
+This sits on top of the wrapper's own `!cancelled()` gate on that step (AT-2092), which
+stays. The two cover different runs: a cancelled run skips or cancels the step and emits
+no notice; the guard covers the run that was *not* cancelled but was superseded while it
+ran. When reading a run log, the notice line above is the unambiguous discriminator --
+only the guard emits it. On the size-skip path `HEAD_SHA` is empty because the refs step
+never ran, and the guard treats an empty value as not stale, matching base.
+
+AT-2117 weighed two other options and rejected both. Reverting `!cancelled()` to
+`always()` on the aggregate step would reopen AT-2102's basis (the aggregate step is the
+sole consumer of the three `!cancelled()`-narrowed steps). Leaving `HEAD_SHA` unset would
+keep the base guard as dead code on this path, and the `HEAD_SHA` entry in
+`.github/drift-check/exceptions.yml` that tracked that gap is gone with the port.
+
 ## Actions allowlist (org setting)
 
 The org/repo Actions policy must permit the wrapper + orchestrator reusable workflows and

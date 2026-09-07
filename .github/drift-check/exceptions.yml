@@ -43,9 +43,3 @@ env:
         reason: >-
           By design. Only used inside the prepare-failure verdict body that
           PREPARE_RESULT selects; see that entry.
-      HEAD_SHA:
-        reason: >-
-          Open drift, tracked in AT-2117: the wrapper does not pass HEAD_SHA,
-          so base's head-staleness guard (_head_is_stale) is inert on the
-          wrapper path and !cancelled() stands in for it. AT-2117 decides
-          whether to port, keep, or layer both; remove this entry when it does.
