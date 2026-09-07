@@ -40,7 +40,11 @@ Three layers:
    The check must fail on the pre pair naming exactly the AT-2120 keys, on
    both axes, and pass on the post pair. The secondary case the ticket names,
    AT-2117 (``HEAD_SHA`` not passed to aggregation), is present in both
-   trees and is proven the same way with its exception lifted.
+   vendored trees: they predate the wrapper port (wrapper PR #36), and the
+   live exceptions.yml stopped excusing it when that port landed. The
+   AT-2120 assertions therefore re-declare the HEAD_SHA exception locally
+   (``vendored_exceptions``), and the AT-2117 assertion proves the check
+   reports it against both trees with the live file as it is.
 
    Both repositories are public, so ``git show <sha>:.github/workflows/<file>``
    in either confirms every artefact. Because the regression uses the *live*
@@ -794,6 +798,40 @@ def live_exceptions() -> Exceptions:
     return load_exceptions(LIVE_EXCEPTIONS)
 
 
+AGGREGATE_STEP = ("base-ai-review-aggregate.yml", "Aggregate and post verdict")
+VENDORED_HEAD_SHA_REASON = (
+    "Test-only. The vendored wrapper snapshot (82d261d) predates the AT-2117 "
+    "port, so HEAD_SHA is re-excused here to keep the AT-2120 proof about "
+    "AT-2120; the live exceptions.yml no longer carries this entry."
+)
+
+
+@pytest.fixture(scope="module")
+def vendored_exceptions(live_exceptions: Exceptions) -> Exceptions:
+    """The live exceptions plus the HEAD_SHA entry the vendored wrapper needs."""
+    return Exceptions(
+        vars=live_exceptions.vars,
+        env={
+            **live_exceptions.env,
+            AGGREGATE_STEP: {**live_exceptions.env.get(AGGREGATE_STEP, {}), "HEAD_SHA": VENDORED_HEAD_SHA_REASON},
+        },
+    )
+
+
+@pytest.fixture(scope="module")
+def vendored_exceptions_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """``vendored_exceptions`` as a file, for the end-to-end ``run`` proof."""
+    import yaml
+
+    data = _load_yaml(LIVE_EXCEPTIONS)
+    data.setdefault("env", {}).setdefault(AGGREGATE_STEP[0], {}).setdefault(AGGREGATE_STEP[1], {})["HEAD_SHA"] = {
+        "reason": VENDORED_HEAD_SHA_REASON
+    }
+    path = tmp_path_factory.mktemp("exceptions") / "exceptions.yml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
 def test_regression_fixture_is_the_at_2120_fix_commit() -> None:
     """The patch must be the fix itself, not a hand-written lookalike."""
     header = AT_2120_FIX_PATCH.read_text(encoding="utf-8").splitlines()[:5]
@@ -804,10 +842,10 @@ def test_regression_fixture_is_the_at_2120_fix_commit() -> None:
 
 
 def test_regression_at_2120_pre_fix_tree_fails_on_exactly_the_incident(
-    base_tree: Path, wrapper_pre: Path, live_config, live_exceptions
+    base_tree: Path, wrapper_pre: Path, live_config, vendored_exceptions
 ) -> None:
-    env_findings, _ = check_env_keys(base_tree, wrapper_pre, live_config, live_exceptions)
-    vars_findings, _, _ = check_vars_consumed(base_tree, wrapper_pre, live_config, live_exceptions)
+    env_findings, _ = check_env_keys(base_tree, wrapper_pre, live_config, vendored_exceptions)
+    vars_findings, _, _ = check_vars_consumed(base_tree, wrapper_pre, live_config, vendored_exceptions)
     assert env_findings == [
         "env drift: base step base-ai-review-single.yml:'Post inline comments' sets "
         f"{key!r}, which none of wrapper's ['Post Claude inline comments', "
@@ -821,36 +859,33 @@ def test_regression_at_2120_pre_fix_tree_fails_on_exactly_the_incident(
     ]
 
 
-def test_regression_at_2120_post_fix_tree_passes(base_tree: Path, live_config, live_exceptions) -> None:
-    env_findings, _ = check_env_keys(base_tree, WRAPPER_POST, live_config, live_exceptions)
-    vars_findings, _, _ = check_vars_consumed(base_tree, WRAPPER_POST, live_config, live_exceptions)
+def test_regression_at_2120_post_fix_tree_passes(base_tree: Path, live_config, vendored_exceptions) -> None:
+    env_findings, _ = check_env_keys(base_tree, WRAPPER_POST, live_config, vendored_exceptions)
+    vars_findings, _, _ = check_vars_consumed(base_tree, WRAPPER_POST, live_config, vendored_exceptions)
     assert env_findings == []
     assert vars_findings == []
 
 
-def test_regression_at_2120_end_to_end_exit_codes(base_tree: Path, wrapper_pre: Path) -> None:
-    assert run(base_tree, wrapper_pre, LIVE_CORRESPONDENCE, LIVE_EXCEPTIONS) == 1
-    assert run(base_tree, WRAPPER_POST, LIVE_CORRESPONDENCE, LIVE_EXCEPTIONS) == 0
+def test_regression_at_2120_end_to_end_exit_codes(
+    base_tree: Path, wrapper_pre: Path, vendored_exceptions_file: Path
+) -> None:
+    assert run(base_tree, wrapper_pre, LIVE_CORRESPONDENCE, vendored_exceptions_file) == 1
+    assert run(base_tree, WRAPPER_POST, LIVE_CORRESPONDENCE, vendored_exceptions_file) == 0
 
 
 @pytest.mark.parametrize("tree", ["pre", "post"])
-def test_regression_at_2117_head_sha_is_caught_once_its_exception_is_lifted(
+def test_regression_at_2117_head_sha_is_caught_against_the_vendored_wrapper(
     tree: str, base_tree: Path, wrapper_pre: Path, live_config, live_exceptions
 ) -> None:
     """The secondary case AT-2122 names: HEAD_SHA not passed to aggregation.
-    It is open in both trees and only silent because exceptions.yml declares
-    it as tracked drift; without that entry the check reports it."""
-    aggregate = ("base-ai-review-aggregate.yml", "Aggregate and post verdict")
-    assert "HEAD_SHA" in live_exceptions.env[aggregate], "exceptions.yml no longer lists HEAD_SHA; AT-2117 closed?"
-    lifted = Exceptions(
-        vars=live_exceptions.vars,
-        env={
-            **live_exceptions.env,
-            aggregate: {k: v for k, v in live_exceptions.env[aggregate].items() if k != "HEAD_SHA"},
-        },
+    Both vendored trees predate the wrapper port (wrapper PR #36), and the
+    live exceptions.yml stopped excusing it with that port, so the check
+    must report it against either tree as the file stands."""
+    assert "HEAD_SHA" not in live_exceptions.env.get(AGGREGATE_STEP, {}), (
+        "exceptions.yml lists HEAD_SHA again; the AT-2117 port is in the wrapper, so this is a regression"
     )
     wrapper_dir = wrapper_pre if tree == "pre" else WRAPPER_POST
-    findings, _ = check_env_keys(base_tree, wrapper_dir, live_config, lifted)
+    findings, _ = check_env_keys(base_tree, wrapper_dir, live_config, live_exceptions)
     expected = (
         "env drift: base step base-ai-review-aggregate.yml:'Aggregate and post verdict' sets "
         "'HEAD_SHA', which none of wrapper's ['Aggregate and post verdict'] (wrapper.yml) set"
