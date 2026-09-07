@@ -111,11 +111,39 @@ jobs:
       # Needed by the claude job's usage-limit auth-switch post-step (AT-1606).
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
+  # Sequential gating (AT-2125). Each downstream reviewer job:
+  #   - `!cancelled()` rather than the implicit success(): a reviewer that
+  #     FAILS must not take the reviewers after it down with it, but a
+  #     cancelled run must not start new reviewer jobs either -- `always()`
+  #     would (the aggregate comment below measured that on run
+  #     33615176056). The `${{ }}` wrapper is required: a bare leading `!`
+  #     is a YAML tag indicator. AT-2092 reverted `!cancelled()` on the
+  #     *aggregate* job because a skipped aggregate reports no required
+  #     context; a skipped reviewer job reports nothing anyone requires, so
+  #     that reasoning does not transfer here.
+  #   - `(result == 'failure' || outputs.early_exit != 'true')` per upstream
+  #     reviewer: a job that failed is tolerated (its outputs are empty
+  #     anyway); a job that finished with early_exit=true short-circuits the
+  #     chain, which is the one legitimate reason to skip. The failure
+  #     clause was originally written for codex only (in review-gemini-s);
+  #     the wrapper broke both directions in AT-2114, and this is base
+  #     following the wrapper's shape (docs/pilot-usage.md, Architecture).
+  #
+  # What this tolerance does NOT cover, so nobody reads it as protection
+  # against a credential outage: a reviewer whose CLI/action dies on a
+  # missing or bad credential takes the soft-fail path inside
+  # base-ai-review-single.yml (the review step is continue-on-error) and
+  # the job reports `success` with no verdict artifact -- run 33650133793
+  # measured `review-claude-s: success`, no artifact, with no credentials.
+  # `result == 'failure'` never fires in that family; the chain continues
+  # because the job succeeded, and the outage surfaces only in the
+  # aggregate's per-reviewer result, not in this guard.
   review-codex-s:
     if: >-
+      ${{ !cancelled() &&
       vars.REVIEW_MODE == 'sequential' &&
       needs.prepare.outputs.skip == 'false' &&
-      needs.review-claude-s.outputs.early_exit != 'true'
+      (needs.review-claude-s.result == 'failure' || needs.review-claude-s.outputs.early_exit != 'true') }}
     needs: [prepare, review-claude-s]
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
@@ -128,14 +156,16 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
+  # Same shape as review-codex-s above, one clause per upstream reviewer.
+  # Until AT-2125 the claude clause was `result == 'success'`, so a failed
+  # claude job skipped gemini while a failed codex job did not.
   review-gemini-s:
     if: >-
-      always() &&
+      ${{ !cancelled() &&
       vars.REVIEW_MODE == 'sequential' &&
       needs.prepare.outputs.skip == 'false' &&
-      needs.review-claude-s.result == 'success' &&
-      needs.review-claude-s.outputs.early_exit != 'true' &&
-      (needs.review-codex-s.result == 'failure' || needs.review-codex-s.outputs.early_exit != 'true')
+      (needs.review-claude-s.result == 'failure' || needs.review-claude-s.outputs.early_exit != 'true') &&
+      (needs.review-codex-s.result == 'failure' || needs.review-codex-s.outputs.early_exit != 'true') }}
     needs: [prepare, review-claude-s, review-codex-s]
     uses: ./.github/workflows/base-ai-review-single.yml
     with:

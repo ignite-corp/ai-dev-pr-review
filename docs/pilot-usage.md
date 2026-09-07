@@ -82,7 +82,14 @@ consumer repo  .github/workflows/ai-review.yml
   differ legitimately often enough (AT-2092's base fix reverted `!cancelled()` to
   `always()` in one place for reasons that do not transfer from a job to a step) that
   telling a legitimate difference from real drift on that axis is not solved yet. A drift
-  on that axis would still only be found by hand.
+  on that axis would still only be found by hand. One `if:`-axis alignment already has a
+  recorded direction, and it is the reverse of the usual one: in sequential mode a *failed*
+  claude reviewer must not skip the reviewers after it (only `early_exit` may). The wrapper
+  fixed that first (AT-2114, wrapper PR #28) and base followed in AT-2125
+  (`review-codex-s` / `review-gemini-s` in `base-ai-review-orchestrator.yml`). A future
+  alignment pass on that gating moves base toward the wrapper's shape, not the wrapper
+  toward base's — copying base's pre-AT-2125 `result == 'success'` clause into the wrapper
+  would reintroduce the defect.
 - Direct-to-base consumers: `spec-interview` and `factory-process-maker` call the upstream
   orchestrator directly rather than through the wrapper, tracking the floating `@v1` tag.
   This is the normal, designed pattern for a public repo, not a workaround: per AT-1210's
