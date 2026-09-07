@@ -613,6 +613,12 @@ jobs:
           TIMELINE_ITEM_COUNT=10
 
           any_flag=0
+          # Consumers whose reviewer-error streak check (step 4) did not run
+          # because the verdict fetch or the jq streak computation failed.
+          # Such a consumer is "not evaluated this run", never OK: until
+          # AT-2164 both failures were masked as streak 0 and a dead
+          # credential read as healthy in exactly the week the check broke.
+          scan_errors=0
 
           check_org_secret_grants_repo() {
             local scope="$1" # actions | dependabot
@@ -669,6 +675,7 @@ jobs:
             slug="ignite-corp/${name}"
             echo "::group::Consumer ${i}/${total}"
             consumer_flags=0
+            consumer_scan_error=0
 
             # Resolve the review-workflow filename for this consumer.
             # Most consumers use review-ai.yml; some still use ai-review.yml.
@@ -831,7 +838,7 @@ jobs:
             # fallback wording so the check also works retroactively.
             owner="${slug%%/*}"
             repo_name="${slug#*/}"
-            prs_json=$(gh api graphql \
+            if ! prs_json=$(gh api graphql \
               -f query='query($owner: String!, $name: String!, $count: Int!, $timelineCount: Int!) {
                 repository(owner: $owner, name: $name) {
                   pullRequests(first: $count, orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -843,48 +850,74 @@ jobs:
                 }
               }' \
               -f owner="$owner" -f name="$repo_name" -F count="$RECENT_PR_COUNT" \
-              -F timelineCount="$TIMELINE_ITEM_COUNT" 2>/dev/null \
-              || echo '{}')
-            for reviewer in claude codex gemini; do
-              # Per PR: newest aggregate verdict body (review or comment carrying
-              # the multi-llm marker); PRs without one are skipped, not counted.
-              # Streak = leading run of PRs whose section for this reviewer
-              # matches an error marker, newest first.
-              streak=$(jq -r --arg r "$reviewer" '
-                def section($body):
-                  ($body | split("\n### ")
-                   | map(select(ascii_downcase | startswith($r)))
-                   | first) // "";
-                def is_error($body):
-                  # Only the section header + summary line carry error markers;
-                  # issue bullets may legitimately quote error-like phrases.
-                  section($body)
-                  | (split("\n") | .[:2] | join("\n"))
-                  | test("cli_invocation_failed|output[ _]unparseable|review failed:|unavailable \\(quota/auth error\\)"; "i");
-                [ .data.repository.pullRequests.nodes[]?
-                  | [ (.reviews.nodes[]?, .comments.nodes[]?)
-                      | select(.body | contains("<!-- multi-llm-review -->")) ]
-                  | sort_by(.submittedAt // .createdAt)
-                  | last
-                  | select(. != null)
-                  | .body ]
-                | map(if is_error(.) then 1 else 0 end)
-                | (index(0) // length)
-              ' <<<"$prs_json" 2>/dev/null || echo 0)
-              if [ "${streak:-0}" -ge "$CONSECUTIVE_ERROR_THRESHOLD" ]; then
-                echo "  [FLAG] entry ${i}/${total}: reviewer ${reviewer} error verdict in ${streak} consecutive recent PRs"
-                consumer_flags=$((consumer_flags + 1))
-              fi
-            done
+              -F timelineCount="$TIMELINE_ITEM_COUNT" 2>/dev/null); then
+              # Same shape as the pilot scan above: a fetch failure is a
+              # check NOT performed, not a healthy streak. Index only, never
+              # the repo name (public logs).
+              echo "  [WARN] entry ${i}/${total}: could not fetch recent PR data -- not evaluated this run"
+              consumer_scan_error=1
+            elif ! jq -e '.data.repository.pullRequests.nodes | type == "array"' <<<"$prs_json" >/dev/null 2>&1; then
+              # A response that parsed but does not carry the PR list (`{}`,
+              # a partial payload) would otherwise fall through the optional
+              # `[]?` traversal below as an empty list and read as streak 0
+              # for every reviewer. An empty list is a valid shape: a repo
+              # with no PRs has nothing to evaluate, which is not a failure.
+              echo "  [WARN] entry ${i}/${total}: recent PR data has an unexpected shape -- not evaluated this run"
+              consumer_scan_error=1
+            else
+              # A jq failure (malformed payload, jq itself broken) is likewise
+              # a check NOT performed. One increment per consumer, not per
+              # reviewer, so scan_errors keeps meaning "consumers not evaluated".
+              for reviewer in claude codex gemini; do
+                # Per PR: newest aggregate verdict body (review or comment carrying
+                # the multi-llm marker); PRs without one are skipped, not counted.
+                # Streak = leading run of PRs whose section for this reviewer
+                # matches an error marker, newest first.
+                if ! streak=$(jq -r --arg r "$reviewer" '
+                  def section($body):
+                    ($body | split("\n### ")
+                     | map(select(ascii_downcase | startswith($r)))
+                     | first) // "";
+                  def is_error($body):
+                    # Only the section header + summary line carry error markers;
+                    # issue bullets may legitimately quote error-like phrases.
+                    section($body)
+                    | (split("\n") | .[:2] | join("\n"))
+                    | test("cli_invocation_failed|output[ _]unparseable|review failed:|unavailable \\(quota/auth error\\)"; "i");
+                  [ .data.repository.pullRequests.nodes[]?
+                    | [ (.reviews.nodes[]?, .comments.nodes[]?)
+                        | select(.body | contains("<!-- multi-llm-review -->")) ]
+                    | sort_by(.submittedAt // .createdAt)
+                    | last
+                    | select(. != null)
+                    | .body ]
+                  | map(if is_error(.) then 1 else 0 end)
+                  | (index(0) // length)
+                ' <<<"$prs_json" 2>/dev/null) || ! [[ "$streak" =~ ^[0-9]+$ ]]; then
+                  echo "  [WARN] entry ${i}/${total}: streak check for reviewer ${reviewer} failed (jq error) -- not evaluated this run"
+                  consumer_scan_error=1
+                  break
+                fi
+                if [ "$streak" -ge "$CONSECUTIVE_ERROR_THRESHOLD" ]; then
+                  echo "  [FLAG] entry ${i}/${total}: reviewer ${reviewer} error verdict in ${streak} consecutive recent PRs"
+                  consumer_flags=$((consumer_flags + 1))
+                fi
+              done
+            fi
 
             # 5. Recent Dependabot PRs (informational, non-failing, count only)
             dependabot_count=$(gh pr list --repo "$slug" --author "app/dependabot" --state all --limit 3 \
               --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
             echo "  dependabot PRs (recent): ${dependabot_count}"
 
+            if [ "$consumer_scan_error" -ne 0 ]; then
+              scan_errors=$((scan_errors + 1))
+            fi
             if [ "$consumer_flags" -gt 0 ]; then
               echo "Consumer ${i}/${total}: ${consumer_flags} flag(s)"
               any_flag=1
+            elif [ "$consumer_scan_error" -ne 0 ]; then
+              echo "Consumer ${i}/${total}: not evaluated (reviewer-error streak check did not run)"
             else
               echo "Consumer ${i}/${total}: OK"
             fi
@@ -898,6 +931,14 @@ jobs:
           echo "- verify_action_shas.py UnicodeDecodeError until floating tag passes PR #17 fix: informational"
           echo "- Dependabot org-level secrets: not introspectable via GitHub App (platform limitation); repo-level only checked"
           echo "::endgroup::"
+
+          # Not evaluated is neither OK nor a flag: it does not fail the run
+          # (same as scan_errors in the pilot scan, which blocks all_ok but
+          # never flags), but it must be visible so a green run cannot be
+          # read as "every consumer checked".
+          if [ "$scan_errors" -gt 0 ]; then
+            echo "::notice::recovery not confirmed -- ${scan_errors} consumer(s) could not be fetched or evaluated"
+          fi
 
           if [ "$any_flag" -ne 0 ]; then
             echo "::error::One or more consumers flagged"
