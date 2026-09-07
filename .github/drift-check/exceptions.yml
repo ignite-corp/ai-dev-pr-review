@@ -37,8 +37,10 @@ env:
           By design. Base's aggregate is a separate job that cannot be gated on
           prepare (its name is the required status context, AT-2087), so it
           receives prepare's result and explains a failure itself. In the
-          wrapper a failing prepare step fails the single job before this step
-          runs, with the failing step named in the run.
+          wrapper a failing prepare-phase step still lets the
+          !cancelled()-gated aggregate step run; it posts the all-failed
+          verdict and exits 1, and the run names the failing step, so
+          PREPARE_RESULT has nothing to add.
       RUN_URL:
         reason: >-
           By design. Only used inside the prepare-failure verdict body that
