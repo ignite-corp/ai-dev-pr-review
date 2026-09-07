@@ -439,7 +439,7 @@ jobs:
         timeout-minutes: 10
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CODEX_MODEL: ${{ vars.CODEX_MODEL || 'gpt-5.5' }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || 'gpt-5.6-luna' }}
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
         run: |
