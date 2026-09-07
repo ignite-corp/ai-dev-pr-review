@@ -606,6 +606,9 @@ def format_prepare_failure_summary(result: str, run_url: str) -> str:
         " not match the commit the diff is about. The log names the two SHAs.",
         "3. **Checkout, GitHub API, or runner failure.** Usually transient --"
         " re-run the workflow.",
+        "4. **The diff is empty.** The PR changes nothing against its base,"
+        " or a merged PR's changes could not be reconstructed from its merge"
+        " commit. The log names the diff strategy that came up empty.",
     ]
     lines = [
         REVIEW_MARKER,
