@@ -233,7 +233,7 @@ These tune behavior without code changes. Set them under repository or organizat
 | `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP` | `0.5` | Dependabot-only. |
 | `MAJOR_CONSENSUS_MIN` | `2` | Number of reviewers required for consensus to trigger `request_changes` on a major issue. |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model passed to `anthropics/claude-code-action` via `claude_args --model`. |
-| `CODEX_MODEL` | `gpt-5.5` | Model passed to `codex exec --model`. |
+| `CODEX_MODEL` | `gpt-5.6-luna` | Model passed to `codex exec --model`. |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Model passed to the `google-genai` client. |
 | `BOT_LOGIN` | `github-actions[bot]` | Author login used for minimizing prior bot comments and dismissing stale reviews. |
 | `JACCARD_THRESHOLD` | `0.6` | Token-set Jaccard similarity threshold for dedup. Lower values dedup more aggressively (more strings collapse to same issue), higher values are stricter. Tune `0.5`-`0.8` for behavior trade-off. |

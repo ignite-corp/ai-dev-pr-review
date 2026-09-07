@@ -222,7 +222,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP` | `0.5` | Dependabot 전용. |
 | `MAJOR_CONSENSUS_MIN` | `2` | major 이슈에 대해 `request_changes`를 유발하는 합의에 필요한 리뷰어 수. |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | `claude_args --model`을 통해 `anthropics/claude-code-action`에 전달되는 모델. |
-| `CODEX_MODEL` | `gpt-5.5` | `codex exec --model`에 전달되는 모델. |
+| `CODEX_MODEL` | `gpt-5.6-luna` | `codex exec --model`에 전달되는 모델. |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | `google-genai` 클라이언트에 전달되는 모델. |
 | `BOT_LOGIN` | `github-actions[bot]` | 이전 봇 코멘트 최소화 및 오래된 리뷰 해제에 사용되는 작성자 로그인. |
 | `JACCARD_THRESHOLD` | `0.6` | 중복 제거용 토큰셋 Jaccard 유사도 임계값. 낮을수록 더 공격적으로 중복 제거(더 많은 문자열이 같은 이슈로 합쳐짐), 높을수록 엄격. 동작 트레이드오프는 `0.5`-`0.8`로 조정. |
