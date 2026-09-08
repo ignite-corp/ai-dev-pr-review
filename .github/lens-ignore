@@ -1,0 +1,6 @@
+# AT-2206 probe: exclude every path this PR changes relative to main.
+# The rule file itself is never excludable by the filter, so it stays in the diff.
+.github/**
+docs/**
+README.md
+README.ko.md
