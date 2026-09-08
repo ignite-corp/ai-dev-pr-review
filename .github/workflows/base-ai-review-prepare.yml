@@ -18,8 +18,20 @@ on:
         default: ".github/prompts/code-review-checklist.md"
     outputs:
       skip:
-        description: "Whether to skip review (PR too large)"
+        description: "Whether to skip review: the PR is too large, or every changed file is policy-excluded. The reviewer jobs gate on this; size_skipped and policy_skipped say which"
         value: ${{ jobs.prepare.outputs.skip }}
+      size_skipped:
+        description: "'true' when the review was skipped because the PR exceeded PR_SIZE_LIMIT"
+        value: ${{ jobs.prepare.outputs.size_skipped }}
+      policy_skipped:
+        description: "'true' when the review was skipped because every changed file matched .github/lens-ignore (AT-2206)"
+        value: ${{ jobs.prepare.outputs.policy_skipped }}
+      excluded_count:
+        description: "Number of changed files removed from the diff by .github/lens-ignore; 0 or empty when nothing was"
+        value: ${{ jobs.prepare.outputs.excluded_count }}
+      excluded_paths:
+        description: "The removed paths, one per line (a rename reads `old -> new`); empty when nothing was"
+        value: ${{ jobs.prepare.outputs.excluded_paths }}
       size_total:
         description: "Total changed lines measured for the size gate"
         value: ${{ jobs.prepare.outputs.size_total }}
@@ -42,7 +54,15 @@ jobs:
     name: Prepare Review Context
     runs-on: ubuntu-latest
     outputs:
-      skip: ${{ steps.size-check.outputs.skip }}
+      # A boolean expression renders as the string `true` / `false`, which is
+      # what the orchestrator's `== 'false'` gates compare against. The policy
+      # step does not run on a size skip, so its output is empty there and
+      # the comparison is false; the size side carries that case.
+      skip: ${{ steps.size-check.outputs.skip == 'true' || steps.policy.outputs.policy_skipped == 'true' }}
+      size_skipped: ${{ steps.size-check.outputs.skip }}
+      policy_skipped: ${{ steps.policy.outputs.policy_skipped }}
+      excluded_count: ${{ steps.policy.outputs.excluded_count }}
+      excluded_paths: ${{ steps.policy.outputs.excluded_paths }}
       size_total: ${{ steps.size-check.outputs.total }}
       head_sha: ${{ steps.refs.outputs.head_sha }}
       size_limit: ${{ steps.size-check.outputs.limit }}
@@ -289,13 +309,62 @@ jobs:
             echo ""
           } > context.md.tmp && cat context.md >> context.md.tmp && mv context.md.tmp context.md
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      # Policy exclusion (AT-2206). The caller's `.github/lens-ignore`, read
+      # from the PR head the tree is on, names files whose hunks are removed
+      # from pr.diff before any reviewer reads it; the paths are appended to
+      # context.md and published as outputs so the exclusion is never silent.
+      # The script is stdlib-only, so it runs on the runner's system python3
+      # here, ahead of the setup-python step below, rather than reordering
+      # that step around it. When every changed file is excluded there is
+      # nothing to review: this step comments why, its policy_skipped output
+      # joins the size gate in the job's `skip` output, and every later step
+      # of this job is gated on it -- the check still reports success through
+      # the aggregate, unlike the size skip.
+      #
+      # Same guard shape as the extract step above, opposite fallback: a
+      # pinned checkout that predates the script cannot filter, so when the
+      # caller carries a rule file the step fails rather than hand the
+      # reviewers a diff the policy says they must not see. Without a rule
+      # file there is nothing to filter and the step only reports so.
+      - name: Filter policy-excluded files
+        id: policy
         if: steps.size-check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          SCRIPT=".ai-dev-pr-review/.github/scripts/filter_pr_diff.py"
+          RULES=".github/lens-ignore"
+          if [ ! -f "$SCRIPT" ]; then
+            if [ -f "$RULES" ]; then
+              echo "::error title=Pinned checkout predates lens-ignore::${RULES} exists but filter_pr_diff.py is not in the pinned ai-dev-pr-review checkout; refusing to review an unfiltered diff. Pin ai-dev-pr-review to a release that ships the script (AT-2206)"
+              exit 1
+            fi
+            echo "::warning::filter_pr_diff.py not in pinned checkout; no ${RULES} in this repository, nothing to filter (AT-2206)"
+            {
+              echo "policy_skipped=false"
+              echo "excluded_count=0"
+              echo "excluded_paths="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 "$SCRIPT"
+          RESULT=".review-context/lens-ignore.json"
+          if [ "$(jq -r '.policy_skipped' "$RESULT")" = "true" ]; then
+            COUNT=$(jq -r '.excluded_count' "$RESULT")
+            gh pr comment "$PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "[i] Only policy-excluded files changed (${COUNT} file(s) matched ${RULES}). Skipping AI review -- the aggregate verdict below lists the paths."
+          fi
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         with:
           python-version-file: ".ai-dev-pr-review/.github/scripts/.python-version"
 
       - name: Append prior review context
-        if: steps.size-check.outputs.skip == 'false'
+        if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
@@ -303,13 +372,13 @@ jobs:
         run: python3 .ai-dev-pr-review/.github/scripts/fetch_review_context.py
 
       - name: Append verified action SHA pins
-        if: steps.size-check.outputs.skip == 'false'
+        if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .ai-dev-pr-review/.github/scripts/verify_action_shas.py
 
       - name: Collect unresolved review threads
-        if: steps.size-check.outputs.skip == 'false'
+        if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -318,7 +387,7 @@ jobs:
         run: bash .ai-dev-pr-review/.github/scripts/collect_review_threads.sh
 
       - name: Upload review context
-        if: steps.size-check.outputs.skip == 'false'
+        if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: review-context
