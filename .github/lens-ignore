@@ -1,0 +1,2 @@
+# AT-2206 probe: exclude the probe document from the reviewed diff
+docs/lens-ignore-probe.md
