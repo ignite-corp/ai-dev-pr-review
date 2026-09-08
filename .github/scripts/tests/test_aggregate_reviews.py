@@ -26,7 +26,9 @@ from aggregate_reviews import (
     _is_comment_only,
     _is_partial,
     _is_valid_review,
+    _policy_skip_details,
     apply_verdict_rules,
+    format_policy_skip_summary,
     format_prepare_failure_summary,
     format_size_skip_summary,
     format_summary,
@@ -1387,6 +1389,242 @@ class TestSizeSkipVerdict:
         format_size_skip_summary("4200", "3000").encode("ascii")
 
 
+_POLICY_SKIP_MARKER = "<!-- lens:skipped reason=policy-excluded-only files=2 -->"
+
+
+class TestPolicySkipVerdict:
+    """A PR whose every file is policy-excluded is skipped and reports success.
+
+    prepare drops the hunks of files matching `.github/lens-ignore` before any
+    reviewer reads the diff (AT-2206). When nothing is left the reviewer jobs
+    are skipped as they are for size, but the outcome differs: the content is
+    not review material by the consumer's own rule, so the check passes, and
+    the comment carries a marker a stricter consumer gate can key on.
+    """
+
+    @staticmethod
+    def _set_policy_env(
+        monkeypatch: pytest.MonkeyPatch,
+        paths: str = "secrets/key.pem\nconfig/prod.env -> config/live.env",
+    ) -> None:
+        monkeypatch.setenv("SIZE_SKIPPED", "false")
+        monkeypatch.setenv("POLICY_SKIPPED", "true")
+        monkeypatch.setenv("EXCLUDED_COUNT", str(len(paths.splitlines())))
+        monkeypatch.setenv("EXCLUDED_PATHS", paths)
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.delenv("HEAD_SHA", raising=False)
+
+    def test_policy_skip_exits_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._set_policy_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 0
+        mock_post.assert_called_once()
+
+    def test_policy_skip_is_a_comment_never_an_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing was reviewed, so no APPROVED review may attest that it was."""
+        self._set_policy_env(monkeypatch)
+        monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        assert mock_post.call_args[0][1] == "comment"
+
+    def test_policy_skip_posts_through_the_comment_branch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end through post_verdict: `gh pr comment`, never `gh pr review`."""
+        self._set_policy_env(monkeypatch)
+        monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
+        with (
+            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews.subprocess.run") as mock_run,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            mock_run.return_value.returncode = 0
+            main()
+        assert excinfo.value.code == 0
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        assert commands == [["gh", "pr", "comment", "42", "--body-file", "-", "--repo", "owner/repo"]]
+
+    def test_policy_skip_body_carries_both_markers_in_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """REVIEW_MARKER keeps stale-comment minimization; the skip marker is exact."""
+        self._set_policy_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        lines = body.splitlines()
+        assert lines[0] == REVIEW_MARKER
+        assert lines[1] == _POLICY_SKIP_MARKER
+
+    def test_policy_skip_body_names_the_paths_and_the_rule_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._set_policy_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        body = mock_post.call_args[0][0]
+        assert "**Result: [OK] Review skipped -- only policy-excluded files changed**" in body
+        assert ".github/lens-ignore" in body
+        assert "- `secrets/key.pem`" in body
+        assert "- `config/prod.env -> config/live.env`" in body
+        assert "2 file(s) excluded by policy" in body
+
+    def test_policy_skip_prints_the_final_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._set_policy_env(monkeypatch)
+        with patch("aggregate_reviews.post_verdict"), pytest.raises(SystemExit):
+            main()
+        assert (
+            "Final verdict: none -- review skipped, 2 policy-excluded file(s) only"
+            in capsys.readouterr().out
+        )
+
+    def test_policy_skip_never_reads_reviewer_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._set_policy_env(monkeypatch)
+        with (
+            patch("aggregate_reviews.load_reviews") as mock_load,
+            patch("aggregate_reviews.post_verdict"),
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mock_load.assert_not_called()
+
+    def test_size_skip_precedes_the_policy_skip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The policy step never runs on a size skip, so size owns the verdict."""
+        self._set_policy_env(monkeypatch)
+        monkeypatch.setenv("SIZE_SKIPPED", "true")
+        monkeypatch.setenv("SIZE_TOTAL", "4200")
+        monkeypatch.setenv("SIZE_LIMIT", "3000")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        assert "PR too large" in mock_post.call_args[0][0]
+
+    def test_missing_paths_still_skip_with_a_placeholder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._set_policy_env(monkeypatch, paths="")
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 0
+        body = mock_post.call_args[0][0]
+        assert "files=0 -->" in body
+        assert "(paths not reported)" in body
+
+    @pytest.mark.parametrize("value", ["false", "", "False", "no"])
+    def test_normal_run_takes_the_normal_path(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("POLICY_SKIPPED", value)
+        assert _policy_skip_details() is None
+
+    def test_unset_takes_the_normal_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Consumers pinned to an older tag send no policy inputs at all."""
+        monkeypatch.delenv("POLICY_SKIPPED", raising=False)
+        assert _policy_skip_details() is None
+
+    def test_summary_is_ascii(self) -> None:
+        format_policy_skip_summary(["secrets/key.pem"]).encode("ascii")
+
+    def test_policy_skip_body_cannot_be_broken_by_a_path(self) -> None:
+        """prepare sanitizes first; the aggregate renders defensively anyway."""
+        body = format_policy_skip_summary(["tick`.pem", "esc\x1b[0m.txt"])
+        assert "- `tick\u02cb.pem`" in body
+        assert "- `esc\\x1b[0m.txt`" in body
+        assert "tick`" not in body
+        assert "\x1b" not in body
+
+
+class TestPartialExclusionOnTheVerdict:
+    """A diff with some files removed by policy says so on the verdict, paths only."""
+
+    def test_no_exclusion_adds_no_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("EXCLUDED_COUNT", raising=False)
+        monkeypatch.delenv("EXCLUDED_PATHS", raising=False)
+        reviews = {n: _make_review() for n in REVIEWER_NAMES}
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        assert "excluded by policy" not in body
+
+    def test_zero_count_adds_no_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EXCLUDED_COUNT", "0")
+        monkeypatch.setenv("EXCLUDED_PATHS", "")
+        reviews = {n: _make_review() for n in REVIEWER_NAMES}
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        assert "excluded by policy" not in body
+
+    def test_exclusion_is_listed_under_the_headline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EXCLUDED_COUNT", "2")
+        monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem\nconfig/prod.env -> config/live.env")
+        reviews = {n: _make_review() for n in REVIEWER_NAMES}
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        lines = body.splitlines()
+        headline = next(i for i, line in enumerate(lines) if line.startswith("**Result:"))
+        note = (
+            "> [i] 2 file(s) excluded by policy (.github/lens-ignore):"
+            " `secrets/key.pem`, `config/prod.env -> config/live.env`"
+        )
+        assert lines[headline + 2] == note
+        assert lines[headline + 1] == ""
+
+    def test_count_falls_back_to_the_path_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EXCLUDED_COUNT", "")
+        monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem")
+        reviews = {n: _make_review() for n in REVIEWER_NAMES}
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        assert "> [i] 1 file(s) excluded by policy (.github/lens-ignore): `secrets/key.pem`" in body
+
+    def test_verdict_note_cannot_be_broken_by_a_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """prepare sanitizes first; the aggregate renders defensively anyway."""
+        monkeypatch.setenv("EXCLUDED_COUNT", "1")
+        monkeypatch.setenv("EXCLUDED_PATHS", "tick`\x1b[0m.pem")
+        reviews = {n: _make_review() for n in REVIEWER_NAMES}
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        assert "(.github/lens-ignore): `tick\u02cb\\x1b[0m.pem`" in body
+        assert "tick`" not in body
+        assert "\x1b" not in body
+
+    def test_partial_exclusion_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only the all-excluded case skips; a partial diff is reviewed."""
+        monkeypatch.setenv("POLICY_SKIPPED", "false")
+        monkeypatch.setenv("EXCLUDED_COUNT", "1")
+        monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem")
+        assert _policy_skip_details() is None
+
+
 class TestAggregateJobIsNotSizeGated:
     """The orchestrator must never gate the aggregate job on the size skip.
 
@@ -1415,6 +1653,9 @@ class TestAggregateJobIsNotSizeGated:
         supplied = dict(self._jobs()["aggregate"].get("with", {}))
         for key in ("size_skipped", "size_total", "size_limit"):
             assert key in supplied, key
+        # The size flag itself, not the combined `skip` that a policy skip
+        # also sets -- otherwise a policy skip renders as PR too large.
+        assert supplied["size_skipped"] == "${{ needs.prepare.outputs.size_skipped }}"
 
 
 _PREPARE_WORKFLOW = (

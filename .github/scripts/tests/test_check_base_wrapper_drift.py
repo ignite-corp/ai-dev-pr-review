@@ -50,7 +50,11 @@ Three layers:
    in either confirms every artefact. Because the regression uses the *live*
    config, a base step rename shows up here as StepNotFoundError: move the
    base pin to the commit that renamed it and re-check the four expected
-   findings.
+   findings. A base step *added* after the pin cannot be handled that way
+   before it merges, so its entry is dropped from the regression config by
+   ``POST_PIN_STEPS`` (the HEAD_SHA re-excuse, one level up) and a test
+   proves each listed step really is absent at the pin; prune the set when
+   the pin moves past the step.
 """
 
 from __future__ import annotations
@@ -832,6 +836,53 @@ def vendored_exceptions_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
+# Base steps added after BASE_PIN. Neither the pinned base files nor the
+# vendored wrapper carry them, so their live correspondence entries would
+# raise StepNotFoundError on both sides of the proof. They are dropped from
+# the regression config only; the live-correspondence tests above still hold
+# every entry against the current tree.
+POST_PIN_STEPS = frozenset(
+    {
+        ("base-ai-review-prepare.yml", "Filter policy-excluded files"),  # AT-2206
+    }
+)
+
+
+@pytest.fixture(scope="module")
+def vendored_config(live_config: DriftConfig) -> DriftConfig:
+    """The live correspondence minus the steps the vendored trees predate."""
+    return DriftConfig(
+        base_files=live_config.base_files,
+        wrapper_files=live_config.wrapper_files,
+        steps=tuple(entry for entry in live_config.steps if entry.key not in POST_PIN_STEPS),
+    )
+
+
+@pytest.fixture(scope="module")
+def vendored_correspondence_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """``vendored_config`` as a file, for the end-to-end ``run`` proof."""
+    import yaml
+
+    data = _load_yaml(LIVE_CORRESPONDENCE)
+    data["steps"] = [
+        step for step in data["steps"] if (step["base_file"], step["base_step"]) not in POST_PIN_STEPS
+    ]
+    path = tmp_path_factory.mktemp("correspondence") / "correspondence.yml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def test_post_pin_steps_are_live_entries_absent_at_the_pin(base_tree: Path, live_config) -> None:
+    """The set must stay honest in both directions: every listed step is a
+    real live entry, and none exists at the pin -- once the pin moves past a
+    step, dropping it would silently narrow the proof."""
+    live_keys = {entry.key for entry in live_config.steps}
+    for base_file, step in POST_PIN_STEPS:
+        assert (base_file, step) in live_keys, f"{step!r} is not in the live correspondence"
+        with pytest.raises(StepNotFoundError):
+            find_step_env_keys(_load_yaml(base_tree / base_file), step)
+
+
 def test_regression_fixture_is_the_at_2120_fix_commit() -> None:
     """The patch must be the fix itself, not a hand-written lookalike."""
     header = AT_2120_FIX_PATCH.read_text(encoding="utf-8").splitlines()[:5]
@@ -842,10 +893,10 @@ def test_regression_fixture_is_the_at_2120_fix_commit() -> None:
 
 
 def test_regression_at_2120_pre_fix_tree_fails_on_exactly_the_incident(
-    base_tree: Path, wrapper_pre: Path, live_config, vendored_exceptions
+    base_tree: Path, wrapper_pre: Path, vendored_config, vendored_exceptions
 ) -> None:
-    env_findings, _ = check_env_keys(base_tree, wrapper_pre, live_config, vendored_exceptions)
-    vars_findings, _, _ = check_vars_consumed(base_tree, wrapper_pre, live_config, vendored_exceptions)
+    env_findings, _ = check_env_keys(base_tree, wrapper_pre, vendored_config, vendored_exceptions)
+    vars_findings, _, _ = check_vars_consumed(base_tree, wrapper_pre, vendored_config, vendored_exceptions)
     assert env_findings == [
         "env drift: base step base-ai-review-single.yml:'Post inline comments' sets "
         f"{key!r}, which none of wrapper's ['Post Claude inline comments', "
@@ -859,23 +910,23 @@ def test_regression_at_2120_pre_fix_tree_fails_on_exactly_the_incident(
     ]
 
 
-def test_regression_at_2120_post_fix_tree_passes(base_tree: Path, live_config, vendored_exceptions) -> None:
-    env_findings, _ = check_env_keys(base_tree, WRAPPER_POST, live_config, vendored_exceptions)
-    vars_findings, _, _ = check_vars_consumed(base_tree, WRAPPER_POST, live_config, vendored_exceptions)
+def test_regression_at_2120_post_fix_tree_passes(base_tree: Path, vendored_config, vendored_exceptions) -> None:
+    env_findings, _ = check_env_keys(base_tree, WRAPPER_POST, vendored_config, vendored_exceptions)
+    vars_findings, _, _ = check_vars_consumed(base_tree, WRAPPER_POST, vendored_config, vendored_exceptions)
     assert env_findings == []
     assert vars_findings == []
 
 
 def test_regression_at_2120_end_to_end_exit_codes(
-    base_tree: Path, wrapper_pre: Path, vendored_exceptions_file: Path
+    base_tree: Path, wrapper_pre: Path, vendored_correspondence_file: Path, vendored_exceptions_file: Path
 ) -> None:
-    assert run(base_tree, wrapper_pre, LIVE_CORRESPONDENCE, vendored_exceptions_file) == 1
-    assert run(base_tree, WRAPPER_POST, LIVE_CORRESPONDENCE, vendored_exceptions_file) == 0
+    assert run(base_tree, wrapper_pre, vendored_correspondence_file, vendored_exceptions_file) == 1
+    assert run(base_tree, WRAPPER_POST, vendored_correspondence_file, vendored_exceptions_file) == 0
 
 
 @pytest.mark.parametrize("tree", ["pre", "post"])
 def test_regression_at_2117_head_sha_is_caught_against_the_vendored_wrapper(
-    tree: str, base_tree: Path, wrapper_pre: Path, live_config, live_exceptions
+    tree: str, base_tree: Path, wrapper_pre: Path, vendored_config, live_exceptions
 ) -> None:
     """The secondary case AT-2122 names: HEAD_SHA not passed to aggregation.
     Both vendored trees predate the wrapper port (wrapper PR #36), and the
@@ -885,7 +936,7 @@ def test_regression_at_2117_head_sha_is_caught_against_the_vendored_wrapper(
         "exceptions.yml lists HEAD_SHA again; the AT-2117 port is in the wrapper, so this is a regression"
     )
     wrapper_dir = wrapper_pre if tree == "pre" else WRAPPER_POST
-    findings, _ = check_env_keys(base_tree, wrapper_dir, live_config, live_exceptions)
+    findings, _ = check_env_keys(base_tree, wrapper_dir, vendored_config, live_exceptions)
     expected = (
         "env drift: base step base-ai-review-aggregate.yml:'Aggregate and post verdict' sets "
         "'HEAD_SHA', which none of wrapper's ['Aggregate and post verdict'] (wrapper.yml) set"

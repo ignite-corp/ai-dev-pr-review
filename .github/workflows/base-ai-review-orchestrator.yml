@@ -244,9 +244,14 @@ jobs:
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       prepare_result: ${{ needs.prepare.result }}
       pr_author: ${{ needs.prepare.outputs.pr_author }}
-      size_skipped: ${{ needs.prepare.outputs.skip }}
+      # size_skipped, not the combined `skip`: that output is also true on a
+      # policy skip, which would render as a PR-too-large failure (AT-2206).
+      size_skipped: ${{ needs.prepare.outputs.size_skipped }}
       size_total: ${{ needs.prepare.outputs.size_total }}
       size_limit: ${{ needs.prepare.outputs.size_limit }}
+      policy_skipped: ${{ needs.prepare.outputs.policy_skipped }}
+      excluded_count: ${{ needs.prepare.outputs.excluded_count }}
+      excluded_paths: ${{ needs.prepare.outputs.excluded_paths }}
       claude_result: ${{ needs.review-claude-p.result != 'skipped' && needs.review-claude-p.result || needs.review-claude-s.result }}
       codex_result: ${{ needs.review-codex-p.result != 'skipped' && needs.review-codex-p.result || needs.review-codex-s.result }}
       gemini_result: ${{ needs.review-gemini-p.result != 'skipped' && needs.review-gemini-p.result || needs.review-gemini-s.result }}

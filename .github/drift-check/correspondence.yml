@@ -46,6 +46,10 @@ steps:
     wrapper_file: wrapper.yml
     wrapper_steps: [Extract diff and context]
   - base_file: base-ai-review-prepare.yml
+    base_step: Filter policy-excluded files
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Filter policy-excluded files]
+  - base_file: base-ai-review-prepare.yml
     base_step: Append prior review context
     wrapper_file: wrapper.yml
     wrapper_steps: [Append prior review context]

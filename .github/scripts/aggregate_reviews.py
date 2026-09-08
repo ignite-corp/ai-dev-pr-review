@@ -44,6 +44,7 @@ from github_pr_support import (
     REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
+    display_path,
     fetch_paginated_nodes,
     int_env,
 )
@@ -695,6 +696,84 @@ def format_size_skip_summary(total: str, limit: str) -> str:
     return "\n".join(lines)
 
 
+LENS_IGNORE_PATH = ".github/lens-ignore"
+# Machine-readable marker for the policy-skip verdict, in the same family as
+# REVIEW_MARKER. A consumer gate that must not merge on a skipped review keys
+# on it: conclusion == success AND the latest LENS comment lacks this marker.
+# It cannot key on the conclusion alone, because that path reports success by
+# decision (see main), and a job conclusion cannot be neutral.
+POLICY_SKIP_MARKER = "<!-- lens:skipped reason=policy-excluded-only files={n} -->"
+
+
+def _excluded_paths() -> list[str]:
+    """Paths prepare removed from the diff by policy, one per input line."""
+    raw = os.environ.get("EXCLUDED_PATHS", "")
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def _excluded_count() -> int:
+    """EXCLUDED_COUNT as an int; the path list's length when it is unusable."""
+    raw = os.environ.get("EXCLUDED_COUNT", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return len(_excluded_paths())
+
+
+def _policy_skip_details() -> list[str] | None:
+    """The excluded paths when prepare skipped the review by policy, else None.
+
+    Like the size skip, prepare gates the reviewer jobs but cannot skip this
+    job, so the aggregate renders the skip. Unlike the size skip it is not a
+    failure: nothing in the PR was review material, by the consumer's own
+    rule, and the check reports success (AT-2206).
+    """
+    if os.environ.get("POLICY_SKIPPED", "false").strip().lower() != "true":
+        return None
+    return _excluded_paths()
+
+
+def format_policy_skip_summary(paths: list[str]) -> str:
+    """Verdict body for a review skipped because every file was policy-excluded.
+
+    Names the rule file and the paths (never their content) so the skip is
+    auditable on the PR, and carries POLICY_SKIP_MARKER for consumer gates.
+    """
+    count = len(paths)
+    headline = "**Result: [OK] Review skipped -- only policy-excluded files changed**"
+    why = (
+        f"No reviewer ran: every changed file in this PR matched"
+        f" `{LENS_IGNORE_PATH}`, so its hunks were removed from the diff before"
+        " review and nothing was left to review."
+    )
+    # prepare already sanitizes; rendered through display_path again so a
+    # path list from any other producer cannot close the code span either.
+    listed = [f"- `{display_path(path)}`" for path in paths] or ["- (paths not reported)"]
+    outcome = (
+        "This check reports success by policy: the excluded content is not"
+        " review material, and this is not a review of it. A gate that must"
+        " not merge on a skipped review can key on the"
+        f" `<!-- lens:skipped ... -->` marker in this comment."
+    )
+    lines = [
+        REVIEW_MARKER,
+        POLICY_SKIP_MARKER.format(n=count),
+        "## [bot] Multi-LLM Review Summary",
+        "",
+        headline,
+        "",
+        "---",
+        "",
+        why,
+        "",
+        f"{count} file(s) excluded by policy ({LENS_IGNORE_PATH}):",
+        "",
+        *listed,
+        "",
+        outcome,
+    ]
+    return "\n".join(lines)
+
+
 def apply_verdict_rules(
     reviews: dict[str, dict[str, Any] | None],
 ) -> tuple[str, str, dict[str, dict[str, Any]]]:
@@ -810,6 +889,14 @@ def format_summary(
         "",
         f"**Result: {icon} {label}** -- {reason}{reason_suffix}",
     ]
+    # A partial diff is announced on the verdict, paths only (AT-2206).
+    excluded_count = _excluded_count()
+    if excluded_count > 0:
+        listed = ", ".join(f"`{display_path(path)}`" for path in _excluded_paths())
+        lines.append(
+            f"\n> [i] {excluded_count} file(s) excluded by policy"
+            f" ({LENS_IGNORE_PATH}): {listed or 'paths not reported'}"
+        )
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
     if (
         review_mode == _REVIEW_MODE_SEQUENTIAL
@@ -1132,6 +1219,27 @@ def main() -> None:
         # Blocking is the pre-existing policy (an unreported required check
         # already made these PRs unmergeable); this only makes it visible.
         sys.exit(1)
+
+    policy_skip = _policy_skip_details()
+    if policy_skip is not None:
+        comment = format_policy_skip_summary(policy_skip)
+        # A plain comment, never an approval: nothing was reviewed, and an
+        # APPROVED review would attest to a review that did not happen. The
+        # verdict "comment" takes post_verdict's comment-only branch on every
+        # ALLOW_AUTO_APPROVE setting.
+        post_verdict(comment, "comment", comment_only=_is_comment_only())
+        print(
+            f"Final verdict: none -- review skipped, {len(policy_skip)}"
+            " policy-excluded file(s) only"
+        )
+        # Success by decision (AT-2206): the consumer's own rule says the
+        # content is not review material, and a failure would block merge on
+        # a repository with no ruleset to override it. A neutral conclusion
+        # is not available to a job (`exit 78` was removed in 2019), and a
+        # separate neutral check run would need an App token consumers may
+        # lack -- so a gate that must not merge on this keys on the
+        # POLICY_SKIP_MARKER in the comment instead.
+        sys.exit(0)
 
     reviews = load_reviews()
     conclusions = load_reviewer_conclusions()

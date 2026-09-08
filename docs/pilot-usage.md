@@ -216,6 +216,28 @@ sole consumer of the three `!cancelled()`-narrowed steps). Leaving `HEAD_SHA` un
 keep the base guard as dead code on this path, and the `HEAD_SHA` entry in
 `.github/drift-check/exceptions.yml` that tracked that gap is gone with the port.
 
+### Policy exclusion (`.github/lens-ignore`) on the wrapper path (AT-2206)
+
+Base's `prepare` removes the hunks of files matching the consumer's `.github/lens-ignore`
+from `pr.diff` before any reviewer reads it, announces the paths on `context.md` and the
+verdict, and skips the review with a `success` conclusion when every changed file is
+excluded (README: [Excluding paths from review](../README.md#excluding-paths-from-review-githublens-ignore)).
+The wrapper carries the same feature from wrapper v1.9.0 as an inline step of the same
+name, `Filter policy-excluded files`, placed between `Extract diff and context` and the
+setup-python step exactly as in base, with every later prepare-phase step and the three
+reviewer step groups additionally gated on its `policy_skipped` output. The matcher itself
+is not duplicated: `filter_pr_diff.py` is a base script the wrapper consumes at
+`upstream_ref`, so the wrapper's floating `v1` must resolve to a base release that ships
+it. The step's pinned-checkout guard is the same on both paths -- a consumer whose
+`upstream_ref` predates the script fails the step with an explicit `::error::` if it
+carries a rule file, and merely reports `policy_skipped=false` if it does not -- so a
+wrapper consumer never receives an unfiltered diff because its pin lagged.
+
+Lockstep: base ships the step in the release after v1.8.1; until the wrapper port lands
+on wrapper `main`, `base-wrapper-drift` reports the `Filter policy-excluded files`
+correspondence entry as a stale wrapper step name (by design, see
+[Architecture](#architecture-the-wrapper-reimplements-it-does-not-delegate)).
+
 ## Actions allowlist (org setting)
 
 The org/repo Actions policy must permit the wrapper + orchestrator reusable workflows and

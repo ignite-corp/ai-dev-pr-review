@@ -36,6 +36,45 @@ SEVERITY_ICONS: dict[str, str] = {
     "suggestion": "?",
 }
 
+# Stand-in for a backtick in a displayed path: U+02CB MODIFIER LETTER GRAVE
+# ACCENT looks like one but is not one to markdown, so the code span around
+# the path cannot be closed from inside it. Written as an escape because the
+# .github tree is ASCII-only.
+_BACKTICK_LOOKALIKE = "\u02cb"
+_NAMED_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+# Python's str.splitlines() -- which the aggregate uses to read the path list
+# back -- also breaks on U+2028 and U+2029, so they are line breaks here too.
+_LINE_SEPARATORS = "\u2028\u2029"
+
+
+def display_path(path: str) -> str:
+    """A single-line, code-span-safe rendering of a repository path.
+
+    Paths reach the reviewers' context.md, $GITHUB_OUTPUT (one per line), a
+    JSON result and PR comments as `path` inside a markdown code span; a git
+    C-quoted name can decode to anything, including a newline or a backtick,
+    and would otherwise break out of all four. Every C0 and C1 control
+    character, DEL and the Unicode line separators become a visible escape
+    (`\\n`, `\\r`, `\\t`, `\\xNN`, `\\u2028`), and a backtick becomes a
+    lookalike. The result is a label, deliberately lossy: matching and every
+    other decision use the raw path, never this.
+    """
+    out: list[str] = []
+    for ch in path:
+        code = ord(ch)
+        if ch in _NAMED_ESCAPES:
+            out.append(_NAMED_ESCAPES[ch])
+        elif code < 0x20 or 0x7F <= code <= 0x9F:
+            out.append(f"\\x{code:02x}")
+        elif ch in _LINE_SEPARATORS:
+            out.append(f"\\u{code:04x}")
+        elif ch == "`":
+            out.append(_BACKTICK_LOOKALIKE)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 DIFF_FILE_PREFIX = "+++ b/"
 DIFF_FILE_PREFIX_LEN = len(DIFF_FILE_PREFIX)
 DIFF_SIDE_RIGHT = "RIGHT"
