@@ -18,6 +18,39 @@ _DEFAULT_PAGE_SIZE = 50
 # looking for the exact same string the aggregate script emits.
 REVIEW_MARKER = "<!-- multi-llm-review -->"
 
+_APP_LOGIN_PREFIX = "app/"
+_BOT_LOGIN_SUFFIX = "[bot]"
+
+
+def normalize_bot_login(login: str) -> str:
+    """Reduce every GitHub spelling of an app's login to the bare app slug.
+
+    The same GitHub App is rendered three ways depending on which surface
+    reports it: REST ``.user.login`` says ``github-actions[bot]``, GraphQL
+    ``author.login`` says ``github-actions`` (no suffix), and ``gh pr view
+    --json author`` says ``app/github-actions``. ``BOT_LOGIN`` defaults to
+    the REST spelling while the stale-item pass reads authors over GraphQL,
+    so a verbatim compare of the two never matched and no prior-round
+    aggregate item was ever minimized under the default (AT-2208).
+
+    Both sides of a comparison go through this function rather than the
+    default changing to the GraphQL spelling: a consumer that already sets
+    ``BOT_LOGIN`` in the REST form keeps working, and a comparison written
+    against any of the three surfaces stays correct if the surface changes.
+
+    Case is left alone. GitHub logins are case-insensitive, but every
+    surface above reports the canonical casing, and a lowercase step here
+    would mean explaining why one comparison folds case when nothing else
+    in these scripts does.
+
+    A human login has neither affix and passes through unchanged.
+    """
+    if login.startswith(_APP_LOGIN_PREFIX):
+        login = login[len(_APP_LOGIN_PREFIX) :]
+    if login.endswith(_BOT_LOGIN_SUFFIX):
+        login = login[: -len(_BOT_LOGIN_SUFFIX)]
+    return login
+
 
 def int_env(name: str, default: int) -> int:
     """Read an integer env var, falling back to default on missing/invalid."""

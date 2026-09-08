@@ -47,6 +47,7 @@ from github_pr_support import (
     display_path,
     fetch_paginated_nodes,
     int_env,
+    normalize_bot_login,
 )
 
 logger = logging.getLogger(__name__)
@@ -1037,6 +1038,10 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         print(f"Invalid GITHUB_REPOSITORY format: {repo}", file=sys.stderr)
         return
     owner, name = parts
+    # The queries read author.login over GraphQL, which drops the "[bot]"
+    # suffix the BOT_LOGIN default carries; normalize both sides so the
+    # spelling of either never decides whether a prior round is folded.
+    bot = normalize_bot_login(BOT_LOGIN)
 
     for node in fetch_paginated_nodes(
         _STALE_COMMENTS_QUERY,
@@ -1047,7 +1052,7 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         page_size=_STALE_PAGE_SIZE,
     ):
         if (
-            node.get("author", {}).get("login") == BOT_LOGIN
+            normalize_bot_login((node.get("author") or {}).get("login") or "") == bot
             and not node.get("isMinimized")
             and REVIEW_MARKER in node.get("body", "")
         ):
@@ -1062,7 +1067,7 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         page_size=_STALE_PAGE_SIZE,
     ):
         if (
-            node.get("author", {}).get("login") == BOT_LOGIN
+            normalize_bot_login((node.get("author") or {}).get("login") or "") == bot
             and node.get("state") == "CHANGES_REQUESTED"
             and REVIEW_MARKER in node.get("body", "")
         ):

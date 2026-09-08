@@ -37,7 +37,7 @@ from aggregate_reviews import (
     post_verdict,
     REVIEWER_NAMES,
 )
-from github_pr_support import REVIEW_MARKER
+from github_pr_support import REVIEW_MARKER, normalize_bot_login
 
 
 def _make_review(**overrides: Any) -> dict[str, Any]:
@@ -2261,3 +2261,223 @@ class TestSupersededHeadPostsNoVerdict:
         with patch("aggregate_reviews.subprocess.run") as mock_run:
             assert _head_is_stale() is False
         mock_run.assert_not_called()
+
+
+_GITHUB_ACTIONS_SPELLINGS = (
+    "github-actions[bot]",
+    "github-actions",
+    "app/github-actions",
+)
+_APPROVER_SPELLINGS = (
+    "ignite-ai-review-approver[bot]",
+    "ignite-ai-review-approver",
+)
+
+
+class TestNormalizeBotLogin:
+    """One app, three surfaces, one comparison key.
+
+    REST ``.user.login`` carries ``[bot]``, GraphQL ``author.login`` drops
+    it, and ``gh pr view --json author`` prefixes ``app/``. Any pair of
+    spellings of the same app must compare equal after normalization, and
+    no spelling of one app may collide with another.
+    """
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            (a, b)
+            for spellings in (_GITHUB_ACTIONS_SPELLINGS, _APPROVER_SPELLINGS)
+            for a in spellings
+            for b in spellings
+        ],
+    )
+    def test_spellings_of_the_same_app_compare_equal(
+        self, left: str, right: str
+    ) -> None:
+        assert normalize_bot_login(left) == normalize_bot_login(right)
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            (a, b)
+            for a in _GITHUB_ACTIONS_SPELLINGS
+            for b in _APPROVER_SPELLINGS
+        ],
+    )
+    def test_different_apps_stay_different(self, left: str, right: str) -> None:
+        assert normalize_bot_login(left) != normalize_bot_login(right)
+
+    @pytest.mark.parametrize("login", ["hyuk-hur", "octocat", ""])
+    def test_a_human_login_is_unchanged(self, login: str) -> None:
+        assert normalize_bot_login(login) == login
+
+    def test_case_is_preserved(self) -> None:
+        """Every surface reports canonical casing; no folding, by design."""
+        assert normalize_bot_login("Github-Actions[bot]") == "Github-Actions"
+
+
+def _stale_pages(
+    comments: list[dict[str, Any]], reviews: list[dict[str, Any]]
+) -> Any:
+    """Stand in for ``fetch_paginated_nodes``, keyed on the query's field."""
+
+    def fake(
+        query: str, field: str, *args: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        return {"comments": comments, "reviews": reviews}[field]
+
+    return fake
+
+
+_STALE_MARKED = f"{REVIEW_MARKER}\nprior round"
+
+
+def _minimize_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    comments: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Run ``_minimize_stale_bot_items`` with the default ``BOT_LOGIN``.
+
+    Returns the ``(node_id, label)`` of every mutation it issued, in order.
+    """
+    from aggregate_reviews import _minimize_stale_bot_items
+
+    monkeypatch.delenv("BOT_LOGIN", raising=False)
+    issued: list[tuple[str, str]] = []
+
+    def record(query: str, node_id: str, label: str) -> None:
+        issued.append((node_id, label))
+
+    with (
+        patch(
+            "aggregate_reviews.fetch_paginated_nodes",
+            side_effect=_stale_pages(comments, reviews),
+        ),
+        patch("aggregate_reviews._run_gql_mutation", side_effect=record),
+    ):
+        _minimize_stale_bot_items("42", "owner/repo")
+    return issued
+
+
+class TestMinimizeStaleBotItemsMatchesGraphQLLogin:
+    """The GraphQL ``author.login`` of an app has no ``[bot]`` suffix.
+
+    ``BOT_LOGIN`` defaults to the REST spelling ``github-actions[bot]``, but
+    the stale-item queries read ``author { login }`` over GraphQL, where the
+    same app is ``github-actions``. Compared verbatim the two never match,
+    so with the default nothing was ever minimized and every round of a PR
+    appended another aggregate comment (AT-2208, observed on PR #151).
+    """
+
+    _MARKED = _STALE_MARKED
+
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        comments: list[dict[str, Any]],
+        reviews: list[dict[str, Any]],
+    ) -> list[tuple[str, str]]:
+        return _minimize_stale(monkeypatch, comments, reviews)
+
+    def test_graphql_login_of_the_default_bot_is_minimized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        issued = self._run(
+            monkeypatch,
+            comments=[
+                {
+                    "id": "C_1",
+                    "author": {"login": "github-actions"},
+                    "isMinimized": False,
+                    "body": self._MARKED,
+                }
+            ],
+            reviews=[
+                {
+                    "id": "R_1",
+                    "author": {"login": "github-actions"},
+                    "state": "CHANGES_REQUESTED",
+                    "body": self._MARKED,
+                }
+            ],
+        )
+        assert issued == [
+            ("C_1", "minimize"),
+            ("R_1", "dismiss"),
+            ("R_1", "minimize"),
+        ]
+
+    def test_a_different_bot_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        issued = self._run(
+            monkeypatch,
+            comments=[
+                {
+                    "id": "C_2",
+                    "author": {"login": "gemini-code-assist"},
+                    "isMinimized": False,
+                    "body": self._MARKED,
+                }
+            ],
+            reviews=[
+                {
+                    "id": "R_2",
+                    "author": {"login": "gemini-code-assist"},
+                    "state": "CHANGES_REQUESTED",
+                    "body": self._MARKED,
+                }
+            ],
+        )
+        assert issued == []
+
+
+class TestMinimizeStaleBotItemsSkipsNullAuthor:
+    """GraphQL ``author`` is nullable: a deleted or ghost account yields
+    ``"author": null``, so the key is present with value ``None`` and a
+    ``node.get("author", {})`` default never applies. Such nodes must be
+    skipped, not crash the pass, and the bot's own items on the same page
+    must still be minimized.
+    """
+
+    def test_null_author_nodes_are_skipped_and_the_rest_minimized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        issued = _minimize_stale(
+            monkeypatch,
+            comments=[
+                {
+                    "id": "C_ghost",
+                    "author": None,
+                    "isMinimized": False,
+                    "body": _STALE_MARKED,
+                },
+                {
+                    "id": "C_bot",
+                    "author": {"login": "github-actions"},
+                    "isMinimized": False,
+                    "body": _STALE_MARKED,
+                },
+            ],
+            reviews=[
+                {
+                    "id": "R_ghost",
+                    "author": None,
+                    "state": "CHANGES_REQUESTED",
+                    "body": _STALE_MARKED,
+                },
+                {
+                    "id": "R_bot",
+                    "author": {"login": "github-actions"},
+                    "state": "CHANGES_REQUESTED",
+                    "body": _STALE_MARKED,
+                },
+            ],
+        )
+        assert issued == [
+            ("C_bot", "minimize"),
+            ("R_bot", "dismiss"),
+            ("R_bot", "minimize"),
+        ]
