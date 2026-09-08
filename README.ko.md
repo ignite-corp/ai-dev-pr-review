@@ -232,6 +232,63 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `ROUND_CUTOFF_N` | `5` | 수렴 백스톱. 이 리뷰 라운드부터 해당 리뷰어의 발견은 개별 인라인 스레드 대신 `Round Cutoff Summary (R<n>)` 코멘트 하나로 접힘. 라운드 번호는 PR에 이미 게시된 봇 판정 수에 진행 중인 라운드 1을 더한 값. 접기가 발동하려면 세 조건이 **모두** 성립해야 함 — 게이트가 켜져 있을 것, 라운드 번호가 이 값에 도달했을 것, **그리고** 그 리뷰어 payload의 발견이 전부 `minor` 또는 `suggestion`일 것. `critical`이나 `major`가 하나라도 있으면 배치 전체가 평소대로 인라인 게시되며, severity가 없거나 알 수 없는 값인 발견도 마찬가지임 — 알 수 없는 severity는 blocking으로 세어 예상 밖 payload에서 fail-open함. 리뷰어별·라운드별로 판정하므로 한 리뷰어만 접히고 다른 리뷰어는 인라인 게시할 수 있음. 판정에는 영향 없음 — 자동 병합도, 후속 티켓 생성도 하지 않음. 정수가 아닌 값은 `5`로 폴백. |
 | `ROUND_CUTOFF_ENABLED` | `true` | `ROUND_CUTOFF_N` 백스톱의 킬스위치. 문자열 `false`만(대소문자 무시, 앞뒤 공백 무시) 비활성화하며, 오타를 포함한 그 외 모든 값은 게이트를 켜 둔 상태로 둠. 끄면 라운드가 아무리 진행돼도 발견은 항상 개별 인라인 스레드로 게시됨. |
 
+## 리뷰에서 경로 제외하기 (`.github/lens-ignore`)
+
+소비자 레포는 `.github/lens-ignore`를 둘 수 있습니다. 레포 루트 기준의 gitignore 문법 glob으로, 자격증명, 생성된 번들, 서드파티 vendor 트리, 데이터 픽스처처럼 내용이 리뷰어에게 절대 전달되면 안 되는 파일을 지정합니다. `prepare` 워크플로우(`base-ai-review-prepare.yml`의 `Filter policy-excluded files` 스텝, 스크립트 `filter_pr_diff.py`)가 리뷰어가 읽기 전에 매칭되는 파일의 hunk를 모두 `pr.diff`에서 제거합니다. 파일이 없으면 아무것도 바뀌지 않습니다 -- `pr.diff`와 `context.md`는 바이트 그대로이고, 출력은 `policy_skipped=false`, `excluded_count=0`을 보고합니다.
+
+제외는 결코 조용히 일어나지 않습니다. 리뷰어 프롬프트(`context.md`, 세 리뷰어가 모두 읽음)에 `## Policy-excluded files` 섹션이 추가되고, 취합 판정 코멘트에는 `> [i] N file(s) excluded by policy (.github/lens-ignore): path1, path2` 줄이 들어갑니다. 둘 다 경로만 나열하며 내용은 절대 싣지 않습니다. 이 목록은 정책 -- 어떤 diff 항목이 규칙에 매칭됐는가 -- 에서 나오는 것이지, 파일 내용을 grep해서 민감한 것을 찾은 결과가 아닙니다. 어떤 규칙도 지정하지 않은 파일 안의 시크릿은 다른 줄과 똑같이 리뷰됩니다.
+
+### 규칙 문법
+
+gitignore 의미론을 따르는 표준 라이브러리 매처입니다. 전체 명세는 `filter_pr_diff.py`의 모듈 docstring에 있습니다.
+
+- `#`은 주석 시작. 빈 줄은 무시. 끝의 공백은 백슬래시로 이스케이프하지 않는 한 잘라냄.
+- `*`는 한 경로 구성요소 안에서만 매칭(`/`를 넘지 않음), `?`는 한 글자, `[...]`는 문자 클래스(`[!...]`는 부정).
+- `**`는 gitignore의 세 위치에서 디렉터리를 넘어 매칭: 앞의 `**/`, 뒤의 `/**`, 중간의 `/**/`. 그 외 위치에서는 그냥 `*`.
+- `/`가 없는 패턴(끝의 `/` 제외)은 어느 깊이에서든 매칭. 그 외 위치에 `/`가 있는 패턴은 레포 루트에 고정되며, 앞의 `/`는 명시적 고정.
+- 끝의 `/`는 디렉터리만, 즉 그 아래 전부를 매칭. 디렉터리로 매칭된 경로는 그 아래 전부를 제외.
+- `!`는 부정, 마지막 매칭이 이김. 경로마다 독립적으로 매칭하므로 git과 달리 제외된 디렉터리 아래의 파일을 다시 포함시킬 수 있음.
+- 컴파일할 수 없는 줄(잘못된 문자 클래스, 벗겨내고 나면 비는 패턴)은 줄 번호를 명시한 `::warning::`과 함께 건너뜀. 치명적 오류가 되지 않음.
+- rename이나 copy 항목은 어느 한쪽이라도 매칭되면 제외되므로, 민감한 파일을 옮겨서 노출시킬 수 없음.
+
+```gitignore
+# credentials and generated output
+*.pem
+/config/secrets/
+dist/**
+!dist/README.md
+```
+
+### 무엇을 어디서 읽는가
+
+규칙 파일은 PR head(`prepare`가 이미 체크아웃하는 트리)에서 읽으므로, 같은 PR에서 추가된 민감한 파일을 같은 PR에서 덮을 수 있습니다. 대가는 PR이 규칙도 수정할 수 있다는 것이고, 완화책은 고정돼 있습니다 -- `.github/lens-ignore` 자체는 절대 제외될 수 없습니다. 이 파일에 매칭되는 규칙은 그 경로에 한해 경고와 함께 무시되므로, 정책의 모든 변경은 항상 리뷰되는 diff 안에 있고, 판정 코멘트는 정책이 제거한 것을 나열합니다.
+
+크기 게이트는 그대로입니다. `PR_SIZE_LIMIT`은 GitHub가 집계한 PR의 추가+삭제 라인을 비교하며, 제외된 파일도 여기에 포함됩니다. 한도를 넘은 PR은 정책이 실행되기 전에 크기 때문에 건너뛰어지고, 판정은 어느 게이트에 걸렸는지 말해 줍니다(`size_skipped`와 `policy_skipped`는 `prepare`의 별개 출력이고, `skip`은 그 둘의 조합입니다).
+
+### 변경된 파일이 전부 제외될 때
+
+리뷰할 것이 남지 않으므로 `prepare`는 `skip=true`로 끝나며 `[i] Only policy-excluded files changed (N file(s) matched .github/lens-ignore). Skipping AI review` 코멘트를 남기고, 리뷰어 잡은 실행되지 않으며, 취합은 `Result: [OK] Review skipped -- only policy-excluded files changed` 헤드라인으로 경로를 나열한 판정 코멘트를 게시합니다. 체크는 **success**를 보고합니다. 그 내용은 레포 자신의 규칙에 따라 리뷰 대상이 아니고, 실패로 보고하면 이를 덮어쓸 ruleset이 없는 레포에서 병합이 막히기 때문입니다. 일반 코멘트이며 절대 승인이 아닙니다. 이는 빈 diff와 다릅니다 -- 빈 diff는 `prepare`를 실패시킵니다(base 대비 변경이 없거나, 병합된 PR을 재구성하지 못한 경우).
+
+두 코멘트 모두 -- `prepare` 안내와 취합 판정 -- 둘째 줄에, 평소의 `<!-- multi-llm-review -->` 다음에, 안정적인 기계 판독용 마커를 싣습니다. 안내가 두 마커를 함께 싣는 이유는, 다음 실행에서 취합의 이전 코멘트 정리 단계가 안내를 접을 수 있게 하고, 최신 LENS 코멘트를 읽는 게이트가 안내와 판정 사이의 몇 초 동안 마커 없는 코멘트를 보는 일이 없게 하기 위해서입니다:
+
+```
+<!-- lens:skipped reason=policy-excluded-only files=N -->
+```
+
+잡 결론은 `neutral`이 될 수 없고(`exit 78`은 2019년에 제거됨), 별도의 neutral check run은 소비자에게 없을 수도 있는 App 토큰이 필요하므로, 건너뛴 리뷰로 병합되면 안 되는 소비자는 대신 이 마커로 게이트합니다. 체크 결론이 `success`**이고** 최신 LENS 코멘트에 이 마커가 없을 때 병합합니다.
+
+```bash
+LATEST=$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
+  --jq '[.[][] | select(.body | contains("<!-- multi-llm-review -->"))] | last | .body')
+case "$LATEST" in
+  *"<!-- lens:skipped reason=policy-excluded-only"*) echo "review skipped by policy"; exit 1 ;;
+esac
+```
+
+알려진 한계: Claude 리뷰어는 PR head가 체크아웃된 상태로 실행되며 `context.md`를 통해 제외된 경로를 열거나, 인용하거나, 추론하지 말라는 지시를 받습니다. 이는 지시이지 강제가 아닙니다. 강제되는 부분은 `pr.diff`에서의 제거입니다.
+
+이 기능보다 오래된 릴리스에 핀된 소비자: 레포에 `.github/lens-ignore`가 있는데 핀된 스크립트에 `filter_pr_diff.py`가 없으면, `prepare`는 필터링되지 않은 diff를 리뷰어에게 보내는 대신 명시적인 `::error::`로 실패합니다. 핀을 올리거나, 그때까지 규칙 파일을 제거하세요.
+
 ## 동시성(Concurrency)과 재푸시(re-push) 동작
 
 orchestrator는 `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`를 설정하므로, 각 PR은 한 번에 최대 1개의 활성 리뷰 런만 갖습니다. 그룹 키는 PR 번호입니다(`workflow_dispatch`에서는 `inputs.pr_number`, 없으면 `github.run_id`로 폴백).
