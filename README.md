@@ -321,6 +321,19 @@ All four values inside the fence are always printed, even when empty -- an unlab
 
 `labels` is additionally sorted lexicographically, capped at the first 20 (the rest silently dropped, no "+N more" marker), and any individual name over 50 characters truncated to 49 characters plus `…`, before the same escaping is applied. Setting a label already requires triage permission on the repo, so the realistic threat these caps and the escaping guard against is a careless or compromised collaborator, not an anonymous outsider -- and GitHub's own UI already enforces the count and length caps in practice, so this is defense-in-depth on top of that, not the primary control. A consumer's prompt rule can key on a label by name (e.g. a rule in `.github/prompts/code-review-checklist.md` saying "a PR carrying the `design` label must not change application logic") and rely on the exact rendering shown above.
 
+A consumer that wants a review to pick up a label added after the PR opened needs `labeled` in its trigger's `types:` -- but every `labeled` event starts a fresh review run, and the orchestrator's `cancel-in-progress: true` concurrency group (see below) cancels whatever round is already in flight for that PR, including one for an unrelated label someone else just added. Narrow the trigger to the label(s) the prompt rule actually cares about:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+jobs:
+  review:
+    if: >-
+      github.event.action != 'labeled' && github.event.action != 'unlabeled'
+      || github.event.label.name == 'design'
+```
+
 ## Concurrency and re-push behavior
 
 The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`, so each PR has at most one active review run at a time. The group key is the PR number (`inputs.pr_number` for `workflow_dispatch`, falling back to `github.run_id`).
