@@ -238,6 +238,26 @@ on wrapper `main`, `base-wrapper-drift` reports the `Filter policy-excluded file
 correspondence entry as a stale wrapper step name (by design, see
 [Architecture](#architecture-the-wrapper-reimplements-it-does-not-delegate)).
 
+### PR labels in the metadata block on the wrapper path (AT-2222)
+
+Base's `prepare` now reads the PR's GitHub labels on both its `Resolve PR refs` and
+`Extract diff and context` steps and prints them as a `labels:` line inside the fenced,
+untrusted-data block that `## PR Metadata` renders for every reviewer (README:
+[PR Metadata block](../README.md#pr-metadata-block)). Both steps already have a
+wrapper-side counterpart of the same name (`.github/drift-check/correspondence.yml`), so
+this is not a new step to port -- it is two new env vars (`PR_LABELS_JSON` on `Resolve PR
+refs`, `LABELS` on `Extract diff and context`) that the wrapper's inline copies of those
+steps do not set yet. Until the wrapper is ported, a wrapper-path PR's metadata block
+still carries the `labels:` line, but empty, and `base-wrapper-drift` reports both
+correspondence entries as missing the new env keys on the wrapper side.
+
+The same base change also routes `author`, `head_ref` and `base_ref` through
+`display_path` and wraps all four values in a fenced block with an explicit
+"this is untrusted data" sentence (prompt-injection defense-in-depth: a label or
+branch name is attacker-influenceable text, same as any other PR-supplied string).
+That part of the change touches only the `Extract diff and context` step's rendering,
+not its inputs, so it carries no additional env-key drift beyond the two above.
+
 ## Actions allowlist (org setting)
 
 The org/repo Actions policy must permit the wrapper + orchestrator reusable workflows and

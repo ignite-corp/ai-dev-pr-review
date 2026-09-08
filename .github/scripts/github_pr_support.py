@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 REVIEWER_NAMES: tuple[str, ...] = ("claude", "codex", "gemini")
@@ -106,6 +106,37 @@ def display_path(path: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+
+_MAX_LABELS = 20
+_MAX_LABEL_NAME_LEN = 50
+
+
+def format_labels(names: Iterable[str]) -> str:
+    """Render a PR's label names for the `## PR Metadata` block (AT-2222).
+
+    Two caps, both defense-in-depth against a maliciously large label set or
+    an oversized label name reaching the reviewers' prompt context: at most
+    20 labels survive, and any individual name longer than 50 characters is
+    truncated to 49 characters plus an ellipsis. GitHub's UI already enforces
+    both limits in practice -- a PR cannot carry more than 20 labels through
+    the picker, and a label name cannot exceed 50 characters -- so this only
+    guards against that enforcement being bypassed or changing.
+
+    Names are sorted first (plain lexicographic order), then capped, so the
+    kept set is deterministic rather than dependent on API ordering; the
+    dropped overflow is silent, with no "+N more" marker. Each surviving name
+    is rendered through `display_path` -- despite the name it is a general
+    single-line, code-span-safe string renderer, and reusing it keeps one
+    escaping implementation for every string this workflow prints into a
+    markdown code span (repo convention: one rule, one home).
+    """
+    rendered: list[str] = []
+    for name in sorted(names)[:_MAX_LABELS]:
+        if len(name) > _MAX_LABEL_NAME_LEN:
+            name = name[: _MAX_LABEL_NAME_LEN - 1] + "\u2026"
+        rendered.append(display_path(name))
+    return ", ".join(rendered)
 
 
 DIFF_FILE_PREFIX = "+++ b/"
