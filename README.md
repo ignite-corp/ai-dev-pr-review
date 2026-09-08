@@ -243,6 +243,63 @@ These tune behavior without code changes. Set them under repository or organizat
 | `ROUND_CUTOFF_N` | `5` | Convergence backstop. From this review round onward, a reviewer's findings are folded into a single `Round Cutoff Summary (R<n>)` comment instead of individual inline threads. The round number is the count of bot verdict posts already on the PR, plus one for the round in progress. All three conditions must hold for the fold to happen: the gate is enabled, the round number has reached this value, **and** every finding in that reviewer's payload is `minor` or `suggestion`. A single `critical` or `major` finding posts the whole batch inline as usual -- and so does a finding whose severity is missing or unrecognized, because unknown severities are counted as blocking so an unexpected payload fails open. Evaluated per reviewer per round, so one reviewer can fold while another still posts inline. The verdict is unaffected: nothing is auto-merged and no follow-up ticket is created. A non-integer value falls back to `5`. |
 | `ROUND_CUTOFF_ENABLED` | `true` | Killswitch for the `ROUND_CUTOFF_N` backstop. Only the literal `false` (case-insensitive, surrounding whitespace ignored) disables it; every other value, a typo included, leaves the gate on. Disabled, findings are always posted as individual inline threads no matter how many rounds a PR has run. |
 
+## Excluding paths from review (`.github/lens-ignore`)
+
+A consumer repo may carry `.github/lens-ignore`: gitignore-syntax globs, relative to the repo root, naming files whose content must never reach the reviewers -- credentials, generated bundles, third-party vendor trees, data fixtures. The `prepare` workflow (`base-ai-review-prepare.yml`, step `Filter policy-excluded files`, script `filter_pr_diff.py`) removes every matching file's hunks from `pr.diff` before any reviewer reads it. Without the file nothing changes: `pr.diff` and `context.md` keep their bytes, and the outputs report `policy_skipped=false`, `excluded_count=0`.
+
+The exclusion is never silent. The reviewer prompt (`context.md`, read by all three reviewers) gains a `## Policy-excluded files` section, and the aggregate verdict comment carries a line `> [i] N file(s) excluded by policy (.github/lens-ignore): path1, path2`. Both list paths only, never content. The list comes from the policy -- which diff entries matched a rule -- not from grepping file contents for anything sensitive; a secret in a file no rule names is reviewed like any other line.
+
+### Rule syntax
+
+A stdlib matcher with gitignore semantics; the full statement lives in the module docstring of `filter_pr_diff.py`.
+
+- `#` starts a comment; blank lines are ignored; trailing whitespace is trimmed unless escaped with a backslash.
+- `*` matches within one path component (never `/`), `?` matches one character, `[...]` is a character class (`[!...]` negates).
+- `**` crosses directories in the three gitignore positions: leading `**/`, trailing `/**`, and `/**/` in the middle. Anywhere else it is a plain `*`.
+- A pattern with no `/` (a trailing one aside) matches at any depth. A pattern with a `/` anywhere else is anchored to the repo root; a leading `/` anchors explicitly.
+- A trailing `/` matches directories only, i.e. everything under one. A path matched as a directory excludes everything beneath it.
+- `!` negates, last match wins. Each path is matched on its own, so unlike git a file can be re-included under an excluded directory.
+- A line that cannot be compiled (an invalid character class, a pattern that is empty once stripped) is skipped with a `::warning::` naming its line number; it is never fatal.
+- A rename or copy entry is excluded when either side matches, so a sensitive file cannot be surfaced by moving it.
+
+```gitignore
+# credentials and generated output
+*.pem
+/config/secrets/
+dist/**
+!dist/README.md
+```
+
+### What is read from where
+
+The rule file is read from the PR head (the tree `prepare` already checks out), so a sensitive file added by the same PR can be covered by the same PR. The price is that a PR can also edit the rules, and the mitigation is fixed: `.github/lens-ignore` itself is never excludable. A rule that matches it is ignored for that path with a warning, so every change to the policy is always in the reviewed diff, and the verdict comment lists what the policy removed.
+
+The size gate is unchanged: `PR_SIZE_LIMIT` compares GitHub's own additions+deletions for the PR, and excluded files still count toward it. A PR that is over the limit is skipped for size before the policy runs; the verdict says which gate it hit (`size_skipped` and `policy_skipped` are separate outputs of `prepare`, and `skip` is their combination).
+
+### When every changed file is excluded
+
+Nothing is left to review, so `prepare` ends with `skip=true` and comments `[i] Only policy-excluded files changed (N file(s) matched .github/lens-ignore). Skipping AI review`, the reviewer jobs do not run, and the aggregate posts a verdict comment headed `Result: [OK] Review skipped -- only policy-excluded files changed` listing the paths. The check reports **success**: the content is not review material by the repo's own rule, and a failure would block merge on a repo with no ruleset to override it. It is a plain comment, never an approval. This is distinct from an empty diff, which fails `prepare` (nothing changed against the base, or a merged PR could not be reconstructed).
+
+The skip comment carries a stable machine-readable marker on its second line, after the usual `<!-- multi-llm-review -->` one:
+
+```
+<!-- lens:skipped reason=policy-excluded-only files=N -->
+```
+
+A job conclusion cannot be `neutral` (`exit 78` was removed in 2019), and a separate neutral check run would need an App token consumers may lack, so a consumer that must not merge on a skipped review gates on the marker instead: merge when the check concluded `success` **and** the latest LENS comment does not carry it.
+
+```bash
+LATEST=$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
+  --jq '[.[][] | select(.body | contains("<!-- multi-llm-review -->"))] | last | .body')
+case "$LATEST" in
+  *"<!-- lens:skipped reason=policy-excluded-only"*) echo "review skipped by policy"; exit 1 ;;
+esac
+```
+
+Known limitation: the Claude reviewer runs with the PR head checked out and is told by `context.md` not to open, quote, or infer the excluded paths. That is an instruction, not an enforcement; the removal from `pr.diff` is the enforced part.
+
+Consumers pinned to a release older than this feature: if the repo carries `.github/lens-ignore` but the pinned scripts lack `filter_pr_diff.py`, `prepare` fails with an explicit `::error::` rather than sending an unfiltered diff to the reviewers. Move the pin forward, or remove the rule file until you do.
+
 ## Concurrency and re-push behavior
 
 The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`, so each PR has at most one active review run at a time. The group key is the PR number (`inputs.pr_number` for `workflow_dispatch`, falling back to `github.run_id`).
