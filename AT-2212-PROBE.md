@@ -2,6 +2,8 @@
 
 Team roster for this probe.
 
+This section lists everyone on the team along with their assigned role.
+
 | Name | Role |
 |------|------|
 | Alice | Lead |
