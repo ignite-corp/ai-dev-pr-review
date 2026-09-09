@@ -251,6 +251,12 @@ or error handling), report it at the nearest affected remaining line and quote
 the removed (`-`) line as evidence. Context lines (space-prefixed) that this PR
 does not touch are out of scope -- do NOT raise issues about them.
 
+COMPLETENESS RULE: Do not claim that a list, table, enum, or other multi-part
+structure is complete, or state its count, based on this diff alone -- rows,
+items, or members outside the visible hunk are not something you can see. If
+such a claim is tempting, mark it as unverifiable from the provided context
+instead of raising it as a finding.
+
 LINE NUMBERS: The `line` you report MUST be the target file's OWN line number
 (the right-hand/new-file line -- the number you would see in `git blame` or
 when opening the file directly), NOT the line's position within the `pr.diff`
