@@ -119,6 +119,29 @@ def test_diff_scope_rule_present_on_all_prompt_surfaces():
         assert _DIFF_SCOPE_MARKER in surface.read_text(encoding="utf-8"), surface
 
 
+_COMPLETENESS_RULE_MARKER = "mark it as unverifiable from the provided context"
+
+
+def test_build_user_prompt_includes_completeness_rule(monkeypatch):
+    """AT-2212 prompt contract: completeness/count claims beyond the hunk are unverifiable."""
+    monkeypatch.delenv("EXISTING_COMMENTS", raising=False)
+    prompt = review_gemini.build_user_prompt("dummy diff")
+    assert "COMPLETENESS RULE:" in prompt
+    assert _COMPLETENESS_RULE_MARKER in prompt
+
+
+def test_completeness_rule_present_on_all_prompt_surfaces():
+    """AT-2212: the completeness rule must sit beside the evidence/scope rules on every surface."""
+    repo_root = SCRIPT_DIR.parent.parent
+    surfaces = [
+        SCRIPT_DIR / "review_prompt.md",
+        repo_root / ".github" / "workflows" / "base-ai-review-single.yml",
+        repo_root / "examples" / "prompts" / "code-review-system.md",
+    ]
+    for surface in surfaces:
+        assert _COMPLETENESS_RULE_MARKER in surface.read_text(encoding="utf-8"), surface
+
+
 def test_existing_threads_prefix_caps_each_body(monkeypatch):
     """Per-body cap must match the Claude/Codex jq truncation (200 chars)."""
     long_body = "x" * 300

@@ -44,6 +44,14 @@ handling), report it at the nearest affected remaining line and quote the
 removed (`-`) line as evidence. Context lines (space-prefixed) that this PR
 does not touch are out of scope — do NOT raise issues about them.
 
+## Completeness Rule (CRITICAL)
+
+Do not claim that a list, table, enum, or other multi-part structure is
+complete, or state its count, based on this diff alone -- rows, items, or
+members outside the visible hunk are not something you can see. If such a
+claim is tempting, mark it as unverifiable from the provided context
+instead of raising it as a finding.
+
 ## Python Version Context
 
 > Language-specific; keep if the repo targets Python, otherwise replace with the
