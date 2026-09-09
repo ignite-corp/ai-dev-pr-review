@@ -275,14 +275,16 @@ dist/**
 <!-- lens:skipped reason=policy-excluded-only files=N -->
 ```
 
+**게이트는 반드시 `<!-- lens:skipped` 리터럴 접두사에 앵커링하고, `lens:skipped`만으로 느슨하게 매칭하지 마세요.** 느슨한 매칭은 마커를 언급만 하는 리뷰어의 문장에도 반응합니다 — 실제 소비자 PR에서 측정된 사례로, 느슨한 매칭 1건, 앵커링된 매칭 0건이었습니다.
+
 잡 결론은 `neutral`이 될 수 없고(`exit 78`은 2019년에 제거됨), 별도의 neutral check run은 소비자에게 없을 수도 있는 App 토큰이 필요하므로, 건너뛴 리뷰로 병합되면 안 되는 소비자는 대신 이 마커로 게이트합니다. 체크 결론이 `success`**이고** 최신 LENS 코멘트에 이 마커가 없을 때 병합합니다.
 
 ```bash
 LATEST=$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
   --jq '[.[][] | select(.body | contains("<!-- multi-llm-review -->"))] | last | .body')
-case "$LATEST" in
-  *"<!-- lens:skipped reason=policy-excluded-only"*) echo "review skipped by policy"; exit 1 ;;
-esac
+if grep -qE '^<!-- lens:skipped reason=policy-excluded-only files=[0-9]+ -->$' <<< "$LATEST"; then
+  echo "review skipped by policy"; exit 1
+fi
 ```
 
 알려진 한계: Claude 리뷰어는 PR head가 체크아웃된 상태로 실행되며 `context.md`를 통해 제외된 경로를 열거나, 인용하거나, 추론하지 말라는 지시를 받습니다. 이는 지시이지 강제가 아닙니다. 강제되는 부분은 `pr.diff`에서의 제거입니다.
@@ -389,6 +391,8 @@ updates:
 lockstep이 필요한 이유는 래퍼가 이 레포의 재사용 워크플로우를 호출하지 않고 단일 리뷰 job을 인라인으로 재구현하고 있기 때문입니다. 따라서 `base-ai-review-single.yml`의 변경은 파일럿 소비자에게 자동으로 전달되지 않습니다 — `wrapper.yml`로 직접 포팅한 뒤 대응되는 래퍼 릴리스로 배포해야 합니다. 자동으로 전파되는 것은 래퍼의 `upstream_ref` 체크아웃을 타고 오는 `.github/scripts/*`(`review_prompt.md` 포함)와 `.github/actions/claude-review` 컴포지트뿐입니다. 레포별 프롬프트인 `code-review-system.md` / `code-review-checklist.md`는 이 레포가 아니라 소비자 레포에서 읽습니다. [파일럿 사용법](docs/pilot-usage.md) 참조.
 
 ## 소비자 레포별 프롬프트 재정의
+
+**이 두 파일은 선택이 아니라 필수입니다.** 모든 소비자는 `code-review-system-prompt-path` / `code-review-checklist-path`로 리뷰되며, thin 트리거가 재정의하지 않는 한 기본값은 소비자 레포의 `.github/prompts/code-review-system.md` / `.github/prompts/code-review-checklist.md`입니다 — orchestrator 자체의 기본값도 같은 두 경로이므로, 이 입력을 한 번도 설정하지 않은 소비자도 기본 경로에 파일이 있어야 합니다. `prepare`의 `Extract diff and context` 단계는 각 파일을 먼저 base 브랜치에서 읽고, base에 없으면 경고와 함께 PR head 사본으로 대체하며, base와 PR head 둘 다에 없으면 그 단계 자체가 실패합니다 — `cat`할 대상이 없고, 리뷰는 실행되지 않습니다. 기본 경로에 두 파일을 갖춘 동작하는 소비자 예시는 `hyuk-hur/dev-dotfiles`를 참고하세요.
 
 레포별 시스템 프롬프트와 체크리스트는 여기가 아니라 소비자 레포에 있습니다. 재사용 워크플로우가 `code-review-system-prompt-path` / `code-review-checklist-path`로 읽어 `context.md`로 합치고, 세 리뷰어(Claude / Codex / Gemini)가 이를 공통 지침으로 읽습니다. 커스터마이즈하려면:
 

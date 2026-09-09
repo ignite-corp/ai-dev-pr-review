@@ -317,3 +317,25 @@ one behind a truncated list. `--slurp` folds the pages into one array so the
 count comes from the same response as the names.
 Where `vars.*` resolve (caller repo and its org, never the base repo) is under
 "Model selection" above.
+
+## Op hazard - consumer onboarding must add the required prompt files
+
+`base-ai-review-prepare.yml`'s `Extract diff and context` step reads
+`code-review-system-prompt-path` / `code-review-checklist-path` (default
+`.github/prompts/code-review-system.md` / `.github/prompts/code-review-checklist.md`
+in the consumer repo) from the base branch, falling back to the PR head copy
+with a warning when the base lacks it. The orchestrator's own defaults are the
+same two paths and it forwards whatever the caller passes straight through, so
+a consumer that never sets these inputs still needs the files at the default
+paths, not just a consumer that customizes them. When a file exists in
+NEITHER the base branch nor the PR head, the step has nothing to `cat` and
+fails outright — no review runs, and the failure is a plain missing-file error
+rather than one that names the setting.
+
+Onboarding step, per repo, before the first review runs: copy
+`examples/prompts/code-review-system.md` and
+`examples/prompts/code-review-checklist.md` from this repo into the consumer's
+`.github/prompts/`, edit them for the repo, and commit to the base branch (see
+[Overriding prompts per consumer repo](../../README.md#overriding-prompts-per-consumer-repo)).
+`hyuk-hur/dev-dotfiles` carries both files at the default paths as a working
+example.
