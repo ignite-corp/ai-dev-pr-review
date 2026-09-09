@@ -286,14 +286,16 @@ Both comments -- the `prepare` note and the aggregate verdict -- carry a stable 
 <!-- lens:skipped reason=policy-excluded-only files=N -->
 ```
 
+**Anchor the gate on the literal `<!-- lens:skipped` prefix, never a bare `lens:skipped` substring.** A loose match also fires on a reviewer's prose that merely mentions the marker by name — measured on a real consumer PR (1 loose match, 0 anchored matches).
+
 A job conclusion cannot be `neutral` (`exit 78` was removed in 2019), and a separate neutral check run would need an App token consumers may lack, so a consumer that must not merge on a skipped review gates on the marker instead: merge when the check concluded `success` **and** the latest LENS comment does not carry it.
 
 ```bash
 LATEST=$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
   --jq '[.[][] | select(.body | contains("<!-- multi-llm-review -->"))] | last | .body')
-case "$LATEST" in
-  *"<!-- lens:skipped reason=policy-excluded-only"*) echo "review skipped by policy"; exit 1 ;;
-esac
+if grep -qE '^<!-- lens:skipped reason=policy-excluded-only files=[0-9]+ -->$' <<< "$LATEST"; then
+  echo "review skipped by policy"; exit 1
+fi
 ```
 
 Known limitation: the Claude reviewer runs with the PR head checked out and is told by `context.md` not to open, quote, or infer the excluded paths. That is an instruction, not an enforcement; the removal from `pr.diff` is the enforced part.
@@ -400,6 +402,8 @@ Wrapper version alignment: this repo and the pilot wrapper `ignite-pilot-org/ai-
 The lockstep exists because the wrapper does not call this repo's reusable workflows — it reimplements the single-review job inline. A change to `base-ai-review-single.yml` therefore does not reach pilot consumers on its own: it must be hand-ported into `wrapper.yml` and shipped as a matching wrapper release. Only `.github/scripts/*` — `review_prompt.md` included — and the `.github/actions/claude-review` composite propagate automatically, through the wrapper's `upstream_ref` checkout. The per-repo `code-review-system.md` / `code-review-checklist.md` are read from the consumer repo, not from here. See [pilot usage](docs/pilot-usage.md).
 
 ## Overriding prompts per consumer repo
+
+**These two files are required, not optional.** Every consumer is reviewed against `code-review-system-prompt-path` / `code-review-checklist-path`, which default to `.github/prompts/code-review-system.md` / `.github/prompts/code-review-checklist.md` in the consumer repo unless the thin trigger overrides them — and the orchestrator's own defaults are the same two paths, so a consumer that never sets these inputs still needs the files at the default paths. `prepare`'s `Extract diff and context` step reads each one from the base branch first, falls back to the PR head copy with a warning when the base lacks it, and fails the step outright when NEITHER the base branch nor the PR head has it — there is nothing left to `cat`, and no review runs. See `hyuk-hur/dev-dotfiles` for a working consumer with both files at the default paths.
 
 The per-repo system prompt and checklist live in the consumer repo, NOT here. The reusable workflow reads them via `code-review-system-prompt-path` / `code-review-checklist-path` and concatenates them into the `context.md` that every reviewer (Claude / Codex / Gemini) reads as its shared guideline. To customize:
 
