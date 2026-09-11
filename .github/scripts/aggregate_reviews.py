@@ -857,17 +857,60 @@ def format_summary(
     conclusions: dict[str, str] | None = None,
     *,
     comment_only: bool = False,
+    approve_quorum: bool = True,
 ) -> str:
-    if verdict == "approve" and comment_only:
-        icon, label = "[OK]", "Aggregate verdict (comment only -- auto-approve disabled)"
-    elif verdict == "approve":
-        icon, label = "[OK]", "Approved"
-    elif verdict == "request_changes" and comment_only:
-        icon, label = "[!]", "Changes recommended (comment only -- auto-approve disabled)"
+    """Build the headline as three independent axes (AT-2240).
+
+    The three questions a reader needs answered can each vary independently,
+    so a single fused label collapses distinct situations onto the same
+    text: what the rules decided (verdict), whether that was actually
+    posted as a formal review or only as a comment (posting), and how many
+    of the configured reviewers produced a verdict (coverage). Callers pass
+    the same ``approve_quorum`` used for ``post_verdict`` so the headline
+    can never describe a different outcome than the one actually posted.
+    """
+    total = len(REVIEWERS)
+    n_available = len(available)
+    coverage = f"{n_available}/{total} reviewers"
+
+    n_major = sum(
+        1
+        for review in available.values()
+        for issue in review.get("issues", [])
+        if issue.get("severity") == "major"
+    )
+    approve_has_majors = verdict == "approve" and n_major > 0
+    approve_quorum_short = verdict == "approve" and not approve_quorum
+
+    if verdict == "approve":
+        label = "Approved"
+        if approve_has_majors:
+            label += f" with {n_major} unreviewed major issue(s)"
+        icon = "[!]" if approve_has_majors or approve_quorum_short else "[OK]"
     elif verdict == "request_changes":
-        icon, label = "[X]", "Changes Requested"
+        label = "Changes Requested"
+        icon = "[!]" if comment_only else "[X]"
     else:
-        icon, label = "[!]", "Comment Only"
+        label = "Comment Only"
+        icon = "[!]"
+
+    # The coverage segment names the quorum shortfall whenever one exists,
+    # independent of comment_only -- otherwise a PR that is both
+    # comment_only and quorum-short would report the auto-approve killswitch
+    # but never mention that a reviewer didn't respond (AT-2240 follow-up).
+    coverage_segment = (
+        f"not every reviewer responded ({coverage})" if approve_quorum_short else coverage
+    )
+
+    # The posting axis: only rendered when it diverges from the plain
+    # coverage figure, so a clean, fully-posted verdict states just the
+    # verdict and the coverage.
+    if comment_only and verdict in ("approve", "request_changes"):
+        label += f" | posted as comment (auto-approve off) | {coverage_segment}"
+    elif approve_quorum_short:
+        label += f" | comment only: {coverage_segment}"
+    else:
+        label += f" | {coverage_segment}"
 
     # Append per-reviewer reason annotations for any missing verdicts, and for
     # reviewers that did produce a payload but reported status "failed" -- an
@@ -1270,14 +1313,23 @@ def main() -> None:
         )
 
     comment_only = _is_comment_only()
+    # Computed once so the headline and the posted event can never disagree
+    # about whether every configured reviewer produced a verdict (AT-2240).
+    approve_quorum = _has_full_reviewer_coverage(available)
     comment = format_summary(
-        reviews, verdict, reason, available, conclusions, comment_only=comment_only
+        reviews,
+        verdict,
+        reason,
+        available,
+        conclusions,
+        comment_only=comment_only,
+        approve_quorum=approve_quorum,
     )
     post_verdict(
         comment,
         verdict,
         comment_only=comment_only,
-        approve_quorum=_has_full_reviewer_coverage(available),
+        approve_quorum=approve_quorum,
     )
     print(f"Final verdict: {verdict} -- {reason}")
 

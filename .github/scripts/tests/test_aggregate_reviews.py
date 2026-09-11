@@ -790,6 +790,57 @@ class TestFullReviewerCoverage:
         assert _has_full_reviewer_coverage({}) is False
 
 
+class TestHeadlineAgreesWithPostedEvent:
+    """AT-2240: the headline and the posted event must never disagree.
+
+    Before the fix, format_summary's comment_only came only from
+    ALLOW_AUTO_APPROVE while the quorum downgrade was decided separately
+    inside post_verdict -- so with auto-approve on and one reviewer dead,
+    the headline could read "[OK] Approved" while post_verdict silently
+    posted a plain comment instead of an approval. main() now computes
+    approve_quorum once and passes the same value to both.
+    """
+
+    def test_quorum_downgrade_reflected_in_the_posted_headline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("GH_TOKEN", "default-token")
+        monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")  # auto-approve is ON
+        monkeypatch.setenv("REVIEW_MODE", "parallel")
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        reviews["gemini"] = None  # one reviewer dead -> quorum short
+
+        posted_bodies: list[str] = []
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            if "comment" in cmd:
+                posted_bodies.append(kwargs.get("input", ""))
+            elif "review" in cmd:
+                pytest.fail("a formal review must not be posted without full quorum")
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+        with (
+            patch("aggregate_reviews.load_reviews", return_value=reviews),
+            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+        ):
+            main()
+
+        assert len(posted_bodies) == 1
+        body = posted_bodies[0]
+        assert (
+            "[!] Approved | comment only: not every reviewer responded (2/3 reviewers)"
+            in body
+        )
+        assert "[OK]" not in body
+        assert "Auto-approve withheld" in body
+
+
 class TestCommentOnlyToggle:
     """_is_comment_only maps ALLOW_AUTO_APPROVE to the comment-only killswitch."""
 
@@ -961,24 +1012,102 @@ class TestMissingStatusFailClosed:
 
 
 class TestSummaryLabels:
-    """format_summary header reflects the comment-only killswitch."""
+    """format_summary's headline is three independent axes (AT-2240):
+    verdict, posting, and reviewer coverage. Each is asserted separately so a
+    change to one axis cannot silently break another.
+    """
 
     def test_request_changes_comment_only_label(self) -> None:
         summary = format_summary(
             {}, "request_changes", "reason", {}, comment_only=True
         )
-        assert "Changes recommended (comment only -- auto-approve disabled)" in summary
-        assert "Changes Requested" not in summary
+        assert "[!] Changes Requested | posted as comment (auto-approve off)" in summary
 
     def test_request_changes_active_label(self) -> None:
         summary = format_summary(
             {}, "request_changes", "reason", {}, comment_only=False
         )
-        assert "Changes Requested" in summary
+        assert "[X] Changes Requested | 0/3 reviewers" in summary
+        assert "posted as comment" not in summary
 
     def test_approve_comment_only_label(self) -> None:
-        summary = format_summary({}, "approve", "reason", {}, comment_only=True)
-        assert "comment only -- auto-approve disabled" in summary
+        # AT-2240 claim 2: comment_only alone (no majors, full quorum) is an
+        # administrative posting choice, not a review-quality problem, so the
+        # icon stays [OK] and the word "Approved" is never dropped.
+        summary = format_summary(
+            {}, "approve", "reason", {}, comment_only=True, approve_quorum=True
+        )
+        assert "[OK] Approved | posted as comment (auto-approve off) | 0/3 reviewers" in summary
+
+    def test_approve_clean_label(self) -> None:
+        reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        summary = format_summary(
+            reviews, "approve", "reason", reviews, comment_only=False, approve_quorum=True
+        )
+        assert "[OK] Approved | 3/3 reviewers" in summary
+
+    def test_approve_with_unreviewed_major_issues_loses_ok_icon(self) -> None:
+        # AT-2240 claim 1: apply_verdict_rules keeps a major-without-consensus
+        # issue at verdict "approve" -- the headline must say so instead of
+        # rendering a bare, unqualified [OK].
+        reviews = {
+            "claude": _make_named_review("claude", [_make_issue(severity="major")]),
+            "codex": _make_named_review("codex", []),
+            "gemini": _make_named_review("gemini", []),
+        }
+        verdict, reason, available = apply_verdict_rules(reviews)
+        assert verdict == "approve"
+        summary = format_summary(
+            reviews, verdict, reason, available, comment_only=False, approve_quorum=True
+        )
+        assert "[!] Approved with 1 unreviewed major issue(s) | 3/3 reviewers" in summary
+        assert "[OK]" not in summary
+
+    def test_approve_without_quorum_loses_ok_icon_and_states_coverage(self) -> None:
+        # AT-2240 claim 3: format_summary's comment_only alone cannot reflect
+        # the quorum downgrade computed via approve_quorum -- it must be
+        # passed in explicitly and change the headline.
+        reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        del reviews["gemini"]
+        summary = format_summary(
+            reviews,
+            "approve",
+            "reason",
+            reviews,
+            comment_only=False,
+            approve_quorum=False,
+        )
+        assert (
+            "[!] Approved | comment only: not every reviewer responded"
+            " (2/3 reviewers)" in summary
+        )
+        assert "[OK]" not in summary
+
+    def test_approve_comment_only_and_without_quorum_states_both_reasons(self) -> None:
+        # Review-round follow-up: comment_only and approve_quorum_short can
+        # both be true (auto-approve off on a PR where a reviewer also
+        # didn't respond). The comment_only branch used to win outright and
+        # silently drop the quorum reason -- the coverage segment must name
+        # the quorum shortfall regardless of comment_only.
+        reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        del reviews["gemini"]
+        summary = format_summary(
+            reviews,
+            "approve",
+            "reason",
+            reviews,
+            comment_only=True,
+            approve_quorum=False,
+        )
+        assert (
+            "[!] Approved | posted as comment (auto-approve off) |"
+            " not every reviewer responded (2/3 reviewers)" in summary
+        )
+        assert "[OK]" not in summary
+
+    def test_comment_verdict_label_states_coverage(self) -> None:
+        summary = format_summary({}, "comment", "reason", {})
+        assert "[!] Comment Only | 0/3 reviewers" in summary
 
 
 class TestClaudeInfrastructureFailure:
