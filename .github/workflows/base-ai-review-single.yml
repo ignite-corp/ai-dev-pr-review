@@ -259,6 +259,17 @@ jobs:
           # to 'true'/'false' here so an unset/empty/non-'true' var yields
           # 'false' -> OAuth path unchanged (AT-1606 feature-off invariant).
           force_api: ${{ vars.CLAUDE_FORCE_API == 'true' }}
+          # Same pattern: a consumer can override the bot allow-list (AT-2272)
+          # without a base release by setting this var. It REPLACES the list
+          # wholesale -- GitHub Actions has no way to merge it with a default
+          # inside this expression -- so a consumer that wants to add one bot
+          # must set the complete list, not just the addition. Unset resolves
+          # to the literal below, a deliberate duplicate of the composite's
+          # own default (action.yml's allowed_bots input); the two copies are
+          # guarded against drift by
+          # test_single_yml_fallback_matches_composite_default in
+          # test_claude_review_allowed_bots.py.
+          allowed_bots: ${{ vars.CLAUDE_ALLOWED_BOTS || 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]' }}
           prompt: ${{ env.CLAUDE_PROMPT }}
 
       - name: Extract Claude review from execution log (fallback)

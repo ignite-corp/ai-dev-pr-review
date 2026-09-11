@@ -34,6 +34,17 @@ inputs:
     description: --allowedTools value
     required: false
     default: 'Write,Read,Bash(cat:pr.diff),Bash(cat:context.md),Bash(jq:*)'
+  allowed_bots:
+    description: >-
+      Bot actors allowed to trigger the review despite the pinned action's
+      non-human-actor guard (see the allowed_bots usage below for the format
+      and the enumerated default). Exposed as an input so a consumer can
+      override the list without waiting for a base release or changing the
+      SHA pin. A caller-supplied value REPLACES this default wholesale; it
+      is not merged with it, so overriding to add one bot means passing the
+      complete list, not just the addition.
+    required: false
+    default: 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]'
   api_timeout_ms:
     description: >-
       Timeout in milliseconds applied to the Claude CLI's API request cap
@@ -84,16 +95,23 @@ runs:
         # The action refuses to run for a non-human actor unless the actor is
         # listed here (default ""), so a bot-triggered PR silently lost its
         # Claude reviewer: "Workflow initiated by non-human actor: dependabot
-        # (type: Bot)" (AT-1837). Three bots author PRs in this fleet and all
-        # three hit the guard: dependabot, pilot-cd-dispatcher (onboard /
-        # pages-callback scaffolds in ai-dev-infra-common) and github-actions
-        # (age/KMS commits in ai-tf-t2a). Enumerated rather than '*', which
-        # would admit any bot, including Apps that could reach this action with
-        # a prompt they control (upstream docs/security.md).
-        # Format per the pinned action's src/github/validation/actor.ts:
-        # comma-separated, each entry trimmed, lowercased and stripped of a
-        # trailing "[bot]" -- so the suffix is optional and matching is
-        # case-insensitive, but comma is the only separator.
-        allowed_bots: 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot]'
+        # (type: Bot)" (AT-1837). Four bots author PRs in this fleet and all
+        # four hit the guard: dependabot, pilot-cd-dispatcher (onboard /
+        # pages-callback scaffolds in ai-dev-infra-common), github-actions
+        # (age/KMS commits in ai-tf-t2a) and ignite-actions-token-app (PRs
+        # opened with a minted App installation token; AT-2272 -- the actor
+        # this token authenticates as resolves to account type Bot the same
+        # way a bot user does, and is rejected identically). Enumerated
+        # rather than '*', which would admit any bot, including Apps that
+        # could reach this action with a prompt they control (upstream
+        # docs/security.md).
+        # Format per the pinned action's src/github/validation/actor.ts
+        # (isAllowedBot): comma-separated, each entry trimmed, lowercased and
+        # stripped of a trailing "[bot]" -- so the suffix is optional and
+        # matching is case-insensitive, but comma is the only separator. The
+        # actor is normalized the same way before comparison, so an entry's
+        # own "[bot]" suffix is cosmetic; kept here only for consistency with
+        # the existing entries.
+        allowed_bots: ${{ inputs.allowed_bots }}
         claude_args: '--model ${{ inputs.model }} --allowedTools "${{ inputs.allowed_tools }}"'
         prompt: ${{ inputs.prompt }}

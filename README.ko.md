@@ -222,6 +222,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP` | `0.5` | Dependabot 전용. |
 | `MAJOR_CONSENSUS_MIN` | `2` | major 이슈에 대해 `request_changes`를 유발하는 합의에 필요한 리뷰어 수. |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | `claude_args --model`을 통해 `anthropics/claude-code-action`에 전달되는 모델. |
+| `CLAUDE_ALLOWED_BOTS` | `dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]` | `anthropics/claude-code-action`의 `allowed_bots` 입력으로 전달됨 — 봇이 시작한 PR이 해당 액션의 비인간 액터 가드를 통과하게 해주는 유일한 값. 쉼표로 구분되며, 각 항목은 트리밍·소문자화되고 양쪽 모두 끝의 `[bot]`을 제거한 뒤 액터와 비교되므로 접미사는 장식일 뿐임. 베이스 릴리스를 기다리지 않고 오버라이드하려면 이 값을 설정 — 단, 기본 목록에 추가되는 것이 아니라 통째로 **대체**되므로, 봇을 하나 더 허용하려면 기존 기본값 중 필요한 것까지 모두 포함한 전체 쉼표 목록을 설정해야 함. |
 | `CODEX_MODEL` | `gpt-5.6-luna` | `codex exec --model`에 전달되는 모델. |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | `google-genai` 클라이언트에 전달되는 모델. |
 | `BOT_LOGIN` | `github-actions[bot]` | 이전 봇 코멘트 최소화 및 오래된 리뷰 해제에 사용되는 작성자 로그인. |
