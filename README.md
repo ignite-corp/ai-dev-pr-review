@@ -233,6 +233,7 @@ These tune behavior without code changes. Set them under repository or organizat
 | `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP` | `0.5` | Dependabot-only. |
 | `MAJOR_CONSENSUS_MIN` | `2` | Number of reviewers required for consensus to trigger `request_changes` on a major issue. |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model passed to `anthropics/claude-code-action` via `claude_args --model`. |
+| `CLAUDE_ALLOWED_BOTS` | `dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]` | Passed to `anthropics/claude-code-action`'s `allowed_bots` input, which is the only thing letting a bot-triggered PR past the action's non-human-actor guard. Comma-separated; each entry is trimmed, lowercased, and matched against the actor with an optional trailing `[bot]` stripped from both sides, so the suffix is cosmetic. Set this to override without waiting for a base release -- it **replaces** the default list wholesale rather than adding to it, so a consumer that wants one more bot must set the complete comma-separated list, including whichever of the defaults above it still needs. |
 | `CODEX_MODEL` | `gpt-5.6-luna` | Model passed to `codex exec --model`. |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Model passed to the `google-genai` client. |
 | `BOT_LOGIN` | `github-actions[bot]` | Author login used for minimizing prior bot comments and dismissing stale reviews. |
