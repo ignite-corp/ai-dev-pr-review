@@ -22,6 +22,12 @@ claude -> codex -> gemini and stops on early_exit), and post_inline_comments.py
 per reviewer. The artifact upload/download between jobs is not needed: every
 step reads and writes the same run directory.
 
+That one directory is also why the reviewers run one at a time here even in
+`parallel` mode, where Actions runs three jobs at once: Actions gives each
+job its own checkout, and two of these reviewers can write to the tree they
+share. The modes still differ in what runs -- `parallel` runs every reviewer
+whatever any of them asks for -- only never at the same moment.
+
 From base-ai-review-aggregate.yml: aggregate_reviews.py, posting the verdict
 and setting this command's exit status.
 
@@ -43,12 +49,14 @@ import re
 import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from github_pr_support import REVIEWER_NAMES, display_path, format_labels
-from local_review_config import LocalConfig, prompt_path_defaults
+from local_review_config import CONFIG_PATH_ENV, LocalConfig, prompt_path_defaults
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_RUN_ROOT = Path.home() / ".cache" / "lens" / "local-review"
@@ -81,6 +89,36 @@ RUN_ARTIFACTS = (
     *(f"{name}-review.log" for name in REVIEWER_NAMES),
 )
 _GIT_TIMEOUT_SEC = 600
+
+# Agent configuration held out of the tree while a reviewer CLI runs in it.
+#
+# The reviewers run with the PR head checked out, so without this a PR author
+# gets code execution on the operator's machine: the reviewed repository's
+# CLAUDE.md, hooks, MCP servers and agents are all read by the CLI that is
+# reviewing them. On an Actions runner the tree is ephemeral, which is what
+# made the same checkout acceptable there; a laptop is not.
+#
+# Measured on claude 2.1.269 rather than assumed: a CLAUDE.md, a
+# .claude/CLAUDE.md and an AGENTS.md in the working directory each reached
+# the model, and `--safe-mode` did NOT stop the CLAUDE.md from reaching it,
+# despite its help text listing CLAUDE.md among what it disables. Moving the
+# file aside did stop it. So the flag is deliberately not passed: it would
+# read as a mitigation that measurement says is not one. Do not add it back
+# without re-probing.
+#
+# .mcp.json is included on the strength of the CLI's own
+# `--strict-mcp-config` flag ("ignoring all other MCP configurations"), not a
+# probe. .codex/ and .cursor/ are included because the CLIs that read them
+# could not be probed here at all -- codex is not installed on this machine
+# -- and an unverified reader is the case for being conservative, not
+# against it.
+QUARANTINE_DIR_NAME = "agent-config-quarantine"
+QUARANTINE_MANIFEST = "quarantine-manifest.json"
+QUARANTINED_NAMES = ("CLAUDE.md", "AGENTS.md", ".mcp.json")
+QUARANTINED_DIRS = (".claude", ".codex", ".cursor")
+# Never walked: it holds no agent configuration and moving anything out of it
+# would break the checkout the diff was computed from.
+_UNWALKED_DIRS = frozenset({".git"})
 
 
 class DriverError(RuntimeError):
@@ -126,7 +164,7 @@ def run(
     return result
 
 
-def gh_json(args: list[str]) -> dict:
+def gh_json(args: list[str]) -> dict[str, Any]:
     result = run(["gh", *args], capture=True)
     return json.loads(result.stdout)
 
@@ -171,6 +209,119 @@ def clean_artifacts(work: Path) -> None:
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
+
+
+def agent_config_paths(work: Path) -> list[Path]:
+    """Every agent-configuration path in the tree, relative to it.
+
+    Nested as well as top-level: the reviewers are told to read pr.diff and
+    context.md, but the Read tool is not confined to them, and a CLAUDE.md
+    beside a source file the model opens is read the same way the root one is.
+
+    The name decides, never the type. A `.claude` that is a *symlink to* a
+    directory is a directory to the CLI reading it, but it is not a real
+    directory to walk into; a type-first test put it in neither branch and it
+    escaped the quarantine entirely, with the hook it pointed at still live.
+    What is moved is the link, never its target: a link can point outside the
+    tree, and moving a file the pull request did not bring is neither this
+    change's business nor safely reversible.
+    """
+    found: list[Path] = []
+    stack = [work]
+    while stack:
+        for entry in sorted(stack.pop().iterdir()):
+            if entry.name in QUARANTINED_NAMES or entry.name in QUARANTINED_DIRS:
+                found.append(entry.relative_to(work))
+            elif entry.name in _UNWALKED_DIRS:
+                continue
+            elif entry.is_dir() and not entry.is_symlink():
+                # Not through a symlinked directory: following one walks out
+                # of the tree, and nothing outside it is ours to move.
+                stack.append(entry)
+    return sorted(found)
+
+
+def _manifest_path(holding: Path) -> Path:
+    return holding / QUARANTINE_MANIFEST
+
+
+def restore_agent_config(work: Path, holding: Path) -> None:
+    """Move everything the holding directory holds back into the tree.
+
+    Driven by the manifest rather than by walking the holding directory: a
+    nested entry's parent directories were created here, not moved here, and
+    moving one of those back would collide with the real one still in place.
+
+    Also the recovery path for a run killed mid-review -- `git checkout
+    --force` restores the tracked files a crash left behind, but not an
+    untracked .claude/settings.local.json, so a stale holding directory is
+    emptied at the start of the next run rather than left to rot.
+
+    Presence is tested with lexists, not exists: a relative symlink is
+    broken while it sits here (its target is back in the tree), so exists()
+    follows it, reports nothing, and the rmtree below then deletes the
+    operator's link for good.
+    """
+    manifest = _manifest_path(holding)
+    if not manifest.is_file():
+        return
+    failures: list[str] = []
+    for name in json.loads(manifest.read_text(encoding="utf-8")):
+        source = holding / name
+        if not os.path.lexists(source):
+            continue
+        try:
+            (work / name).parent.mkdir(parents=True, exist_ok=True)
+            source.rename(work / name)
+        except OSError as exc:
+            failures.append(f"{name}: {exc}")
+    if failures:
+        raise DriverError(
+            "cannot put agent configuration back into the review tree; it is"
+            f" still in {holding} and must be restored by hand: " + "; ".join(failures)
+        )
+    manifest.unlink()
+    shutil.rmtree(holding, ignore_errors=True)
+
+
+@contextmanager
+def quarantine_agent_config(work: Path, holding: Path) -> Iterator[None]:
+    """Hold the tree's agent configuration aside for the duration of the block.
+
+    Moved, never deleted: a PR that edits its own CLAUDE.md has that change in
+    pr.diff already, and pr.diff is not touched here, so the reviewers still
+    see and can report on it. What they cannot do is obey it.
+
+    A move that fails aborts the run. Reviewing without the mitigation while
+    believing it is in place is worse than not reviewing: the operator would
+    have no way to know which of the two happened.
+    """
+    holding.mkdir(parents=True, exist_ok=True)
+    moved: list[str] = []
+    _manifest_path(holding).write_text(json.dumps(moved), encoding="utf-8")
+    try:
+        for relative in agent_config_paths(work):
+            destination = holding / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                (work / relative).rename(destination)
+            except OSError as exc:
+                raise DriverError(
+                    f"cannot move {relative} out of the review tree: {exc};"
+                    " refusing to run a reviewer CLI inside configuration that"
+                    " the pull request controls"
+                ) from exc
+            moved.append(str(relative))
+            _manifest_path(holding).write_text(json.dumps(moved), encoding="utf-8")
+    except DriverError:
+        restore_agent_config(work, holding)
+        raise
+    if moved:
+        print(f"Held {len(moved)} agent-config path(s) out of the tree: {moved}")
+    try:
+        yield
+    finally:
+        restore_agent_config(work, holding)
 
 
 def ensure_clone(work: Path, repo: str) -> None:
@@ -276,10 +427,20 @@ def build_context(
         + "\n\n---\n\n"
         + _prompt_text(work, refs.base_ref, checklist_path)
     )
-    # Every value below is text a PR author or anyone with triage permission
-    # supplies, and an LLM reads context.md as its prompt. display_path turns
-    # a backtick into a lookalike so a value cannot terminate the fence
-    # around it; the block says plainly that what is inside it is data.
+    # An LLM reads context.md as its prompt, and three of the four values
+    # below are chosen by whoever opened or labeled the PR: the author login
+    # and head_ref come with the PR, the labels with triage permission.
+    # base_ref is the odd one out -- it has to name a branch that already
+    # exists -- and is rendered the same way rather than reasoned about.
+    #
+    # Each is single-line and fence-safe before it goes in, but by two
+    # different routes: author/head_ref/base_ref through the display_path
+    # calls right below, labels already through format_labels, which caps the
+    # set and renders each name with display_path itself. Either way a
+    # backtick becomes a lookalike, so no value can terminate the ```text
+    # fence around it. That stops a value breaking OUT of the block; it does
+    # not stop one being read as an instruction inside it, which is what the
+    # prose above the fence is for.
     metadata = "\n".join(
         [
             "## PR Metadata",
@@ -305,7 +466,7 @@ def build_context(
     (work / "context.md").write_text(metadata + body, encoding="utf-8")
 
 
-def filter_policy_excluded(work: Path) -> dict:
+def filter_policy_excluded(work: Path) -> dict[str, Any]:
     run([sys.executable, str(SCRIPT_DIR / "filter_pr_diff.py")], cwd=work)
     return json.loads((work / POLICY_RESULT).read_text(encoding="utf-8"))
 
@@ -377,6 +538,11 @@ def reviewer_env(
         "THREAD_COUNT": thread_count,
         "EXISTING_COMMENTS": existing,
     }
+    # The reviewer shims resolve settings through LocalConfig too, and without
+    # this a `--config` the operator passed here would not reach them: they
+    # would re-resolve the default path and silently read a different file.
+    if config.path is not None:
+        env[CONFIG_PATH_ENV] = str(config.path)
     env[f"{name.upper()}_MODEL"] = config.get(f"{name.upper()}_MODEL")
     return env
 
@@ -391,33 +557,47 @@ def has_early_exit(work: Path, name: str) -> bool:
         return False
 
 
-def run_reviewers(work: Path, config: LocalConfig) -> dict[str, str]:
+def run_reviewers(work: Path, holding: Path, config: LocalConfig) -> dict[str, str]:
+    """Run the reviewers one at a time, agent configuration held aside.
+
+    Never two at once, in either mode. The three share this one working tree
+    and two of them can write to it -- Codex runs with
+    `--sandbox workspace-write`, and Claude's `--allowedTools` includes
+    `Write` -- so overlapping them lets one reviewer's writes land underneath
+    another's read. Actions can run them concurrently because each of its
+    three jobs checks out its own copy; the price of not having that here is
+    wall-clock time, and it is the right price.
+
+    Serialising is not a substitute for the quarantine, and does not replace
+    it: it still wraps every reviewer, Codex included.
+
+    What the modes mean is unchanged, and only the gating differs:
+
+    - `parallel` (the default) runs every reviewer. A reviewer asking for
+      early exit does NOT shorten the round -- that is exactly what the
+      concurrent version did, and an operator on the default mode is
+      expecting three reviews, not however many run before one bails.
+    - `sequential` stops the chain at the first early_exit (AT-2125).
+    """
     thread_count, existing = load_threads(work)
+    sequential = config.get("REVIEW_MODE") == REVIEW_MODE_SEQUENTIAL
+    order = SEQUENTIAL_ORDER if sequential else REVIEWER_NAMES
     print(f"Running reviewers ({thread_count} unresolved thread(s)):")
     conclusions = {name: "skipped" for name in REVIEWER_NAMES}
-    if config.get("REVIEW_MODE") == REVIEW_MODE_SEQUENTIAL:
-        for name in SEQUENTIAL_ORDER:
+    with quarantine_agent_config(work, holding):
+        for name in order:
             conclusions[name] = run_reviewer(
                 name, work, reviewer_env(name, config, thread_count, existing)
             )
             # A reviewer that failed is tolerated; one that finished with
-            # early_exit short-circuits the chain (AT-2125).
-            if conclusions[name] != "failure" and has_early_exit(work, name):
+            # early_exit short-circuits the chain -- in sequential mode only.
+            if (
+                sequential
+                and conclusions[name] != "failure"
+                and has_early_exit(work, name)
+            ):
                 print(f"  {name} requested early exit; skipping the rest")
                 break
-        return conclusions
-    with ThreadPoolExecutor(max_workers=len(REVIEWER_NAMES)) as pool:
-        futures = {
-            name: pool.submit(
-                run_reviewer,
-                name,
-                work,
-                reviewer_env(name, config, thread_count, existing),
-            )
-            for name in REVIEWER_NAMES
-        }
-    for name, future in futures.items():
-        conclusions[name] = future.result()
     return conclusions
 
 
@@ -591,6 +771,59 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
     return root / f"{owner}-{name}-pr{args.pr_number}"
 
 
+def size_gate(repo: str, pr_number: str, refs: Refs, limit: int) -> dict[str, str]:
+    """Comment and report the skip when the PR is over PR_SIZE_LIMIT."""
+    skipped = refs.changed_lines > limit
+    if skipped:
+        print(f"PR too large: {refs.changed_lines} > {limit}; skipping review")
+        gh_comment(
+            repo,
+            pr_number,
+            f"[!] PR too large ({refs.changed_lines} lines changed, limit"
+            f" {limit}). Skipping AI review -- the aggregate verdict below"
+            " explains how to proceed.",
+        )
+    return {
+        "SIZE_SKIPPED": "true" if skipped else "false",
+        "SIZE_TOTAL": str(refs.changed_lines),
+        "SIZE_LIMIT": str(limit),
+    }
+
+
+def policy_gate(work: Path, repo: str, pr_number: str) -> dict[str, str]:
+    """Filter policy-excluded files, commenting when nothing is left."""
+    excluded = filter_policy_excluded(work)
+    count = excluded["excluded_count"]
+    if excluded["policy_skipped"]:
+        print(f"Only policy-excluded files changed ({count}); skipping review")
+        gh_comment(
+            repo,
+            pr_number,
+            "\n".join(
+                [
+                    "<!-- multi-llm-review -->",
+                    f"<!-- lens:skipped reason=policy-excluded-only files={count} -->",
+                    f"[i] Only policy-excluded files changed ({count} file(s)"
+                    f" matched {LENS_IGNORE_PATH}). Skipping AI review -- the"
+                    " aggregate verdict below lists the paths.",
+                ]
+            ),
+        )
+    return {
+        "POLICY_SKIPPED": "true" if excluded["policy_skipped"] else "false",
+        "EXCLUDED_COUNT": str(count),
+        "EXCLUDED_PATHS": "\n".join(excluded["excluded_paths"]),
+    }
+
+
+def prepare(work: Path, repo: str, pr_number: str, refs: Refs, args) -> None:
+    """Put the tree on the PR head and build everything a reviewer reads."""
+    clean_artifacts(work)
+    checkout_head(work, pr_number, refs)
+    extract_diff(work, repo, pr_number, refs)
+    build_context(work, refs, args.system_prompt_path, args.checklist_path)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if not REPO_RE.match(args.repo):
@@ -602,89 +835,43 @@ def main(argv: list[str] | None = None) -> int:
     bot_login = resolve_bot_login(config)
     run_dir = resolve_run_dir(args)
     work = run_dir / "repo"
+    holding = run_dir / QUARANTINE_DIR_NAME
     print(f"Run directory: {work}")
 
     refs = resolve_refs(args.repo, args.pr_number)
-    size_limit = config.get_int("PR_SIZE_LIMIT")
-    size_skipped = refs.changed_lines > size_limit
-    size = {
-        "SIZE_SKIPPED": "true" if size_skipped else "false",
-        "SIZE_TOTAL": str(refs.changed_lines),
-        "SIZE_LIMIT": str(size_limit),
-    }
+    size = size_gate(args.repo, args.pr_number, refs, config.get_int("PR_SIZE_LIMIT"))
     policy = {"POLICY_SKIPPED": "false", "EXCLUDED_COUNT": "", "EXCLUDED_PATHS": ""}
     conclusions = {name: "skipped" for name in REVIEWER_NAMES}
+    # The workflow's refs step does not run on a size skip, so the aggregate
+    # receives neither head nor author; an empty author selects the stricter
+    # human thresholds, which is the intended behaviour.
+    head_sha, pr_author = "", ""
 
-    if size_skipped:
-        print(f"PR too large: {refs.changed_lines} > {size_limit}; skipping review")
-        gh_comment(
-            args.repo,
-            args.pr_number,
-            f"[!] PR too large ({refs.changed_lines} lines changed, limit"
-            f" {size_limit}). Skipping AI review -- the aggregate verdict below"
-            " explains how to proceed.",
-        )
-        # The workflow's refs step does not run on a size skip, so the
-        # aggregate receives neither head nor author; an empty author selects
-        # the stricter human thresholds, which is the intended behaviour.
+    if size["SIZE_SKIPPED"] == "true":
         run_dir.mkdir(parents=True, exist_ok=True)
-        return aggregate(
-            run_dir,
-            aggregate_env(
-                args.repo,
-                args.pr_number,
-                config,
-                bot_login=bot_login,
-                head_sha="",
-                pr_author="",
-                size=size,
-                policy=policy,
-                conclusions=conclusions,
-            ),
-        )
-
-    ensure_clone(work, args.repo)
-    clean_artifacts(work)
-    checkout_head(work, args.pr_number, refs)
-    extract_diff(work, args.repo, args.pr_number, refs)
-    build_context(work, refs, args.system_prompt_path, args.checklist_path)
-
-    excluded = filter_policy_excluded(work)
-    policy = {
-        "POLICY_SKIPPED": "true" if excluded["policy_skipped"] else "false",
-        "EXCLUDED_COUNT": str(excluded["excluded_count"]),
-        "EXCLUDED_PATHS": "\n".join(excluded["excluded_paths"]),
-    }
-    if excluded["policy_skipped"]:
-        count = excluded["excluded_count"]
-        print(f"Only policy-excluded files changed ({count}); skipping review")
-        gh_comment(
-            args.repo,
-            args.pr_number,
-            "\n".join(
-                [
-                    "<!-- multi-llm-review -->",
-                    f"<!-- lens:skipped reason=policy-excluded-only files={count} -->",
-                    f"[i] Only policy-excluded files changed ({count} file(s)"
-                    f" matched {LENS_IGNORE_PATH}). Skipping AI review -- the"
-                    " aggregate verdict below lists the paths.",
-                ]
-            ),
-        )
+        cwd = run_dir
     else:
-        append_prior_context(work, args.repo, args.pr_number)
-        conclusions = run_reviewers(work, config)
-        post_inline_comments(work, args.repo, args.pr_number, config)
+        head_sha, pr_author = refs.head_sha, refs.pr_author
+        cwd = work
+        ensure_clone(work, args.repo)
+        # Anything a previous run was killed in the middle of holding aside.
+        restore_agent_config(work, holding)
+        prepare(work, args.repo, args.pr_number, refs, args)
+        policy = policy_gate(work, args.repo, args.pr_number)
+        if policy["POLICY_SKIPPED"] != "true":
+            append_prior_context(work, args.repo, args.pr_number)
+            conclusions = run_reviewers(work, holding, config)
+            post_inline_comments(work, args.repo, args.pr_number, config)
 
     return aggregate(
-        work,
+        cwd,
         aggregate_env(
             args.repo,
             args.pr_number,
             config,
             bot_login=bot_login,
-            head_sha=refs.head_sha,
-            pr_author=refs.pr_author,
+            head_sha=head_sha,
+            pr_author=pr_author,
             size=size,
             policy=policy,
             conclusions=conclusions,
