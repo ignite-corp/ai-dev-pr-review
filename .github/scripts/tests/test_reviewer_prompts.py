@@ -94,7 +94,14 @@ def _thread(
 # skip would retire that check silently and report the run green, so on CI,
 # where both tools are guaranteed, their absence is an error instead.
 _MISSING_TOOLS = [tool for tool in ("bash", "jq") if shutil.which(tool) is None]
-_ON_CI = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+# Presence alone is wrong: `CI=false` is the idiomatic way to say "not CI",
+# and reading it as CI turns a local skip into a hard error on a machine that
+# said the opposite.
+_OFF_VALUES = {"", "0", "false", "no", "off"}
+_ON_CI = any(
+    os.environ.get(name, "").strip().lower() not in _OFF_VALUES
+    for name in ("CI", "GITHUB_ACTIONS")
+)
 
 if _MISSING_TOOLS and _ON_CI:
     raise RuntimeError(
@@ -232,4 +239,26 @@ def test_valid_thread_data_is_untouched_by_the_guard(tmp_path):
     existing = json.dumps([_thread(1), _thread(2)])
     assert _render_via_workflow(tmp_path, "2", existing) == build_claude_prompt(
         "2", existing
+    )
+
+
+@pytest.mark.parametrize(
+    "value,on_ci",
+    [("true", True), ("1", True), ("false", False), ("0", False), ("", False)],
+)
+def test_ci_detection_reads_the_value_not_its_presence(monkeypatch, value, on_ci):
+    """`CI=false` is the idiomatic way to say "not CI".
+
+    Reading presence alone turned a local skip into a hard error on a machine
+    that had explicitly said the opposite.
+    """
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setenv("CI", value)
+    off = {"", "0", "false", "no", "off"}
+    assert (
+        any(
+            os.environ.get(name, "").strip().lower() not in off
+            for name in ("CI", "GITHUB_ACTIONS")
+        )
+        is on_ci
     )
