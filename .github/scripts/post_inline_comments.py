@@ -120,24 +120,42 @@ def parse_diff(diff_text: str) -> dict[str, set[int]]:
     for line in diff_text.splitlines():
         if line.startswith("\\"):
             continue  # "\ No newline at end of file"
-        if line.startswith(DIFF_FILE_PREFIX):
+        if line.startswith("diff --git"):
+            # Closes the open hunk, which is what makes the `right_line == 0`
+            # guard below sound: without the reset here the next file's real
+            # header would be read as content. So the guard holds for
+            # GIT-FORMAT diffs only -- review_coordinates.diff_offset_index
+            # states that limit once, for both.
+            current_file = None
+            right_line = 0
+        elif right_line == 0 and line.startswith(DIFF_FILE_PREFIX):
+            # Only BEFORE a hunk opens. Inside one, a source line reading
+            # `++ b/x` is rendered `+++ b/x` and matched here, opening a
+            # phantom file and resetting its right-side counter.
+            # review_coordinates.diff_offset_index already guards this case
+            # and check_reviewer_coordinates compares the two indexes
+            # directly, so leaving it unguarded here is the same drift the
+            # blank-context-line note below records, one file at a time.
             # Take only the path; unified diff may append tab+timestamp after it.
             raw_path = line[DIFF_FILE_PREFIX_LEN:]
             current_file = raw_path.split("\t")[0] if raw_path else raw_path
-            right_line = 0
             valid.setdefault(current_file, set())
         elif line.startswith("@@ "):
             match = re.search(r"\+(\d+)", line)
             if match:
                 right_line = int(match.group(1))
         elif current_file is not None:
-            if line.startswith("+") or line.startswith(" "):
+            # `line == ""` is a blank context line whose leading space was
+            # stripped in transit. It holds a right-side position like any
+            # other context line, and review_coordinates.diff_offset_index
+            # counts it: the two are built from the same pr.diff and their
+            # answers are compared directly, so disagreeing here drifts the
+            # two coordinate systems apart by one per blank line.
+            if line.startswith("+") or line.startswith(" ") or line == "":
                 valid[current_file].add(right_line)
                 right_line += 1
             elif line.startswith("-"):
                 pass  # deleted line, no right-side position
-            elif line.startswith("diff --git"):
-                current_file = None
 
     return valid
 
