@@ -80,6 +80,23 @@ def spawn_exit_reason(exit_code: int, timeout_sec: int) -> str:
     return ""
 
 
+def captured_text(captured: str | bytes | None) -> str:
+    """One half of what a killed CLI had printed, as text.
+
+    `capture_output=True` leaves it on subprocess.TimeoutExpired, and it
+    arrives as BYTES even under `text=True`: _check_timeout raises before
+    _communicate decodes (measured on CPython 3.11.9). None means that
+    stream buffered nothing. Here rather than in a shim because both shims
+    read the same attributes off the same exception type -- what stays per
+    shim is how the two halves are composed into that CLI's run log.
+    """
+    if captured is None:
+        return ""
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", errors="replace")
+    return captured
+
+
 def guarded_main(review: Callable[[], None], name: str, review_file: str) -> None:
     """Run a reviewer; leave a verdict file behind even if it raises.
 
