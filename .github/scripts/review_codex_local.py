@@ -95,6 +95,19 @@ _LOG_TAIL_LINES = 20
 _LOG_TAIL_CHARS = 200
 
 
+def shim_budget_sec() -> int:
+    """The longest this shim can take before it stops writing a verdict.
+
+    TWICE _CLI_TIMEOUT_SEC, because the bound is spent twice in the worst
+    case: once on `codex exec`, and again on extract_codex_json.py when the
+    model answered in text instead of writing the file. Asked by the driver,
+    which bounds this shim from outside and must stay above it -- past its
+    own bound this shim still writes an error verdict and keeps the run log,
+    whereas the driver's bound is a SIGTERM that leaves neither.
+    """
+    return 2 * _CLI_TIMEOUT_SEC
+
+
 def build_prompt(thread_count: str, existing_comments: str) -> str:
     context = Path("context.md")
     prompt = f"{context.read_text(encoding='utf-8')}\n" if context.is_file() else ""

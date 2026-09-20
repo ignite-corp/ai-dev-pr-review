@@ -159,19 +159,38 @@ def cli_timeout_sec(env: dict[str, str]) -> int:
     return math.ceil(milliseconds / 1000) + _KILL_GRACE_SEC
 
 
+def cli_environ() -> dict[str, str]:
+    """The environment the CLI actually runs with.
+
+    The composite's values go UNDER the inherited environment, not over it.
+    They stand in for a runner that is not here to set them, which is
+    position 3 of the documented order: process environment, then config
+    file, then the value parsed out of the workflow files. Merged the other
+    way, an operator who exported API_TIMEOUT_MS had it silently replaced by
+    the default cli_env() exists to supply in its absence.
+    """
+    return {**cli_env(), **os.environ}
+
+
+def shim_budget_sec() -> int:
+    """The longest this shim can take before it stops writing a verdict.
+
+    Asked by the driver, which bounds the shim from outside and must stay
+    above this: past its own bound the shim still writes an error verdict
+    and keeps the partial transcript, whereas the driver's bound is a
+    SIGTERM that leaves neither. There is one budget and this is it, rather
+    than a number in the driver that happens to agree at the default.
+    """
+    return cli_timeout_sec(cli_environ())
+
+
 def _exit_reason(exit_code: int, timeout_sec: int) -> str:
     return spawn_exit_reason(exit_code, timeout_sec) or f"CLI exited {exit_code}"
 
 
 def run_cli(prompt: str, model: str) -> tuple[int, str, int]:
     """Run the CLI; return (exit code, raw stdout, the bound that applied)."""
-    # The composite's values go UNDER the inherited environment, not over
-    # it. They stand in for a runner that is not here to set them, which is
-    # position 3 of the documented order: process environment, then config
-    # file, then the value parsed out of the workflow files. Merged the
-    # other way, an operator who exported API_TIMEOUT_MS had it silently
-    # replaced by the default this function exists to supply in its absence.
-    env = {**cli_env(), **os.environ}
+    env = cli_environ()
     timeout_sec = cli_timeout_sec(env)
     argv = [
         "claude",

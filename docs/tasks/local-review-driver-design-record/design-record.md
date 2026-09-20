@@ -1049,7 +1049,7 @@ d0b8ea5  [#170, 이전]    1167: create_review_worktree -> 1168: clean_artifacts
 | 지적 | 결과 | 기전 | 처분 |
 |---|---|---|---|
 | `url.<base>.insteadOf` 가 `git remote get-url origin` 을 속인다 | **결론 성립**(설정 키가 전송을 돌린다 — `http.proxy` 등) | **틀림** — git 2.43 에서 `remote get-url` 이 **재작성된 URL 을 보고**해 신원 검사가 잡는다 | 결론 수용, 문장 거절. *"이걸 재지 않았으면 멀쩡히 작동하는 방어를 못 믿고 다시 만들 뻔했습니다"* |
-| `run()` 이 타임아웃 없이 `subprocess.run` 을 시작한다 | **결과 실재**(멈춘 fetch 가 운영자에게 나쁘게 끝난다) | **틀림** — `run()` 에는 **처음부터** `timeout=_GIT_TIMEOUT_SEC` 이 있었다(실측: 1초에 `TimeoutExpired`). 실제 결함은 그것이 `DriverError` 가 아니라 traceback 으로 끝나는 것 | 결과 수용, 원인 수정 안 함 — *"없는 것을 고칠 수는 없으니까"* |
+| `run()` 이 타임아웃 없이 `subprocess.run` 을 시작한다 | **결과 실재**(멈춘 fetch 가 운영자에게 나쁘게 끝난다) | **틀림** — `run()` 에는 **처음부터** `timeout=_SUBPROCESS_TIMEOUT_SEC` 이 있었다(실측: 1초에 `TimeoutExpired`). 실제 결함은 그것이 `DriverError` 가 아니라 traceback 으로 끝나는 것 | 결과 수용, 원인 수정 안 함 — *"없는 것을 고칠 수는 없으니까"* |
 | `${{ inputs.x }}0` 가 앵커 없는 `match()` 를 통과한다 | **결론 성립**(앵커링 필요) | **예가 틀림** — `}}0` 은 이미 거절됐다(`$` 는 문자열 중간에서 매치하지 않는다). **진짜 구멍은 `}}\n`** — `$` 가 끝 개행 직전에 매치하고 YAML folded scalar 가 그런 값을 routine 하게 만든다 | 수정하되 **"틀린 이유로 옳은 수정"이라고 적어 둠** |
 | `AST` 로 기본값 집을 세라(`ast.Dict` 에서 키 찾기) | **방향 성립** | **구현이 틀림** — 제안 안의 예 `dict(POLICY_SKIPPED=...)` 가 `ast.Dict` 가 아니라 `ast.Call` 이라 안 걸리고, 키만 보면 `policy_gate`·`size_gate` 에서 **과다 매칭**한다 | 키+상수값으로, `{}`·`dict()`·`dict.fromkeys()` 전부 받게. 그리고 **각 기본값을 소유 함수에 묶음** |
 

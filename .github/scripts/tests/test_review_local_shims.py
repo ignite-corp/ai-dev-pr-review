@@ -8,9 +8,13 @@ composite read at all while reporting green.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -162,6 +166,25 @@ def test_an_operator_export_beats_the_composite_default(tree, monkeypatch):
     claude.run_cli("prompt", "model")
     assert captured["env"]["API_TIMEOUT_MS"] == "123000"
     assert captured["timeout"] == 123 + claude._KILL_GRACE_SEC
+
+
+def test_each_shim_reports_the_budget_it_actually_spends(tree, monkeypatch):
+    """The driver waits on this number, so it has to be the real worst case.
+
+    A second opinion written in the driver is what the outer bound used to
+    be, and it was wrong at every API_TIMEOUT_MS above the default.
+    """
+    monkeypatch.setenv("API_TIMEOUT_MS", "123000")
+    captured = fake_spawn(monkeypatch, claude, stdout="{}")
+    claude.run_cli("prompt", "model")
+    assert claude.shim_budget_sec() == captured["timeout"]
+
+    captured = fake_spawn(monkeypatch, codex, stdout="")
+    codex.run_cli("prompt", "model")
+    # Spent TWICE in the worst case: once on `codex exec` above, and again
+    # on extract_codex_json.py when the model answered in text.
+    assert captured["timeout"] == codex._CLI_TIMEOUT_SEC
+    assert codex.shim_budget_sec() == 2 * captured["timeout"]
 
 
 # -------------------------------------------- codex prompt delivery (2-C)
@@ -589,3 +612,84 @@ def test_the_shims_never_set_a_credential(tree):
         source = (SCRIPT_DIR / name).read_text(encoding="utf-8")
         for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
             assert f'"{key}"' not in source and f"'{key}'" not in source
+
+
+# ----------------------------------------- what the kill grace actually buys
+
+
+def _comment_above(source: str, name: str) -> str:
+    """The `#` block immediately above a module-level assignment."""
+    lines = source.splitlines()
+    index = next(i for i, text in enumerate(lines) if text.startswith(f"{name} ="))
+    found = []
+    while index and lines[index - 1].startswith("#"):
+        index -= 1
+        found.insert(0, lines[index])
+    return "\n".join(found)
+
+
+@pytest.mark.parametrize("module", [claude, codex], ids=["claude", "codex"])
+def test_a_shim_killed_by_sigterm_leaves_no_verdict_behind(tmp_path, module):
+    """The measurement the kill-grace comment has to agree with.
+
+    A stand-in CLI that hangs, a real SIGTERM at the shim, and the work
+    tree inspected afterwards. Both shims die at the default disposition,
+    so guarded_main's `except Exception` never runs and nothing is written
+    during the grace. The reviewer is still reported: run_reviewer calls a
+    reviewer that left no verdict a failure.
+    """
+    name = "claude" if module is claude else "codex"
+    binder = tmp_path / "bin"
+    binder.mkdir()
+    stand_in = binder / name
+    stand_in.write_text("#!/bin/sh\ntouch cli-started\nsleep 15\n", encoding="utf-8")
+    stand_in.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{binder}{os.pathsep}{os.environ['PATH']}",
+        "PYTHONPATH": str(SCRIPT_DIR),
+    }
+    with (tmp_path / f"{name}.log").open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT_DIR / f"review_{name}_local.py")],
+            cwd=tmp_path,
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    try:
+        deadline = time.monotonic() + 60
+        while not (tmp_path / "cli-started").is_file():
+            assert time.monotonic() < deadline, "the stand-in CLI never started"
+            time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=60) == -signal.SIGTERM
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+    assert not (tmp_path / module.REVIEW_FILE).exists()
+
+
+def test_the_kill_grace_promises_only_what_a_signal_free_shim_can_do():
+    """The comment said the shims write their error verdict "from the
+    handler", and neither shim has a handler to write it from. A comment
+    promising an operator-visible verdict that no code path can produce is
+    the defect; the missing handler is not.
+
+    Module attributes, not a text scan, for the reason
+    test_no_argv_size_ceiling_survives_in_the_codex_shim gives: source read
+    as text also matches prose, and both shims carry docstrings that may
+    one day explain why no handler is installed. Nothing reaches
+    signal.signal without the module or one of its names being bound here.
+    """
+    for module in (claude, codex):
+        for name, value in vars(module).items():
+            assert value is not signal, f"{module.__name__}.{name}"
+            assert getattr(value, "__module__", None) != "signal", (
+                f"{module.__name__}.{name}"
+            )
+    driver = (SCRIPT_DIR / "review_pr_local.py").read_text(encoding="utf-8")
+    comment = _comment_above(driver, "_REVIEWER_KILL_GRACE_SEC")
+    assert "Neither shim installs a signal handler" in comment
