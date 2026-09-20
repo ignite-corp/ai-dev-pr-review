@@ -1,0 +1,14 @@
+{
+  "summary": "This is an exceptionally well-designed and thoroughly tested submission that introduces a local review driver. The code demonstrates a deep understanding of security considerations and robust error handling, with an outstanding test suite that even uses AST parsing to enforce architectural constraints. Only one minor issue was found regarding function length.",
+  "status": "ok",
+  "early_exit": false,
+  "issues": [
+    {
+      "severity": "minor",
+      "file": ".github/scripts/review_pr_local.py",
+      "line": 1240,
+      "description": "The function `review_pr` is approximately 179 lines long (from line 1240 to 1418), which significantly exceeds the project's documented 80-line limit for functions. While the function is well-structured and its docstring explains the complexity, its length makes it difficult to read and maintain. It handles pre-review setup, size gate logic, prepare stage, policy gate, and the main review loop orchestration, each with its own error handling.",
+      "suggestion": "Refactor `review_pr` into smaller, more focused functions. For example, the pre-review steps (lines 1301-1325) could be extracted into a `pre_review_setup` function that returns the resolved `refs`, `bot_login`, and `size` information. The main review logic following the size gate check could also be further decomposed to improve adherence to the project's code quality standards."
+    }
+  ]
+}
