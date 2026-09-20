@@ -1,0 +1,16 @@
+21:37:28 Run directory: /tmp/lens-harvest/run/repo
+21:37:28 HEAD is now at ce8c324 docs(local-review): state the measured threat, mitigation and residual risk
+21:37:28 pr.diff: 6109 lines via open PR: git diff origin/task/local-review-driver-core...ce8c324175d3547808dbb1d941aa0f98c6f3b73c
+21:37:28 .github/lens-ignore not present; pr.diff left as extracted
+21:37:28 Appended 1 context section(s) to context.md
+21:37:28 No pinned action SHAs found in diff
+21:37:28 Collected 45 unresolved review thread(s)
+21:37:28 Running reviewers (45 unresolved thread(s)):
+21:37:28   gemini: success (log: /tmp/lens-harvest/run/repo/gemini-review.log)
+21:37:28   codex: success (log: /tmp/lens-harvest/run/repo/codex-review.log)
+21:37:28   claude: success (log: /tmp/lens-harvest/run/repo/claude-review.log)
+21:37:28 claude: 2 issue(s) outside diff
+21:37:28 claude: no inline comments to post
+21:37:28 codex: posted 1 inline comment(s)
+21:37:28 gemini: round cutoff active (round 13) -- folding 1 finding(s) into a summary comment
+21:37:28 Final verdict: approve -- 3/3 LLM responses -- 1 major issue(s) (no consensus, review recommended)

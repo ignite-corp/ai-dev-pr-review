@@ -1,0 +1,21 @@
+{
+  "summary": "Three new files and their test suites add the local runner pipeline: the Claude and Codex reviewer shims and the driver that orchestrates them. All previously raised defects are resolved. Two new findings: a missing subprocess timeout in the Codex shim's log-extraction step, and the `review_pr` function exceeding the project's 80-line limit.",
+  "status": "ok",
+  "early_exit": false,
+  "issues": [
+    {
+      "severity": "minor",
+      "file": ".github/scripts/review_pr_local.py",
+      "line": 2268,
+      "description": "`review_pr()` spans approximately 130 lines (87 body lines, 36-line docstring), exceeding the project's documented 80-line function limit (ruff PLR0915). The previous round resolved the same violation on `main()` by extracting `size_gate`, `policy_gate`, and `prepare`; the same pattern applies here. The four logical stages \u2014 pre-review, clone/prepare, policy gate, and review/post \u2014 are already labelled by their `try` comments and map cleanly to helpers with the same signature pattern the prior extraction used.",
+      "suggestion": "Extract the four guarded stages into named helpers along the existing `try`/`report_stage_failure`/`return ReviewOutcome(...)` boundaries, passing `(args, config, bot_login, size, policy, conclusions, refs)` as needed. Each helper stays well under 80 lines and `review_pr` reduces to the orchestrating shell."
+    },
+    {
+      "severity": "suggestion",
+      "file": ".github/scripts/review_codex_local.py",
+      "line": 654,
+      "description": "`extract_from_log()` calls `subprocess.run([sys.executable, ..., RUN_LOG, REVIEW_FILE])` with no `timeout=` argument. Every other subprocess in this file and its sibling shim is bounded (the CLI call at line 546 carries `timeout=_CLI_TIMEOUT_SEC`). If `extract_codex_json.py` hangs, the reviewer shim hangs with it until the driver's outer `_REVIEWER_TIMEOUT_SEC` SIGKILL fires \u2014 wasting the entire 900 s grace period and potentially triggering the 'did not exit after SIGKILL' warning path in `kill_reviewer_group`.",
+      "suggestion": "Add `timeout=_CLI_TIMEOUT_SEC` (or a dedicated `_EXTRACT_TIMEOUT_SEC` constant) to the `subprocess.run` call so this step is bounded independently of the shim's process-level kill. The extraction script parses a log file, so a small ceiling (e.g., 60 s) is more than sufficient."
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+21:30:19 Run directory: /tmp/lens-harvest/run/repo
+21:30:19 Cloning into '/tmp/lens-harvest/run/repo'...
+21:30:19 From https://github.com/ignite-corp/ai-dev-pr-review
+21:30:19  * [new ref]         refs/pull/170/head -> origin/pr/170
+21:30:19 HEAD is now at ce8c324 docs(local-review): state the measured threat, mitigation and residual risk
+21:30:19 pr.diff: 6109 lines via open PR: git diff origin/task/local-review-driver-core...ce8c324175d3547808dbb1d941aa0f98c6f3b73c
+21:30:19 ::error::neither origin/task/local-review-driver-core nor the PR head carries .github/prompts/code-review-system.md; pass --system-prompt-path / --checklist-path if this repository keeps its review prompts elsewhere
