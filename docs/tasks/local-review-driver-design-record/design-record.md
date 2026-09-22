@@ -753,7 +753,7 @@ AFTER   3초 뒤: CLAUDE.md exists = False
 
 | | 함수 | #170 에 있고 #172 에 없는 것 | #172 단독 머지 시 결과 |
 |---|---|---|---|
-| 1 | `run_reviewer` | `_REVIEWER_TIMEOUT_SEC` + `Popen(start_new_session=True)` + 프로세스 그룹 SIGTERM→SIGKILL | **리뷰어 스폰에 타임아웃이 아예 없음** — 멈춘 CLI 가 드라이버를 무한히 잡는다 |
+| 1 | `run_reviewer` | `reviewer_timeout_sec` (= `max(_REVIEWER_TIMEOUT_FLOOR_SEC, shim_budget_sec(name) + _REVIEWER_TIMEOUT_MARGIN_SEC)`) + `Popen(start_new_session=True)` + 프로세스 그룹 SIGTERM→SIGKILL | **리뷰어 스폰에 타임아웃이 아예 없음** — 멈춘 CLI 가 드라이버를 무한히 잡는다 |
 | 2 | `aggregate` | 스폰 주위 try/except | 판정 게시자의 실패가 traceback 으로 탈출 |
 | 3 | `append_prior_context` | 관용을 `OSError`/`TimeoutExpired` 까지 | 주석이 지키겠다고 한 리뷰를 `bash` 부재나 멈춘 `gh` 가 죽인다 |
 | 4 | `post_inline_comments` | 같은 가드 | 인라인 게시 스폰 실패가 집계 전에 끝낸다 |
