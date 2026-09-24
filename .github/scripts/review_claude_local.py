@@ -19,6 +19,9 @@ is bounded, though: the driver hands this process an allowlist rather than
 its own environment, so an exported ANTHROPIC_API_KEY reaches the CLI only
 when the operator named it (review_pr_local.reviewer_env). A logged-in
 `claude` is unaffected -- HOME is forwarded and ~/.claude is where it looks.
+That bound is the driver's alone, so run by anything else -- by hand, by a
+wrapper, by a Makefile -- this module warns that the CLI is getting the
+caller's whole environment instead.
 
 Reads pr.diff and context.md from the current directory (the prompt tells
 the CLI to) and writes review-claude.json.
@@ -51,6 +54,7 @@ from local_reviewer_support import (
     error_verdict,
     guarded_main,
     spawn_exit_reason,
+    warn_unless_driver_spawned,
     write_verdict,
 )
 from review_status import stamp_model_status
@@ -337,4 +341,7 @@ def review() -> None:
 
 
 if __name__ == "__main__":
+    # Before anything else this process does: whoever started it has
+    # already decided what environment the CLI will get.
+    warn_unless_driver_spawned("claude")
     guarded_main(review, "Claude", REVIEW_FILE)

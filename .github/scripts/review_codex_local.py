@@ -15,7 +15,9 @@ is kept -- that is the review invocation. Authentication is whatever
 `codex login` put in the operator's ~/.codex, or an OPENAI_API_KEY the
 operator named in $LENS_REVIEWER_ENV_PASSTHROUGH; this module sets neither
 and inherits whatever the driver's allowlist let through
-(review_pr_local.reviewer_env).
+(review_pr_local.reviewer_env). Started by anything but the driver there is
+no allowlist, so this module warns that the CLI is getting the caller's
+whole environment instead.
 
 THE PROMPT GOES OVER STDIN, and that is a measurement rather than a
 preference. The Actions path passes it as one argv element, where Linux caps
@@ -67,6 +69,7 @@ from local_reviewer_support import (
     error_verdict,
     guarded_main,
     spawn_exit_reason,
+    warn_unless_driver_spawned,
     write_verdict,
 )
 from review_status import stamp_model_status
@@ -348,4 +351,7 @@ def review() -> None:
 
 
 if __name__ == "__main__":
+    # Before anything else this process does: whoever started it has
+    # already decided what environment the CLI will get.
+    warn_unless_driver_spawned("codex")
     guarded_main(review, "Codex", REVIEW_FILE)

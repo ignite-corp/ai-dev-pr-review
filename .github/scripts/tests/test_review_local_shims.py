@@ -25,6 +25,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import review_claude_local as claude  # noqa: E402
 import review_codex_local as codex  # noqa: E402
 from local_reviewer_support import (  # noqa: E402
+    DRIVER_ENV_MARKER,
     ERROR_CLI_FAILED,
     ERROR_UNPARSEABLE,
     EXIT_NOT_INSTALLED,
@@ -693,3 +694,75 @@ def test_the_kill_grace_promises_only_what_a_signal_free_shim_can_do():
     driver = (SCRIPT_DIR / "review_pr_local.py").read_text(encoding="utf-8")
     comment = _comment_above(driver, "_REVIEWER_KILL_GRACE_SEC")
     assert "Neither shim installs a signal handler" in comment
+
+
+# ------------------------------- run by something other than the driver
+
+
+def _run_shim_as_its_own_process(tmp_path, name, env_extra: dict[str, str]) -> str:
+    """Start a shim the way a second caller would, and return its stderr.
+
+    A real process, because the check being exercised is in `__main__` and
+    the fault being reproduced is a shim STARTED by something other than
+    the driver. The stand-in CLI reads its prompt and prints nothing, so
+    the review fails and writes an error verdict -- which is the point:
+    the warning is not on the success path only.
+    """
+    binder = tmp_path / "bin"
+    binder.mkdir(exist_ok=True)
+    stand_in = binder / name
+    stand_in.write_text("#!/bin/sh\ncat > /dev/null\n", encoding="utf-8")
+    stand_in.chmod(0o755)
+    (tmp_path / "context.md").write_text("guidelines", encoding="utf-8")
+    (tmp_path / "pr.diff").write_text("+a\n", encoding="utf-8")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != DRIVER_ENV_MARKER
+    }
+    env["PATH"] = f"{binder}{os.pathsep}{os.environ['PATH']}"
+    env["PYTHONPATH"] = str(SCRIPT_DIR)
+    env.update(env_extra)
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT_DIR / f"review_{name}_local.py")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert (tmp_path / f"review-{name}.json").is_file()
+    return done.stderr
+
+
+@pytest.mark.parametrize("name", ["claude", "codex"])
+def test_a_shim_run_outside_the_driver_says_what_its_cli_now_gets(tmp_path, name):
+    """Baseline (f790649): a shim run directly warned about nothing.
+
+    Measured on that baseline with a stand-in `claude` that printed its own
+    environment: an exported GH_TOKEN and an unrelated cloud secret both
+    reached the CLI and stderr was empty. The allowlist that would have
+    dropped them is the driver's, and the driver was not in the picture --
+    so the warning names that consequence rather than only reporting that
+    something is unusual. A warning and NOT a refusal: re-running a shim by
+    hand inside a run directory is how a review is debugged, and the
+    verdict file this run still writes is asserted above.
+    """
+    err = _run_shim_as_its_own_process(tmp_path, name, {"MY_CLOUD_SECRET": "hunter2"})
+    assert "::warning::started outside the local review driver" in err
+    assert f"the {name} CLI" in err
+    assert "whole environment" in err
+
+
+@pytest.mark.parametrize("name", ["claude", "codex"])
+def test_the_marker_the_driver_sets_is_what_silences_the_warning(tmp_path, name):
+    """PRESENCE is the signal, and nothing else is read from it.
+
+    The driver assigns this name AFTER its filter and it is in no
+    allowlist, so a shim that has it was started by the driver; the driver
+    side of that pair is asserted in test_review_pr_local.py. Nothing is
+    inferred from its absence beyond "the driver did not set it".
+    """
+    err = _run_shim_as_its_own_process(tmp_path, name, {DRIVER_ENV_MARKER: "1"})
+    assert "started outside the local review driver" not in err

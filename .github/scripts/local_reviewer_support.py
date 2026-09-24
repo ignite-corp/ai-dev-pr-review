@@ -17,11 +17,16 @@ What deliberately stays in each shim: the argv, how the prompt is delivered,
 the timeout, the fallback chain, and the wording of its own exit reasons.
 Those differ per CLI, and merging them is what would put a branch on two
 contracts in one function.
+
+The driver-spawned marker is here for the same reason as the rest: both
+shims make the same promise about it and the driver sets it, so one name in
+one place is what keeps the three sides agreeing.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from collections.abc import Callable
@@ -41,6 +46,38 @@ ERROR_CRASHED = "reviewer_crashed"
 EXIT_NOT_INSTALLED = -1
 EXIT_TIMED_OUT = -2
 EXIT_SPAWN_FAILED = -3
+
+# Set by the driver on a reviewer's environment AFTER its allowlist filter
+# has run, and deliberately NOT one of the allowlisted names: a value an
+# operator exported is therefore dropped by the filter and replaced by the
+# driver's own, so inside a driver-spawned shim this name means the driver
+# and nothing else. PRESENCE is the entire signal. Nothing is inferred from
+# an absence beyond "the driver did not set this", which is precisely what
+# the warning below says -- a shim that read absence as evidence of
+# anything more is the check this file is careful not to be.
+DRIVER_ENV_MARKER = "LENS_REVIEWER_ENV_FILTERED"
+
+
+def warn_unless_driver_spawned(cli: str) -> None:
+    """Warn when a shim was started by something other than the driver.
+
+    Not a refusal. Re-running a shim by hand inside a run directory is how
+    a review is debugged, and that path keeps working. What it does not
+    keep is the allowlist, which lives in the driver
+    (review_pr_local.reviewer_env, where the entries and their reasons are)
+    -- so the warning states the consequence rather than only that
+    something is unusual. A second allowlist here would be a second copy of
+    that table, free to drift from the one that is enforced.
+    """
+    if DRIVER_ENV_MARKER in os.environ:
+        return
+    print(
+        f"::warning::started outside the local review driver, so the {cli} CLI"
+        " is handed this shell's whole environment -- every token exported"
+        " here, not the filtered set review_pr_local.reviewer_env builds"
+        f" ({DRIVER_ENV_MARKER} is unset)",
+        file=sys.stderr,
+    )
 
 
 def error_verdict(summary: str, kind: str, detail: str) -> dict[str, Any]:
