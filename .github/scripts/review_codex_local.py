@@ -69,6 +69,7 @@ from local_reviewer_support import (
     error_verdict,
     exit_reason,
     guarded_main,
+    usable_verdict,
     warn_unless_driver_spawned,
     write_verdict,
 )
@@ -212,6 +213,12 @@ def accept_direct_write() -> bool | None:
     None means there was nothing to judge, and the question of whether
     anything is there is asked through verdict_file_written() -- the same
     call normalize_verdict_file makes, so the two cannot answer differently.
+
+    USABLE is aggregate_reviews' own test (usable_verdict), shared with the
+    Claude shim: `isinstance(payload, dict)` accepted any JSON object, so a
+    half-written verdict file was taken, review() returned on it, and the
+    log-extraction fallback that would have recovered the real verdict never
+    ran -- leaving the aggregate a malformed review where one was available.
     """
     path = Path(REVIEW_FILE)
     if not verdict_file_written():
@@ -220,7 +227,7 @@ def accept_direct_write() -> bool | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         return False
-    if not isinstance(payload, dict):
+    if not usable_verdict(payload):
         return False
     stamp_model_status(payload)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

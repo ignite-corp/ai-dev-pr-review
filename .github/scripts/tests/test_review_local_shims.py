@@ -268,7 +268,29 @@ def test_each_spawn_failure_gets_its_own_exit_code(
         ("", None),
         ("not json", False),
         ("[1, 2]", False),
+        # A JSON OBJECT that is not a verdict. `isinstance(payload, dict)`
+        # was the whole gate, so each of these was accepted, review()
+        # returned on it, and the log-extraction fallback never ran.
+        ('{"note": "half a write"}', False),
+        ('{"summary": "s", "issues": []}', False),
+        ('{"summary": "s", "early_exit": false}', False),
+        ('{"summary": 1, "early_exit": false, "issues": []}', False),
+        (
+            '{"summary": "s", "early_exit": false, "issues":'
+            ' [{"severity": "nonsense", "description": "d", "file": null,'
+            ' "line": null, "suggestion": null}]}',
+            False,
+        ),
         ('{"summary": "s", "early_exit": false, "issues": []}', True),
+        # Accepted because the AGGREGATE accepts it: load_reviews normalizes
+        # severity before it validates, so a shim that only validated would
+        # refuse a review over the spelling `High` and report it unparseable.
+        (
+            '{"summary": "s", "early_exit": false, "issues":'
+            ' [{"severity": "High", "description": "d", "file": null,'
+            ' "line": null, "suggestion": null}]}',
+            True,
+        ),
     ],
 )
 def test_a_direct_write_is_classified_once(tree, module, content, expected):
@@ -289,7 +311,9 @@ def test_an_accepted_verdict_gets_its_status_stamped(tree, module):
     """A direct write skips the extractor, where AT-1799 is otherwise
     stamped -- and a model-emitted "failed" is trusted from neither."""
     Path(module.REVIEW_FILE).write_text(
-        '{"status": "failed", "early_exit": false, "issues": []}', encoding="utf-8"
+        '{"summary": "reviewed", "status": "failed",'
+        ' "early_exit": false, "issues": []}',
+        encoding="utf-8",
     )
     assert module.accept_direct_write() is True
     assert json.loads(Path(module.REVIEW_FILE).read_text())["status"] == "ok"
@@ -390,6 +414,91 @@ def test_claude_recovers_a_verdict_the_model_printed(tree, monkeypatch):
     )
     claude.review()
     assert json.loads(Path(claude.REVIEW_FILE).read_text())["summary"] == "s"
+
+
+def _what_the_aggregate_reads(name: str):
+    """The payload aggregate_reviews would count, read the way it reads it.
+
+    Not the file restated: load_reviews applies its own shape test, so a
+    file that merely exists is not a verdict to it. Going through it is
+    what makes the assertion about the verdict the run yields.
+    """
+    import aggregate_reviews
+
+    return aggregate_reviews.load_reviews()[name]
+
+
+_HALF_WRITTEN = '{"note": "the CLI began a verdict and stopped"}'
+_RECOVERABLE = {
+    "summary": "one real finding",
+    "early_exit": False,
+    "issues": [
+        {
+            "severity": "major",
+            "description": "a real bug",
+            "file": "a.py",
+            "line": 1,
+            "suggestion": "fix it",
+        }
+    ],
+}
+
+
+def test_claude_recovers_a_verdict_a_half_written_file_used_to_suppress(
+    tree, monkeypatch, capsys
+):
+    """A JSON object is not a verdict, and accepting one skipped the recovery.
+
+    review() RETURNS on an accepted direct write, so the weaker gate did not
+    merely mislabel the file -- it cost the run the valid verdict sitting in
+    the CLI's own output. Measured on 688cd0a: the shim printed
+    "review-claude.json written directly by the CLI", the file on disk was
+    {"note": ..., "status": "ok"}, and aggregate_reviews.load_reviews()
+    answered `None` for claude with "Malformed review payload: claude".
+    """
+
+    def fake(argv, **kwargs):
+        Path(claude.REVIEW_FILE).write_text(_HALF_WRITTEN, encoding="utf-8")
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps({"result": json.dumps(_RECOVERABLE)}), ""
+        )
+
+    monkeypatch.setattr(claude.subprocess, "run", fake)
+
+    claude.review()
+
+    assert "not a usable verdict" in capsys.readouterr().err
+    assert _what_the_aggregate_reads("claude") == {**_RECOVERABLE, "status": "ok"}
+
+
+def test_codex_recovers_a_verdict_a_half_written_file_used_to_suppress(
+    tree, monkeypatch
+):
+    """The same gate, the same cost, in the other shim."""
+    payload = json.dumps({**_RECOVERABLE, "status": "ok"})
+    _stand_in_codex(tree, monkeypatch, payload, 0)
+    # The stand-in cannot write the file itself, so the half-written verdict
+    # is placed the way the CLI would have left it: before the shim judges.
+    Path(codex.REVIEW_FILE).write_text(_HALF_WRITTEN, encoding="utf-8")
+
+    codex.review()
+
+    assert _what_the_aggregate_reads("codex") == {**_RECOVERABLE, "status": "ok"}
+
+
+def test_both_shims_gate_on_the_aggregates_own_test(tree, monkeypatch):
+    """One validation, shared -- not two that agree on the day they are written.
+
+    The aggregate already owned the shape; a second copy per shim is a copy
+    of a third party's schema, free to drift from the one that decides.
+    """
+    import aggregate_reviews
+
+    from local_reviewer_support import is_valid_review, normalize_severity
+
+    assert aggregate_reviews._is_valid_review is is_valid_review
+    assert aggregate_reviews._normalize_severity is normalize_severity
+    assert claude.usable_verdict is codex.usable_verdict
 
 
 # ------------------------------------- what a killed CLI already printed

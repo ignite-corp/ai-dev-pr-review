@@ -54,6 +54,7 @@ from local_reviewer_support import (
     error_verdict,
     exit_reason,
     guarded_main,
+    usable_verdict,
     warn_unless_driver_spawned,
     write_verdict,
 )
@@ -272,9 +273,15 @@ def accept_direct_write() -> bool | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         return False
-    # Valid JSON is not necessarily a verdict: a top-level array parses and
-    # then has no .get for stamp_model_status.
-    if not isinstance(payload, dict):
+    # Valid JSON is not necessarily a verdict, and neither is a JSON OBJECT:
+    # `isinstance(payload, dict)` was the whole test here, so a half-written
+    # file with no summary, no early_exit and no issues was accepted, this
+    # function returned True, review() returned on it -- and the
+    # log-extraction fallback that would have recovered the real verdict out
+    # of the CLI's own output never ran. The aggregate then read the
+    # half-written file and counted the reviewer as malformed. The test is
+    # the aggregate's own, so what this accepts is what it will accept.
+    if not usable_verdict(payload):
         return False
     # A direct write skips extract_claude_review, which is where the AT-1799
     # status contract is otherwise stamped. A model-emitted "failed" is not
