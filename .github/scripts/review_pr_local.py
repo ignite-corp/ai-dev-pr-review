@@ -1299,6 +1299,15 @@ def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
     # run_reviewers reads `early_exit: true` out of exactly that file and
     # skips every reviewer after it, so a killed shim could reduce the run
     # to no review at all and report it as one that ran.
+    #
+    # "WHATEVER IS ON DISK" is only half true of this function: the string
+    # returned here is not what aggregate_reviews.py loads, which is the
+    # file. Both halves are enforced by
+    # test_a_killed_reviewers_file_is_not_left_for_the_aggregate and not by
+    # this sentence -- the file is disowned once, at the end of the round,
+    # in disown_unauthored_verdicts, because the killed reviewer is one of
+    # three ways an unauthored file reaches that slot and clearing it here
+    # would answer one of them.
     wrote_verdict = (work / f"review-{name}.json").is_file()
     if killed:
         conclusion = "failure"
@@ -1443,16 +1452,26 @@ def has_early_exit(work: Path, name: str) -> bool:
     return isinstance(payload, dict) and payload.get("early_exit") is True
 
 
-def reviewer_conclusion(name: str, work: Path, env: dict[str, str]) -> str:
+def reviewer_conclusion(
+    name: str, work: Path, config: LocalConfig, thread_count: str, existing: str
+) -> str:
     """run_reviewer, but a raise is this reviewer's failure, not the run's.
 
     Everything downstream is reached by returning from here, so a reviewer
     raising on an unenumerated path used to cost the whole run its verdict.
     A reviewer that cannot run is a FAILED reviewer, which the aggregate
     already knows how to report.
+
+    The environment is BUILT HERE and not handed in: as an argument at the
+    call site, reviewer_env ran outside the try -- a raise in it (an
+    unreadable config, a passthrough name that tripped something) was the
+    whole-run failure this guard exists to remove, costing the remaining
+    reviewers, check_coordinates and post_inline_comments as well.
     """
     try:
-        return run_reviewer(name, work, env)
+        return run_reviewer(
+            name, work, reviewer_env(name, config, thread_count, existing)
+        )
     except Exception as exc:  # noqa: BLE001 -- one reviewer, not the run
         traceback.print_exc()
         print(
@@ -1532,36 +1551,62 @@ def check_shared_inputs(work: Path, digests: dict[str, str]) -> bool:
     return intact
 
 
-def disown_rewritten_verdicts(
+def disown_unauthored_verdicts(
     work: Path, pinned: dict[str, str], conclusions: dict[str, str]
 ) -> None:
-    """Drop any verdict whose bytes changed after its author exited.
+    """Drop every verdict file its named reviewer did not author, this run.
 
-    Clearing a reviewer's slot before it starts settles the forgery in one
-    direction only. The other is open just as wide: the reviewer that runs
-    SECOND can rewrite the verdict the FIRST one already wrote, and nothing
-    downstream -- check_coordinates, post_inline_comments, the aggregate's
-    consensus thresholds -- would know whose opinion it was reading.
+    ONE RULE, ONE PLACE, over REVIEWER_NAMES and not over `pinned`: a
+    verdict counted as a reviewer's must be one `pinned` entitled that
+    reviewer to -- present when the round ended with the bytes that
+    reviewer left. Everything else in that slot is someone else's writing,
+    and the three ways it gets there are one defect, not three:
 
-    A verdict that changed under us is not that reviewer's, so the run stops
-    calling it theirs: the file goes and the reviewer is reported `failure`,
-    which is a reviewer that produced no verdict -- a state the aggregate
-    already renders. Inventing a fourth `error` kind to say it inside the
-    file instead would put this module's finding into
-    local_reviewer_support's vocabulary and aggregate_reviews.py's
-    rendering, for a case whose honest answer is that there is no verdict.
+    * the reviewer NEVER RAN. Both `break`s in run_reviewers leave the loop
+      with the later slots untouched, clean_artifacts ran once in prepare,
+      and the earlier form iterated `pinned` -- so a review-gemini.json the
+      FIRST reviewer planted outlived a stopped round and was read as
+      gemini's opinion, one reviewer holding two of the three votes.
+    * the reviewer WAS KILLED, or raised. run_reviewer says so in its
+      conclusion, but the aggregate loads the file itself, and what the CLI
+      wrote before the SIGTERM passed no json.loads gate, no isinstance
+      gate and no stamp_model_status. Such a reviewer is entitled to
+      nothing, which is why run_reviewers pins no `failure`.
+    * the verdict was REWRITTEN after its author exited, by the reviewer
+      that ran next -- the direction clearing the slot beforehand cannot
+      reach.
+
+    The conclusion is only corrected for the third: the other two already
+    read `skipped` or `failure`, which is what a reviewer with no verdict
+    is. Inventing a fourth `error` kind to say it inside the file instead
+    would put this module's finding into local_reviewer_support's
+    vocabulary and aggregate_reviews.py's rendering, for a case whose
+    honest answer is that there is no verdict.
     """
-    for name, digest in pinned.items():
-        if file_digest(work / f"review-{name}.json") == digest:
+    for name in REVIEWER_NAMES:
+        current = file_digest(work / f"review-{name}.json")
+        if not current:
             continue
-        print(
-            f"::error::review-{name}.json changed after the {name} reviewer"
-            " exited, so it is not that reviewer's verdict; discarding it"
-            f" and reporting {name} as a failure",
-            file=sys.stderr,
-        )
+        digest = pinned.get(name)
+        if digest == current:
+            continue
+        if digest is None:
+            print(
+                f"::error::review-{name}.json is in the review tree though"
+                f" the {name} reviewer authored no verdict in this run"
+                f" ({conclusions[name]}); only something else in this run can"
+                " have written it, and it has been discarded",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"::error::review-{name}.json changed after the {name}"
+                " reviewer exited, so it is not that reviewer's verdict;"
+                f" discarding it and reporting {name} as a failure",
+                file=sys.stderr,
+            )
+            conclusions[name] = "failure"
         remove_artifact(work, f"review-{name}.json")
-        conclusions[name] = "failure"
 
 
 def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) -> bool:
@@ -1586,7 +1631,8 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
 
     WHAT THE LOOP ESTABLISHES: a verdict counted as a reviewer's was absent
     when that reviewer started (clear_reviewer_slot) and unchanged when the
-    round ended (disown_rewritten_verdicts); and no reviewer read a diff or
+    round ended (disown_unauthored_verdicts, which also refuses the slot of
+    a reviewer that never ran or was killed); and no reviewer read a diff or
     a context that another reviewer had rewritten, because the round stops
     at the one that would have been first to (check_shared_inputs). False
     is that stop, and it travels out to run_review_stage because the two
@@ -1612,9 +1658,14 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
             )
             break
         conclusions[name] = reviewer_conclusion(
-            name, work, reviewer_env(name, config, thread_count, existing)
+            name, work, config, thread_count, existing
         )
-        pinned[name] = file_digest(work / f"review-{name}.json")
+        # A `failure` is entitled to nothing: every enumerated way to reach
+        # it -- killed, unspawnable, raised -- leaves a file the shim's own
+        # gates never saw, or no file at all. Pinning it would hand
+        # disown_unauthored_verdicts the very bytes it exists to refuse.
+        if conclusions[name] != "failure":
+            pinned[name] = file_digest(work / f"review-{name}.json")
         if sequential and conclusions[name] != "failure" and has_early_exit(work, name):
             print(f"  {name} requested early exit; skipping the rest")
             break
@@ -1625,7 +1676,7 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
     # stopped, and short-circuiting it away is how it would not.
     if not check_shared_inputs(work, inputs):
         intact = False
-    disown_rewritten_verdicts(work, pinned, conclusions)
+    disown_unauthored_verdicts(work, pinned, conclusions)
     return intact
 
 

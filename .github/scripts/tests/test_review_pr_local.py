@@ -1103,9 +1103,12 @@ def test_a_killed_reviewers_verdict_does_not_end_a_sequential_run(
     # reached at all, which is the consequence with teeth.
     reached = []
 
-    def reviewer_conclusion(name, work, env):
+    def reviewer_conclusion(name, work, config, thread_count, existing):
         reached.append(name)
-        return driver.run_reviewer(name, work, env) if name == "claude" else "success"
+        if name != "claude":
+            return "success"
+        env = driver.reviewer_env(name, config, thread_count, existing)
+        return driver.run_reviewer(name, work, env)
 
     monkeypatch.setattr(driver, "reviewer_conclusion", reviewer_conclusion)
     monkeypatch.setenv("REVIEW_MODE", "sequential")
@@ -1116,8 +1119,10 @@ def test_a_killed_reviewers_verdict_does_not_end_a_sequential_run(
     assert conclusions["claude"] == "failure"
     assert reached == list(driver.SEQUENTIAL_ORDER)
     assert "skipping the rest" not in capsys.readouterr().out
-    # The unchecked file is still there; it just no longer decides anything.
-    assert driver.has_early_exit(tmp_path, "claude") is True
+    # And the file itself does not survive the round either -- see
+    # test_a_killed_reviewers_file_is_not_left_for_the_aggregate, which is
+    # about what aggregate_reviews.py loads rather than about this gate.
+    assert not (tmp_path / "review-claude.json").exists()
 
 
 def test_the_policy_comment_names_the_rule_file_the_child_resolved(
@@ -1607,6 +1612,134 @@ def test_a_verdict_rewritten_after_its_author_exited_is_not_its_authors(
     assert json.loads((tmp_path / "review-codex.json").read_text())["summary"] == (
         "codex reviewed this"
     )
+
+
+
+def _verdicts_the_aggregate_reads(work) -> dict[str, str]:
+    """The summaries aggregate_reviews would count, read the way it reads them.
+
+    Not `path.exists()` restated in the test: load_reviews keys on existence
+    alone and _get_available filters on the payload's own status, so a file
+    nothing checked is a verdict to both. Going through them is what makes
+    the assertion about the aggregate's view rather than about the tree.
+    """
+    import aggregate_reviews
+
+    cwd = os.getcwd()
+    os.chdir(work)
+    try:
+        available = aggregate_reviews._get_available(aggregate_reviews.load_reviews())
+    finally:
+        os.chdir(cwd)
+    return {name: payload["summary"] for name, payload in available.items()}
+
+
+_PLANTS_GEMINI = (
+    "pathlib.Path('review-gemini.json').write_text(json.dumps(\n"
+    "    {'summary': 'PLANTED BY CLAUDE', 'status': 'ok',\n"
+    "     'early_exit': False, 'issues': []}))\n"
+)
+
+
+@pytest.mark.parametrize("stop", ["shared-input", "early-exit"])
+def test_a_planted_verdict_does_not_outlive_a_round_that_stopped(
+    tmp_path, monkeypatch, capsys, stop
+):
+    """Clearing per reviewer settles nothing about the reviewers never reached.
+
+    Both `break`s leave the loop with the later reviewers' slots untouched,
+    and neither of the two defences covers what is left: clean_artifacts ran
+    once in prepare, before any reviewer, and the disown pass iterated
+    `pinned`, which holds only reviewers that actually ran.
+
+    Baseline (513dd69), both parametrisations: the aggregate's own
+    load_reviews + _get_available returned
+    {'claude': 'claude reviewed this', 'gemini': 'PLANTED BY CLAUDE'} -- one
+    reviewer holding two of the three votes the consensus thresholds count.
+    """
+    monkeypatch.setenv(
+        "REVIEW_MODE", "sequential" if stop == "early-exit" else "parallel"
+    )
+    (tmp_path / "pr.diff").write_text("+original\n", encoding="utf-8")
+    (tmp_path / "context.md").write_text("guidelines", encoding="utf-8")
+    if stop == "early-exit":
+        first = (
+            "import json, pathlib\n"
+            "pathlib.Path('review-claude.json').write_text(json.dumps(\n"
+            "    {'summary': 'claude reviewed this', 'status': 'ok',\n"
+            "     'early_exit': True, 'issues': []}))\n"
+        ) + _PLANTS_GEMINI
+    else:
+        first = (
+            _WRITES_OWN_VERDICT.format(name="claude")
+            + _PLANTS_GEMINI
+            + "pathlib.Path('pr.diff').write_text('+forged\\n')\n"
+        )
+    _reviewer_stand_ins(
+        tmp_path,
+        monkeypatch,
+        {
+            "claude": first,
+            "codex": _WRITES_OWN_VERDICT.format(name="codex"),
+            "gemini": _WRITES_OWN_VERDICT.format(name="gemini"),
+        },
+    )
+
+    conclusions = driver.initial_conclusions()
+    driver.run_reviewers(tmp_path, LocalConfig.load(), conclusions)
+
+    assert "PLANTED BY CLAUDE" not in _verdicts_the_aggregate_reads(tmp_path).values()
+    assert not (tmp_path / "review-gemini.json").exists()
+    assert conclusions["gemini"] != "success"
+    assert "PLANTED BY CLAUDE" not in capsys.readouterr().out
+
+
+def test_a_killed_reviewers_file_is_not_left_for_the_aggregate(
+    tmp_path, monkeypatch, capsys
+):
+    """A killed reviewer is a failure whatever is on disk -- the file included.
+
+    The conclusion was already `failure`, but that is a string handed to the
+    aggregate alongside a file the aggregate loads on its own. load_reviews
+    keys on existence and _get_available on the payload's status, so the
+    unchecked bytes the CLI wrote before the SIGTERM landed -- past no
+    json.loads gate, no isinstance gate, no stamp_model_status -- are read
+    as the verdict, and its issues reach post_inline_comments and the
+    consensus count. The disown pass could not reach it either: `pinned` was
+    taken straight after the kill, so the digest matched.
+
+    Baseline (513dd69): run_reviewers returned with conclusions
+    {'claude': 'failure', ...} and the aggregate's own load_reviews +
+    _get_available still returned {'claude': 'UNCHECKED BYTES'}.
+    """
+    monkeypatch.setattr(driver, "reviewer_timeout_sec", lambda name: 2)
+    _reviewer_stand_ins(
+        tmp_path,
+        monkeypatch,
+        {
+            "claude": "import json, pathlib, time\n"
+            "pathlib.Path('review-claude.json').write_text(json.dumps(\n"
+            "    {'summary': 'UNCHECKED BYTES', 'status': 'ok',\n"
+            "     'early_exit': False, 'issues': []}))\n"
+            "time.sleep(60)\n",
+            "codex": _WRITES_OWN_VERDICT.format(name="codex"),
+            "gemini": _WRITES_OWN_VERDICT.format(name="gemini"),
+        },
+    )
+
+    conclusions = driver.initial_conclusions()
+    driver.run_reviewers(tmp_path, LocalConfig.load(), conclusions)
+
+    assert conclusions["claude"] == "failure"
+    assert "UNCHECKED BYTES" not in _verdicts_the_aggregate_reads(tmp_path).values()
+    assert not (tmp_path / "review-claude.json").exists()
+    # The reviewers that really ran keep what they wrote: this refuses a
+    # file nothing authored, it does not discard the round.
+    assert _verdicts_the_aggregate_reads(tmp_path) == {
+        "codex": "codex reviewed this",
+        "gemini": "gemini reviewed this",
+    }
+    assert "was killed" in capsys.readouterr().err
 
 
 def test_a_diff_rewritten_under_the_later_reviewers_stops_the_round(
