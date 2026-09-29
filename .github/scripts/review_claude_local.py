@@ -334,7 +334,14 @@ def review() -> None:
     if written is False:
         kind = ERROR_UNPARSEABLE
         summary = "Claude review failed: the verdict file the CLI wrote is not usable"
-        detail = f"claude {reason}; its verdict file is not a JSON object"
+        # Says what the GATE ABOVE tested. It was `isinstance(payload, dict)`
+        # and this sentence described it; it is usable_verdict now, so a CLI
+        # writing {"summary": ..., "issues": []} -- an object, no early_exit
+        # -- reached the operator blamed for a fault that was not its own.
+        detail = (
+            f"claude {reason}; its verdict file is not the verdict shape"
+            " aggregate_reviews.py reads"
+        )
     elif exit_code in (EXIT_NOT_INSTALLED, EXIT_TIMED_OUT, EXIT_SPAWN_FAILED):
         # Kept ahead of the general non-zero case for the SUMMARY alone --
         # "the CLI is not installed" and "ran for ten minutes" are the whole

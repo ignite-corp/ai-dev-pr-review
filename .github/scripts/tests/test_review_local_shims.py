@@ -522,6 +522,33 @@ def test_codex_recovers_a_verdict_a_half_written_file_used_to_suppress(
     assert _what_the_aggregate_reads("codex") == {**_RECOVERABLE, "status": "ok"}
 
 
+def test_the_unusable_verdict_detail_names_the_test_that_was_applied(
+    tree, monkeypatch, capsys
+):
+    """A JSON OBJECT is not the gate any more, so it cannot be the message.
+
+    Baseline (e912c89): with `{"summary": "s", "issues": []}` in the verdict
+    file -- an object, missing early_exit -- the operator got "its verdict
+    file is not a JSON object", naming a test the code had stopped applying
+    when the gate became usable_verdict. The summary and the warning above
+    were both updated at the time; this one was not.
+    """
+    Path(claude.REVIEW_FILE).write_text(
+        json.dumps({"summary": "s", "issues": []}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        claude.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+
+    claude.review()
+
+    detail = json.loads(Path(claude.REVIEW_FILE).read_text())["error_detail"]
+    assert "not a JSON object" not in detail
+    assert "verdict shape" in detail
+
+
 def test_both_shims_gate_on_the_aggregates_own_test(tree, monkeypatch):
     """One validation, shared -- not two that agree on the day they are written.
 
