@@ -581,6 +581,54 @@ def test_both_shims_give_a_silent_non_zero_cli_the_same_reason(
     assert " -- CLI exited 3" not in payload["summary"]
 
 
+@pytest.mark.parametrize("module", [claude, codex], ids=["claude", "codex"])
+def test_both_shims_call_a_noisy_non_zero_cli_the_same_failure(
+    tree, monkeypatch, module
+):
+    """A CLI that printed a diagnostic and then failed is still a failed run.
+
+    The exit status is the CLI's own statement about whether the invocation
+    failed; what it happened to print is evidence about what there was to
+    parse, which is a different question. Classifying on the second is how
+    the two shims came apart here: the Codex shim read the status and wrote
+    cli_invocation_failed, while the Claude shim's `elif stdout:` saw a
+    non-empty stdout and wrote output_unparseable for the identical run.
+    """
+    name = "claude" if module is claude else "codex"
+    _stand_in_cli(tree, monkeypatch, name, f"{name}: connection reset", 3)
+
+    module.review()
+
+    payload = json.loads(Path(module.REVIEW_FILE).read_text())
+    assert payload["error"] == ERROR_CLI_FAILED
+    # The detail wording is each shim's own -- the Codex shim tails the log,
+    # the Claude shim names the exit -- but neither may leave it empty: it is
+    # the one field the aggregate reads for a reason.
+    assert payload["error_detail"]
+
+
+@pytest.mark.parametrize("module", [claude, codex], ids=["claude", "codex"])
+def test_both_shims_call_a_silent_clean_exit_the_same_failure(
+    tree, monkeypatch, module
+):
+    """The mirror case: exit 0, nothing printed, so nothing to parse.
+
+    The invocation did not fail -- the CLI said so itself -- and the run
+    still produced no verdict, which is what output_unparseable names. The
+    Claude shim's `elif stdout:` fell through to its `else` on the empty
+    stdout and called a clean exit a failed invocation, while the Codex
+    shim read the status and wrote output_unparseable for the same run.
+    """
+    name = "claude" if module is claude else "codex"
+    _stand_in_cli(tree, monkeypatch, name, "", 0)
+
+    module.review()
+
+    payload = json.loads(Path(module.REVIEW_FILE).read_text())
+    assert payload["error"] == ERROR_UNPARSEABLE
+    assert payload["error_detail"]
+
+
 def test_codex_names_a_hung_extractor_rather_than_a_reviewer_that_raised(
     tree, monkeypatch, capsys
 ):

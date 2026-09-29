@@ -311,31 +311,39 @@ def review() -> None:
         return
 
     reason = _exit_reason(exit_code, timeout_sec)
+    # What the CLI printed decides the WORDING, and nothing else: the kind
+    # below is read off the exit status. The status is the CLI's own
+    # statement about whether the invocation failed; stdout answers the
+    # different question of what there was to parse, and a CLI can print a
+    # page of diagnostics on its way to failing.
+    detail = f"claude {reason}" + (
+        "; output held no verdict JSON" if stdout else "; no output produced"
+    )
     if written is False:
         kind = ERROR_UNPARSEABLE
         summary = "Claude review failed: the verdict file the CLI wrote is not usable"
         detail = f"claude {reason}; its verdict file is not a JSON object"
     elif exit_code in (EXIT_NOT_INSTALLED, EXIT_TIMED_OUT, EXIT_SPAWN_FAILED):
-        # Ahead of the output test, because the CLI never ran to completion:
-        # whatever it printed first is a transcript, not a verdict it failed
-        # to format. Keeping the partial transcript instead of "" moved this
-        # case onto `elif stdout:`, which reported a killed CLI as
-        # output_unparseable -- and review_codex_local classifies the same
-        # run as cli_invocation_failed however much log it kept, so the two
-        # shims were spelling one failure two ways.
+        # Kept ahead of the general non-zero case for the SUMMARY alone --
+        # "the CLI is not installed" and "ran for ten minutes" are the whole
+        # answer, where "no verdict file produced" describes a symptom. The
+        # kind is the same either way now, so the ordering no longer decides
+        # it; before it did, because the test below was `elif stdout:` and a
+        # killed CLI that had printed a partial transcript fell onto it.
         kind = ERROR_CLI_FAILED
         summary = f"Claude review failed: {reason}"
-        detail = f"claude {reason}" + (
-            "; output held no verdict JSON" if stdout else "; no output produced"
-        )
-    elif stdout:
+    elif exit_code == 0:
+        # A clean exit that produced no verdict: the invocation did not
+        # fail -- the CLI said so itself -- there was simply nothing usable
+        # to parse. Keyed on stdout instead, this wrote cli_invocation_failed
+        # for a silent exit 0 while review_codex_local wrote
+        # output_unparseable, and the two swapped answers on a noisy non-zero
+        # run: one failure, two spellings, in both directions.
         kind = ERROR_UNPARSEABLE
         summary = "Claude review failed: no verdict file produced"
-        detail = f"claude {reason}; output held no verdict JSON"
     else:
         kind = ERROR_CLI_FAILED
         summary = "Claude review failed: no verdict file produced"
-        detail = f"claude {reason}; no output produced"
     print(f"::warning::{summary} -- emitting error verdict ({kind})", file=sys.stderr)
     write_verdict(REVIEW_FILE, error_verdict(summary, kind, detail))
 
