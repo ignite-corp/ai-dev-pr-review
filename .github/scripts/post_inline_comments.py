@@ -144,13 +144,18 @@ def parse_diff(diff_text: str) -> dict[str, set[int]]:
             match = re.search(r"\+(\d+)", line)
             if match:
                 right_line = int(match.group(1))
-        elif current_file is not None:
+        elif current_file is not None and right_line != 0:
+            # `right_line != 0` is the mirror of the header guard above: no
+            # hunk has opened yet, so nothing here has a right-side position
+            # to hold. review_coordinates.diff_offset_index refuses the same
+            # lines for the same reason, and the two are compared directly.
+            #
             # `line == ""` is a blank context line whose leading space was
             # stripped in transit. It holds a right-side position like any
-            # other context line, and review_coordinates.diff_offset_index
-            # counts it: the two are built from the same pr.diff and their
-            # answers are compared directly, so disagreeing here drifts the
-            # two coordinate systems apart by one per blank line.
+            # other context line, and diff_offset_index counts it.
+            #
+            # Both halves are asserted, not described: see the two
+            # `counts_the_same_in_both_indexes` tests.
             if line.startswith("+") or line.startswith(" ") or line == "":
                 valid[current_file].add(right_line)
                 right_line += 1

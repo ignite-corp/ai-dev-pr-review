@@ -186,6 +186,65 @@ def test_a_bare_empty_context_line_counts_the_same_in_both_indexes():
     assert offsets[8] == (SOURCE, 4)
 
 
+def test_a_line_before_the_first_hunk_counts_the_same_in_both_indexes():
+    """The counterpart to the blank-line case above, on the other side.
+
+    Between `+++ b/x` and the first `@@` the right-side counter is still 0 --
+    no hunk has said where the file starts. diff_offset_index refuses to map
+    anything there (`right == 0`); parse_diff recorded it, so a diff with one
+    such line put a right-side line 0 into the valid set and every further
+    pre-hunk line one more fake number after it. in_range is read off that
+    set, so those fakes suppress the rescue for exactly the offsets
+    diff_offset_index does map.
+
+    The hunk opens at 40 so the fakes cannot be mistaken for real lines.
+    """
+    diff = (
+        f"diff --git a/{SOURCE} b/{SOURCE}\n"
+        f"--- a/{SOURCE}\n"
+        f"+++ b/{SOURCE}\n"
+        "\n"
+        " stray\n"
+        "@@ -40,2 +40,3 @@\n"
+        " first\n"
+        "+added\n"
+        " last\n"
+    )
+
+    offsets = diff_offset_index(diff)
+    valid = parse_diff(diff)
+
+    assert valid[SOURCE] == {40, 41, 42}
+    assert {line for _, line in offsets.values()} == valid[SOURCE]
+
+
+def test_a_combined_diff_counts_the_same_in_both_indexes():
+    """The input the pre-hunk case is actually reachable on.
+
+    `git show --cc` of a merge commit writes `diff --cc x`, a `---`/`+++`
+    pair, and then `@@@ -1,2 -1,2 +1,2 @@@` -- a hunk header neither index
+    recognises, since both look for `@@ `. The right-side counter therefore
+    never leaves 0 and every body line of that file is a pre-hunk line.
+    pr.diff is never a combined diff (extract_pr_diff.sh writes two-endpoint
+    diffs only), so this is out of scope for both and the agreement is all
+    that is claimed: neither index invents a coordinate it cannot justify.
+    """
+    diff = (
+        "diff --cc f.txt\n"
+        "index 53dbc8c,61c5332..10f80e6\n"
+        "--- a/f.txt\n"
+        "+++ b/f.txt\n"
+        "@@@ -1,2 -1,2 +1,2 @@@\n"
+        "- y\n"
+        " -x\n"
+        "++z\n"
+        "  b\n"
+    )
+
+    assert parse_diff(diff) == {"f.txt": set()}
+    assert diff_offset_index(diff) == {}
+
+
 def test_the_second_file_in_a_diff_still_opens():
     """The guard above is only sound because `diff --git` closes the hunk;
     without that, every file after the first would be unreachable.
