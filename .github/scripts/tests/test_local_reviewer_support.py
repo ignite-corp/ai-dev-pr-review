@@ -24,6 +24,7 @@ from local_reviewer_support import (  # noqa: E402
     EXIT_SPAWN_FAILED,
     EXIT_TIMED_OUT,
     error_verdict,
+    exit_reason,
     guarded_main,
     spawn_exit_reason,
 )
@@ -64,6 +65,22 @@ def test_a_code_this_module_does_not_own_gets_no_invented_reason():
     rather than have this function speak for it."""
     assert spawn_exit_reason(3, 90) == ""
     assert spawn_exit_reason(-99, 90) == ""
+
+
+def test_the_fallback_wording_has_one_home_both_shims_read():
+    """The aggregate reads one error_detail whoever wrote it.
+
+    The wording was computed identically in both shims, so the agreement
+    was a coincidence a one-line edit could end. Here it is the function,
+    and the shims are checked for the copy rather than for the call: a
+    second `or f"CLI exited ..."` anywhere is the drift itself.
+    """
+    assert exit_reason(3, 90) == "CLI exited 3"
+    assert exit_reason(EXIT_TIMED_OUT, 90) == spawn_exit_reason(EXIT_TIMED_OUT, 90)
+    for shim in SHIMS:
+        source = (SCRIPT_DIR / shim).read_text(encoding="utf-8")
+        assert "CLI exited {exit_code}" not in source, shim
+        assert "exit_reason(" in source, shim
 
 
 def test_a_raising_reviewer_still_leaves_a_verdict(tmp_path, monkeypatch, capsys):

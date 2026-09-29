@@ -67,8 +67,8 @@ from local_reviewer_support import (
     EXIT_TIMED_OUT,
     captured_text,
     error_verdict,
+    exit_reason,
     guarded_main,
-    spawn_exit_reason,
     warn_unless_driver_spawned,
     write_verdict,
 )
@@ -323,15 +323,15 @@ def review() -> None:
     # this comment forbids, while the Claude shim on the same run wrote
     # "claude CLI exited 3; no output produced" -- the two shims disagreeing
     # about the one field the aggregate reads for a reason, which is the
-    # defect, not the emptiness on its own.
-    #
-    # The fallback is the Claude shim's sentence and not a bare `reason`:
+    # defect, not the emptiness on its own -- so exit_reason, which is where
+    # that agreement lives, is imported rather than restated here.
+    # The detail's fallback is a sentence and not a bare `reason`:
     # error_verdict appends the detail to the summary, and the summary is
     # already built from `reason`, so handing both the same string produced
     # "Codex review failed: CLI exited 3 -- CLI exited 3". The reached-only-
     # when-log_tail-is-empty condition is exactly what "no output produced"
     # states, so the wording is a fact about this path and not a guess.
-    reason = spawn_exit_reason(exit_code, _CLI_TIMEOUT_SEC) or f"CLI exited {exit_code}"
+    reason = exit_reason(exit_code, _CLI_TIMEOUT_SEC)
     detail = log_tail(log) or f"codex {reason}; no output produced"
     if written is False or exit_code == 0:
         print(

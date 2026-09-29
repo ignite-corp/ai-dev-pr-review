@@ -52,8 +52,8 @@ from local_reviewer_support import (
     EXIT_TIMED_OUT,
     captured_text,
     error_verdict,
+    exit_reason,
     guarded_main,
-    spawn_exit_reason,
     warn_unless_driver_spawned,
     write_verdict,
 )
@@ -188,10 +188,6 @@ def shim_budget_sec() -> int:
     return cli_timeout_sec(cli_environ())
 
 
-def _exit_reason(exit_code: int, timeout_sec: int) -> str:
-    return spawn_exit_reason(exit_code, timeout_sec) or f"CLI exited {exit_code}"
-
-
 def run_cli(prompt: str, model: str) -> tuple[int, str, int]:
     """Run the CLI; return (exit code, raw stdout, the bound that applied)."""
     env = cli_environ()
@@ -310,7 +306,7 @@ def review() -> None:
     if write_exec_file(stdout) and extract_review(EXEC_FILE):
         return
 
-    reason = _exit_reason(exit_code, timeout_sec)
+    reason = exit_reason(exit_code, timeout_sec)
     # What the CLI printed decides the WORDING, and nothing else: the kind
     # below is read off the exit status. The status is the CLI's own
     # statement about whether the invocation failed; stdout answers the

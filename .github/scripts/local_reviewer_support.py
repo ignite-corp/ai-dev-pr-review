@@ -117,6 +117,20 @@ def spawn_exit_reason(exit_code: int, timeout_sec: int) -> str:
     return ""
 
 
+def exit_reason(exit_code: int, timeout_sec: int) -> str:
+    """spawn_exit_reason, with the wording both shims fall back to.
+
+    HERE and not once per shim: the fallback is a CROSS-SHIM contract, not a
+    default. The aggregate reads one `error_detail` field whoever wrote it,
+    and the defect this wording settled was the two shims disagreeing about
+    it on the same run -- so a second copy that drifts reopens exactly the
+    thing the first one closed. spawn_exit_reason stays separate because it
+    answers "" for a code it does not own, which is what forces a shim
+    adding one to say what it means.
+    """
+    return spawn_exit_reason(exit_code, timeout_sec) or f"CLI exited {exit_code}"
+
+
 def captured_text(captured: str | bytes | None) -> str:
     """One half of what a killed CLI had printed, as text.
 
