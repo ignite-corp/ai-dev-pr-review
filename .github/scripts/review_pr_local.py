@@ -560,15 +560,20 @@ def clear_reviewer_slot(work: Path, name: str) -> list[str]:
 def file_digest(path: Path) -> str:
     """What this NAME holds, as a string two calls can be compared on.
 
-    "" means nothing is there. A symlink answers "a symbolic link" whatever
-    it points at, because the question is what the name holds and a name
-    that became a link no longer holds a file -- answering "" for it would
-    let a reviewer that wrote no verdict have one linked in behind its back
-    without the comparison noticing.
+    "" means nothing is there. A symlink answers a value that NEVER EQUALS
+    ITSELF: a link is the one thing whose content can change without the
+    name changing, and one fixed answer for every link let a verdict left as
+    a link be repointed after its author exited and still match the pin, so
+    the aggregate read the new target as that reviewer's unchanged verdict.
+    No answer two calls can be compared on exists for a link, so none is
+    invented -- refusing it whatever it points at also covers a target
+    swapped for another file, and one outside the tree. Answering "" instead
+    would let a reviewer that wrote no verdict have one linked in behind its
+    back without the comparison noticing.
     """
     try:
         if path.is_symlink():
-            return "a symbolic link"
+            return f"a symbolic link ({os.urandom(8).hex()})"
         if not path.is_file():
             return "not a regular file" if path.exists() else ""
         return sha256(path.read_bytes()).hexdigest()

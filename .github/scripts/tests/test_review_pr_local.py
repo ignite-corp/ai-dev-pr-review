@@ -1635,6 +1635,48 @@ def _verdicts_the_aggregate_reads(work) -> dict[str, str]:
     return {name: payload["summary"] for name, payload in available.items()}
 
 
+def test_a_verdict_symlink_retargeted_after_its_author_exited_is_not_its_authors(
+    tmp_path, monkeypatch
+):
+    """A digest that answers the same for every link compares equal to a swap.
+
+    file_digest answered "a symbolic link" whatever the link pointed at, so
+    the pin taken when the author exited matched the pass run at the end of
+    the round however the name had been repointed in between -- the one
+    direction clearing the slot beforehand cannot reach, reopened for links.
+
+    Baseline (f65bec1): the run reported claude `success` and the
+    aggregate's own load_reviews + _get_available returned
+    {'claude': 'RETARGETED BY CODEX', ...}.
+    """
+    _reviewer_stand_ins(
+        tmp_path,
+        monkeypatch,
+        {
+            "claude": "import json, pathlib\n"
+            "pathlib.Path('authored.json').write_text(json.dumps(\n"
+            "    {'summary': 'claude reviewed this', 'status': 'ok',\n"
+            "     'early_exit': False, 'issues': []}))\n"
+            "pathlib.Path('review-claude.json').symlink_to('authored.json')\n",
+            "codex": _WRITES_OWN_VERDICT.format(name="codex")
+            + "pathlib.Path('forged.json').write_text(json.dumps(\n"
+            "    {'summary': 'RETARGETED BY CODEX', 'status': 'ok',\n"
+            "     'early_exit': False, 'issues': []}))\n"
+            "pathlib.Path('review-claude.json').unlink()\n"
+            "pathlib.Path('review-claude.json').symlink_to('forged.json')\n",
+            "gemini": _WRITES_OWN_VERDICT.format(name="gemini"),
+        },
+    )
+
+    conclusions = driver.initial_conclusions()
+    driver.run_reviewers(tmp_path, LocalConfig.load(), conclusions)
+
+    read = _verdicts_the_aggregate_reads(tmp_path)
+    assert "RETARGETED BY CODEX" not in read.values()
+    assert "claude" not in read
+    assert conclusions["claude"] == "failure"
+
+
 _PLANTS_GEMINI = (
     "pathlib.Path('review-gemini.json').write_text(json.dumps(\n"
     "    {'summary': 'PLANTED BY CLAUDE', 'status': 'ok',\n"
