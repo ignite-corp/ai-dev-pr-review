@@ -1694,6 +1694,63 @@ def test_a_planted_verdict_does_not_outlive_a_round_that_stopped(
     assert "PLANTED BY CLAUDE" not in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("raiser", ["strip_agent_config", "clear_reviewer_slot"])
+def test_a_planted_verdict_does_not_outlive_a_round_that_raised(
+    tmp_path, monkeypatch, raiser
+):
+    """The third way out of the loop, which the two `break`s do not cover.
+
+    Both statements at the top of the body raise rather than break --
+    strip_agent_config on a deletion it cannot make, clear_reviewer_slot
+    through remove_artifact on any OSError -- and the pass was the last
+    STATEMENT of run_reviewers, reached only by falling out normally. The
+    raise unwinds into review_pr's handler, which reports a failed review
+    stage and hands `conclusions` to the aggregate anyway, and the aggregate
+    loads the verdict files itself.
+
+    Baseline (688cd0a), both parametrisations: review-gemini.json was still
+    in the tree and the aggregate's own load_reviews + _get_available
+    returned {'claude': 'claude reviewed this', 'gemini': 'PLANTED BY
+    CLAUDE'} -- the same one-reviewer-two-votes the fix for the `break`s
+    closed, by a route it did not reach.
+    """
+    (tmp_path / "pr.diff").write_text("+original\n", encoding="utf-8")
+    (tmp_path / "context.md").write_text("guidelines", encoding="utf-8")
+    _reviewer_stand_ins(
+        tmp_path,
+        monkeypatch,
+        {
+            "claude": _WRITES_OWN_VERDICT.format(name="claude") + _PLANTS_GEMINI,
+            "codex": _WRITES_OWN_VERDICT.format(name="codex"),
+            "gemini": _WRITES_OWN_VERDICT.format(name="gemini"),
+        },
+    )
+    # The SECOND reviewer, so the round has already produced a real verdict
+    # and a planted one by the time the tree turns unwritable.
+    calls = {"n": 0}
+    original = getattr(driver, raiser)
+
+    def raises_on_the_second(work, *args):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise driver.DriverError(f"{raiser} could not clear the review tree")
+        return original(work, *args)
+
+    monkeypatch.setattr(driver, raiser, raises_on_the_second)
+
+    conclusions = driver.initial_conclusions()
+    with pytest.raises(driver.DriverError):
+        driver.run_reviewers(tmp_path, LocalConfig.load(), conclusions)
+
+    assert not (tmp_path / "review-gemini.json").exists()
+    assert "PLANTED BY CLAUDE" not in _verdicts_the_aggregate_reads(tmp_path).values()
+    # And the reviewer that really ran keeps what it really wrote: the pass
+    # refuses a file nothing authored, it does not discard the round.
+    assert _verdicts_the_aggregate_reads(tmp_path) == {
+        "claude": "claude reviewed this"
+    }
+
+
 def test_a_killed_reviewers_file_is_not_left_for_the_aggregate(
     tmp_path, monkeypatch, capsys
 ):

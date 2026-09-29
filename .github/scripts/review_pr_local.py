@@ -1582,6 +1582,18 @@ def disown_unauthored_verdicts(
     would put this module's finding into local_reviewer_support's
     vocabulary and aggregate_reviews.py's rendering, for a case whose
     honest answer is that there is no verdict.
+
+    RUN UNCONDITIONALLY, from run_reviewers' `finally`. Being that
+    function's last statement made it reachable only by falling out of the
+    loop normally, and two statements inside the loop raise instead:
+    strip_agent_config on a deletion it cannot make, clear_reviewer_slot
+    through remove_artifact on any OSError. Either unwinds into review_pr's
+    handler, which reports a failed review stage and hands `conclusions` on
+    regardless -- and the aggregate loads the verdict FILES off disk on its
+    own. Measured on 688cd0a: a review-gemini.json planted by the first
+    reviewer survived a raise in the second into the aggregate's own
+    load_reviews as gemini's independent vote, which is the very thing
+    covering the two `break`s had just closed by the other two routes.
     """
     for name in REVIEWER_NAMES:
         current = file_digest(work / f"review-{name}.json")
@@ -1645,38 +1657,49 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
     pinned: dict[str, str] = {}
     intact = True
     print(f"Running reviewers ({thread_count} unresolved thread(s)):")
-    for name in order:
-        # Per reviewer, not per round: the scan has to see what the reviewer
-        # before this one left in the tree.
-        strip_agent_config(work)
-        clear_reviewer_slot(work, name)
+    # `finally`: the two statements opening the body RAISE rather than break,
+    # so falling out normally was never the only way out (see the pass).
+    try:
+        for name in order:
+            # Per reviewer, not per round: the scan has to see what the
+            # reviewer before this one left in the tree.
+            strip_agent_config(work)
+            clear_reviewer_slot(work, name)
+            if not check_shared_inputs(work, inputs):
+                intact = False
+                print(
+                    f"  {name} is not run, nor any reviewer after it: what it"
+                    " would read is not what prepare built"
+                )
+                break
+            conclusions[name] = reviewer_conclusion(
+                name, work, config, thread_count, existing
+            )
+            # A `failure` is entitled to nothing: every enumerated way to
+            # reach it -- killed, unspawnable, raised -- leaves a file the
+            # shim's own gates never saw, or no file at all. Pinning it would
+            # hand disown_unauthored_verdicts the very bytes it exists to
+            # refuse.
+            if conclusions[name] != "failure":
+                pinned[name] = file_digest(work / f"review-{name}.json")
+            if (
+                sequential
+                and conclusions[name] != "failure"
+                and has_early_exit(work, name)
+            ):
+                print(f"  {name} requested early exit; skipping the rest")
+                break
+        # After the loop as well as inside it: the LAST reviewer is the one no
+        # later iteration would check, and post_inline_comments reads both the
+        # verdicts and pr.diff after this returns. Not `intact and ...`: the
+        # check has to run for its own report even where the round already
+        # stopped, and short-circuiting it away is how it would not.
         if not check_shared_inputs(work, inputs):
             intact = False
-            print(
-                f"  {name} is not run, nor any reviewer after it: what it"
-                " would read is not what prepare built"
-            )
-            break
-        conclusions[name] = reviewer_conclusion(
-            name, work, config, thread_count, existing
-        )
-        # A `failure` is entitled to nothing: every enumerated way to reach
-        # it -- killed, unspawnable, raised -- leaves a file the shim's own
-        # gates never saw, or no file at all. Pinning it would hand
-        # disown_unauthored_verdicts the very bytes it exists to refuse.
-        if conclusions[name] != "failure":
-            pinned[name] = file_digest(work / f"review-{name}.json")
-        if sequential and conclusions[name] != "failure" and has_early_exit(work, name):
-            print(f"  {name} requested early exit; skipping the rest")
-            break
-    # After the loop as well as inside it: the LAST reviewer is the one no
-    # later iteration would check, and post_inline_comments reads both the
-    # verdicts and pr.diff after this returns. Not `intact and ...`: the
-    # check has to run for its own report even where the round already
-    # stopped, and short-circuiting it away is how it would not.
-    if not check_shared_inputs(work, inputs):
-        intact = False
-    disown_unauthored_verdicts(work, pinned, conclusions)
+    finally:
+        disown_unauthored_verdicts(work, pinned, conclusions)
+    # Outside the try: the pass runs once on either path, and cannot decide
+    # what this returns.
     return intact
 
 
