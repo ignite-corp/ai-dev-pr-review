@@ -1464,10 +1464,38 @@ def check_shared_inputs(work: Path, digests: dict[str, str]) -> bool:
     return intact
 
 
+def discard_unauthored(work: Path, name: str) -> bool:
+    """Remove one disowned verdict; False when the tree would not let go.
+
+    Split out because remove_artifact raises DriverError and its caller
+    runs from a `finally`: unguarded there, a refused unlink replaced the
+    failure already unwinding and abandoned every later slot (e912c89).
+    """
+    try:
+        remove_artifact(work, f"review-{name}.json")
+    except DriverError as exc:
+        print(
+            f"::error::review-{name}.json is not {name}'s verdict and could"
+            f" not be removed ({exc}); it is still where the aggregate loads"
+            " verdicts from, so nothing from this round is posted",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def disown_unauthored_verdicts(
     work: Path, pinned: dict[str, str], conclusions: dict[str, str]
-) -> None:
+) -> bool:
     """Drop every verdict file its named reviewer did not author, this run.
+
+    RAISES NOTHING, and returns False when a slot would not clear -- see
+    discard_unauthored for the raise that used to escape. Not swallowed:
+    such a file is still in the tree and the aggregate loads verdict FILES
+    off disk, so the round is reported not intact and nothing is posted.
+    A return value rather than a second exception, because this runs from
+    a `finally` where one may already be in flight -- and there it is
+    simply not read, which is the behaviour wanted.
 
     ONE RULE, ONE PLACE, over REVIEWER_NAMES and not over `pinned`: a
     verdict counted as a reviewer's must be one `pinned` entitled that
@@ -1508,6 +1536,7 @@ def disown_unauthored_verdicts(
     load_reviews as gemini's independent vote, which is the very thing
     covering the two `break`s had just closed by the other two routes.
     """
+    intact = True
     for name in REVIEWER_NAMES:
         current = file_digest(work / f"review-{name}.json")
         if not current:
@@ -1531,7 +1560,8 @@ def disown_unauthored_verdicts(
                 file=sys.stderr,
             )
             conclusions[name] = "failure"
-        remove_artifact(work, f"review-{name}.json")
+        intact = discard_unauthored(work, name) and intact
+    return intact
 
 
 def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) -> bool:
@@ -1610,7 +1640,7 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
         if not check_shared_inputs(work, inputs):
             intact = False
     finally:
-        disown_unauthored_verdicts(work, pinned, conclusions)
+        intact = disown_unauthored_verdicts(work, pinned, conclusions) and intact
     # Outside the try: the pass runs once on either path, and cannot decide
     # what this returns.
     return intact

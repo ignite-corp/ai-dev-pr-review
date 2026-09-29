@@ -1752,6 +1752,76 @@ def test_a_planted_verdict_does_not_outlive_a_round_that_raised(
     }
 
 
+_PLANTED = '{"summary": "PLANTED", "early_exit": false, "issues": []}'
+
+
+def _a_tree_with_two_disowned_verdicts(tmp_path, monkeypatch):
+    """Two slots nothing authored, with the FIRST one impossible to clear."""
+    for name in ("claude", "gemini"):
+        (tmp_path / f"review-{name}.json").write_text(_PLANTED, encoding="utf-8")
+    original = driver.remove_artifact
+
+    def refuses_the_first(work, name):
+        if name == "review-claude.json":
+            raise driver.DriverError(f"cannot clear {name}: Permission denied")
+        return original(work, name)
+
+    monkeypatch.setattr(driver, "remove_artifact", refuses_the_first)
+
+
+def test_a_slot_that_cannot_be_cleared_does_not_displace_the_real_failure(
+    tmp_path, monkeypatch, capsys
+):
+    """The pass runs from a `finally`, so remove_artifact's raise must not escape.
+
+    Baseline (e912c89): remove_artifact is documented to raise DriverError
+    and the pass called it unguarded. Measured there with an unlink refused
+    on the first planted file -- the operator was told "cannot clear
+    review-claude.json" INSTEAD of the failure already unwinding, and
+    review-gemini.json, a slot the loop had not reached, was left in the
+    tree for the aggregate to read as gemini's vote.
+    """
+    _a_tree_with_two_disowned_verdicts(tmp_path, monkeypatch)
+    conclusions = driver.initial_conclusions()
+    returned = []
+    with pytest.raises(driver.DriverError, match="THE ORIGINAL FAILURE"):
+        try:
+            raise driver.DriverError("THE ORIGINAL FAILURE")
+        finally:
+            returned.append(
+                driver.disown_unauthored_verdicts(tmp_path, {}, conclusions)
+            )
+
+    assert returned == [False]
+    # The later slot the raise used to skip.
+    assert not (tmp_path / "review-gemini.json").exists()
+    # Reported, not swallowed: the one that would not go is still there.
+    assert (tmp_path / "review-claude.json").exists()
+    err = capsys.readouterr().err
+    assert "review-claude.json is not claude's verdict and could not be" in err
+
+
+def test_an_unclearable_slot_stops_the_round_being_posted(tmp_path, monkeypatch):
+    """False is what review_pr already reads as "do not post this round".
+
+    The pass cannot raise its answer -- it runs where one exception may
+    already be travelling -- so it returns it, and run_reviewers folds it
+    into the value that gates the coordinate screen and the inline
+    comments. A verdict nothing authored is still in the tree, so posting
+    on this round is exactly what must not happen.
+    """
+    (tmp_path / "pr.diff").write_text("+original\n", encoding="utf-8")
+    (tmp_path / "context.md").write_text("guidelines", encoding="utf-8")
+    _reviewer_stand_ins(
+        tmp_path,
+        monkeypatch,
+        {name: _WRITES_OWN_VERDICT.format(name=name) for name in driver.REVIEWER_NAMES},
+    )
+    monkeypatch.setattr(driver, "disown_unauthored_verdicts", lambda *a: False)
+    conclusions = driver.initial_conclusions()
+    assert driver.run_reviewers(tmp_path, LocalConfig.load(), conclusions) is False
+
+
 def test_a_killed_reviewers_file_is_not_left_for_the_aggregate(
     tmp_path, monkeypatch, capsys
 ):
