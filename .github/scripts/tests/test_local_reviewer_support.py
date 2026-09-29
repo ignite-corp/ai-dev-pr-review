@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -64,7 +65,29 @@ def test_a_code_this_module_does_not_own_gets_no_invented_reason():
     """Empty, so a shim adding a code of its own must say what it means
     rather than have this function speak for it."""
     assert spawn_exit_reason(3, 90) == ""
-    assert spawn_exit_reason(-99, 90) == ""
+    assert spawn_exit_reason(-99999, 90) == ""
+
+
+def test_sentinels_cannot_be_a_signal_death():
+    """The comment's claim, enforced instead of asserted.
+
+    It used to read "Negative so they cannot collide with a real CLI exit
+    status", and nothing held it: CompletedProcess.returncode is `-N` for a
+    child killed by signal N, so -1, -2 and -3 WERE SIGHUP, SIGINT and
+    SIGQUIT. Baseline (688cd0a): spawn_exit_reason(-signal.SIGHUP, 90)
+    returned "the CLI is not installed or not on PATH" and that is what the
+    aggregate rendered as the reason a review had failed.
+
+    Enumerated over every returncode a signal death can produce rather than
+    over the three spellings that were wrong, because the next signal added
+    to the platform is the one a three-case check would not see.
+    """
+    sentinels = (EXIT_NOT_INSTALLED, EXIT_TIMED_OUT, EXIT_SPAWN_FAILED)
+    assert len(set(sentinels)) == len(sentinels)
+    for signum in range(1, signal.NSIG):
+        assert -signum not in sentinels, signal.Signals(signum).name
+        # And the vocabulary itself refuses to speak for one.
+        assert spawn_exit_reason(-signum, 90) == "", signal.Signals(signum).name
 
 
 def test_the_fallback_wording_has_one_home_both_shims_read():

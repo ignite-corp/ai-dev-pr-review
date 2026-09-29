@@ -257,6 +257,42 @@ def test_each_spawn_failure_gets_its_own_exit_code(
     assert module.run_cli("p", "m")[0] == expected
 
 
+@pytest.mark.parametrize(
+    "module, cli", [(claude, "claude"), (codex, "codex")], ids=["claude", "codex"]
+)
+@pytest.mark.parametrize("signum", [signal.SIGHUP, signal.SIGINT, signal.SIGQUIT])
+def test_a_cli_killed_by_a_signal_is_not_called_uninstalled(
+    tree, monkeypatch, module, cli, signum
+):
+    """Both shims feed the raw returncode back into the sentinel vocabulary.
+
+    CompletedProcess.returncode is `-N` for a child killed by signal N, and
+    the sentinels sat on -1, -2 and -3. Baseline (688cd0a), through the real
+    run_cli and a real CLI dying on SIGHUP: review-claude.json came back
+    reading "Claude review failed: the CLI is not installed or not on PATH"
+    -- the operator told to fix a PATH for a CLI that had just run. Driven
+    through a stand-in that kills itself rather than a stubbed returncode,
+    because the value under test is the one the OS produces.
+    """
+    binder = tree / "bin"
+    binder.mkdir(exist_ok=True)
+    stand_in = binder / cli
+    stand_in.write_text(
+        f"#!/bin/sh\ncat > /dev/null\nkill -{int(signum)} $$\n", encoding="utf-8"
+    )
+    stand_in.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{binder}{os.pathsep}{os.environ['PATH']}")
+
+    module.review()
+
+    payload = json.loads(Path(module.REVIEW_FILE).read_text())
+    spoken = payload["summary"] + payload["error_detail"]
+    assert "not installed" not in spoken
+    assert "could not be started" not in spoken
+    assert "did not finish within" not in spoken
+    assert str(-int(signum)) in spoken
+
+
 # -------------------------------------------------- what the CLI wrote back
 
 

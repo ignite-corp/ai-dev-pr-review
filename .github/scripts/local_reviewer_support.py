@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import sys
 import traceback
 from collections.abc import Callable
@@ -45,12 +46,24 @@ ERROR_UNPARSEABLE = "output_unparseable"
 ERROR_CRASHED = "reviewer_crashed"
 
 # Exit codes for failures that happen instead of the CLI running, rather
-# than in it. Negative so they cannot collide with a real CLI exit status.
-# Kept distinct all the way to the verdict: warning about them differently
-# and then returning one value merged them again a frame later.
-EXIT_NOT_INSTALLED = -1
-EXIT_TIMED_OUT = -2
-EXIT_SPAWN_FAILED = -3
+# than in it. Kept distinct all the way to the verdict: warning about them
+# differently and then returning one value merged them again a frame later.
+#
+# BELOW `SIGNAL_EXIT_FLOOR`, and that is the whole of what keeps them from
+# colliding. "Negative" was the earlier claim and it was false:
+# CompletedProcess.returncode is `-N` for a child killed by signal N, so
+# -1, -2 and -3 were SIGHUP, SIGINT and SIGQUIT, and a CLI that died on a
+# SIGHUP was reported to the operator as "the CLI is not installed or not
+# on PATH" -- a diagnosis of a fault that did not occur, in the one field
+# the aggregate renders as the reason. The driver's own kill path uses
+# SIGTERM and SIGKILL, but the direct run documented in docs/local-review.md
+# and any supervisor signalling the CLI reach these. A signal number cannot
+# exceed SIGRTMAX, so nothing below that floor is a returncode any child
+# can produce; test_sentinels_cannot_be_a_signal_death is what holds it.
+SIGNAL_EXIT_FLOOR = -signal.NSIG
+EXIT_NOT_INSTALLED = SIGNAL_EXIT_FLOOR - 1
+EXIT_TIMED_OUT = SIGNAL_EXIT_FLOOR - 2
+EXIT_SPAWN_FAILED = SIGNAL_EXIT_FLOOR - 3
 
 # Set by the driver on a reviewer's environment AFTER its allowlist filter
 # has run, and deliberately NOT one of the allowlisted names: a value an
