@@ -50,6 +50,16 @@ from github_pr_support import (
     normalize_bot_login,
 )
 
+# The payload-shape pair moved to local_reviewer_support so the two reviewer
+# shims can gate their direct-write path on the SAME test this module applies
+# -- see usable_verdict there. Imported under the names this module already
+# used, because the shape is still this module's contract; what changed is
+# that it is now written once rather than approximated a second time.
+from local_reviewer_support import (
+    is_valid_review as _is_valid_review,
+    normalize_severity as _normalize_severity,
+)
+
 logger = logging.getLogger(__name__)
 
 REVIEWERS: dict[str, str] = {name: f"review-{name}.json" for name in REVIEWER_NAMES}
@@ -178,69 +188,6 @@ def _get_available(
         and "summary" in v  # must have summary key (rejects empty {})
         and _normalize_status(k, v) != STATUS_FAILED
     }
-
-
-_SEVERITY_ALIASES: dict[str, str] = {
-    "high": "major",
-    "medium": "minor",
-    "low": "suggestion",
-    "info": "suggestion",
-    "warning": "minor",
-    "note": "suggestion",
-    "error": "major",
-}
-
-
-def _normalize_severity(data: Any) -> None:
-    """Normalize non-standard severity values in-place before validation.
-
-    Only maps explicitly supported aliases. Unknown values are left
-    untouched so ``_is_valid_review`` rejects the payload.
-    """
-    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
-        return
-    for issue in data["issues"]:
-        if not isinstance(issue, dict):
-            continue
-        sev = issue.get("severity")
-        if not isinstance(sev, str):
-            continue
-        lowered = sev.lower()
-        if lowered in SEVERITY_ICONS:
-            issue["severity"] = lowered
-        elif lowered in _SEVERITY_ALIASES:
-            issue["severity"] = _SEVERITY_ALIASES[lowered]
-        else:
-            logger.warning("Unknown severity %r, leaving as-is", sev)
-
-
-def _is_valid_review(data: Any) -> bool:
-    """Check that a review payload has the required shape."""
-    if not isinstance(data, dict):
-        return False
-    if not isinstance(data.get("summary"), str):
-        return False
-    if not isinstance(data.get("early_exit"), bool):
-        return False
-    if not isinstance(data.get("issues"), list):
-        return False
-    for issue in data["issues"]:
-        if not isinstance(issue, dict):
-            return False
-        if issue.get("severity") not in SEVERITY_ICONS:
-            return False
-        if not isinstance(issue.get("description"), str):
-            return False
-        for key in ("file", "line", "suggestion"):
-            if key not in issue:
-                return False
-        if issue["file"] is not None and not isinstance(issue["file"], str):
-            return False
-        if issue["line"] is not None and not isinstance(issue["line"], int):
-            return False
-        if issue["suggestion"] is not None and not isinstance(issue["suggestion"], str):
-            return False
-    return True
 
 
 def load_reviews() -> dict[str, dict[str, Any] | None]:
