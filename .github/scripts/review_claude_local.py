@@ -15,13 +15,13 @@ here uses whatever credential the operator is already logged in with.
 Credentials are INHERITED, never built. Naming environment variables here
 would make this module the thing that decides which credential counts, and
 that is the operator's decision (OAuth, API key, a proxy). What is inherited
-is bounded, though: the driver hands this process an allowlist rather than
-its own environment, so an exported ANTHROPIC_API_KEY reaches the CLI only
-when the operator named it (review_pr_local.reviewer_env). A logged-in
-`claude` is unaffected -- HOME is forwarded and ~/.claude is where it looks.
-That bound is the driver's alone, so run by anything else -- by hand, by a
-wrapper, by a Makefile -- this module warns that the CLI is getting the
-caller's whole environment instead.
+is bounded, though: cli_environ filters this process's environment through
+local_reviewer_support.reviewer_cli_env before the CLI sees it, so an
+exported ANTHROPIC_API_KEY reaches the CLI only when the operator named it
+($LENS_REVIEWER_ENV_PASSTHROUGH). A logged-in `claude` is unaffected -- HOME
+is forwarded and ~/.claude is where it looks. That bound is applied HERE and
+not only in the driver, so it holds when this module is run by hand, by a
+wrapper or by a Makefile.
 
 Reads pr.diff and context.md from the current directory (the prompt tells
 the CLI to) and writes review-claude.json.
@@ -54,6 +54,7 @@ from local_reviewer_support import (
     error_verdict,
     exit_reason,
     guarded_main,
+    reviewer_cli_env,
     usable_verdict,
     warn_unless_driver_spawned,
     write_verdict,
@@ -167,14 +168,22 @@ def cli_timeout_sec(env: dict[str, str]) -> int:
 def cli_environ() -> dict[str, str]:
     """The environment the CLI actually runs with.
 
-    The composite's values go UNDER the inherited environment, not over it.
+    ALLOWLISTED, not inherited. `{**cli_env(), **os.environ}` was the whole
+    of this, and `os.environ` last meant it won: run standalone -- by hand,
+    by a wrapper -- the CLI got every token the caller had exported, and
+    warn_unless_driver_spawned only SAID so. reviewer_cli_env applies the
+    driver's own table here too, so the bound holds however this shim was
+    started; under the driver the environment is already filtered and this
+    changes nothing.
+
+    The composite's values stay UNDER the inherited ones, not over them.
     They stand in for a runner that is not here to set them, which is
     position 3 of the documented order: process environment, then config
     file, then the value parsed out of the workflow files. Merged the other
     way, an operator who exported API_TIMEOUT_MS had it silently replaced by
     the default cli_env() exists to supply in its absence.
     """
-    return {**cli_env(), **os.environ}
+    return reviewer_cli_env("claude", cli_env())
 
 
 def shim_budget_sec() -> int:

@@ -72,7 +72,7 @@ from local_review_config import (
     LocalConfig,
     prompt_path_defaults,
 )
-from local_reviewer_support import DRIVER_ENV_MARKER
+from local_reviewer_support import DRIVER_ENV_MARKER, reviewer_env_allowlist
 from review_coordinates import check_reviewer_coordinates
 from reviewer_prompts import MAX_EXISTING_THREADS, MAX_THREAD_BODY_CHARS
 
@@ -108,64 +108,11 @@ if set(SEQUENTIAL_ORDER) != set(REVIEWER_NAMES) or set(REVIEWER_SCRIPTS) != set(
 # Anchored at BOTH ends: `$` alone also matches just before a trailing
 # newline, so `owner/name\n` passed an end-anchored match (record 4-D).
 REPO_RE = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
-# What every reviewer subprocess inherits from the operator's environment.
-# An ALLOWLIST, because the reviewer is an LLM CLI reading the head of a
-# pull request anyone can open: handed the whole environment it also holds
-# the operator's GitHub token, cloud keys and every other service token that
-# happens to be exported, none of which any part of a review needs.
-#
-# Each entry is here for a reason that can be stated, and the reasons are
-# two: the process must be able to start and reach the model API, or this
-# repository's own reviewer code reads the name. NO CREDENTIAL FOR THE
-# REVIEWER'S OWN CLI IS NAMED HERE -- see reviewer_env for why that is the
-# operator's decision and how they make it.
-#
-# Both tables are annotated because neither is an enumeration: they are
-# LISTS OF NAMES, and a name is compared against os.environ's keys, never
-# passed where one of these spellings is required. Left to inference the
-# tuple became `tuple[Literal['PATH'], ...]`, which made the operator's own
-# `tuple[str, ...]` an argument error, and the dict became
-# `dict[str, Unknown]` -- unchecked rather than over-checked, the worse of
-# the two, since a value of the wrong shape there would pass silently.
-REVIEWER_ENV_ALLOWLIST: tuple[str, ...] = (
-    "PATH",  # the shims spawn `claude` / `codex` by name
-    "HOME",  # `claude login` / `codex login` write under it; so does --config
-    "SHELL",  # the claude CLI's allowed Bash tools (`cat pr.diff`) need one
-    "TMPDIR",  # an operator who set it did so because the default is unusable
-    "LANG",  # a diff is decoded by the locale's codec; a non-ASCII path
-    "LC_ALL",  # otherwise fails to decode in a reviewer that should read it
-    "LC_CTYPE",
-    "HTTP_PROXY",  # on a proxied machine these are the only route to the
-    "HTTPS_PROXY",  # model API; lowercase too, since libcurl and requests
-    "NO_PROXY",  # read the lowercase spelling and Node reads the upper
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "SSL_CERT_FILE",  # a TLS-inspecting proxy is reached only with its CA
-    "SSL_CERT_DIR",  # bundle; all four name FILES, not secrets
-    "REQUESTS_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS",
-    "LENS_LOCAL_CONFIG",  # the shims call LocalConfig.load() with no argument
-)
-# Per reviewer, because a name only one reviewer reads has no business in
-# another's environment -- GOOGLE_AI_API_KEY in the `claude` CLI's process
-# is the finding this allowlist exists for, in miniature. Read with `.get`
-# and an empty default, so a reviewer added to REVIEWER_NAMES and missed
-# here inherits nothing extra rather than everything.
-REVIEWER_ENV_EXTRA: dict[str, tuple[str, ...]] = {
-    # Both read by review_claude_local.cli_environ; an operator who raised
-    # API_TIMEOUT_MS must keep it, or the Python bound derived from it kills
-    # the CLI before its own deadline (record 2-D).
-    "claude": ("API_TIMEOUT_MS", "CLAUDE_STREAM_IDLE_TIMEOUT_MS"),
-    "codex": (),
-    # Both read by name in review_gemini.py -- that module already decides
-    # gemini authenticates with this key, so forwarding it decides nothing.
-    "gemini": ("GOOGLE_AI_API_KEY", "GEMINI_MAX_OUTPUT_TOKENS"),
-}
-# The operator's own additions, resolved like every other setting: process
-# environment first, then the config file. Comma-separated names.
-PASSTHROUGH_SETTING = "LENS_REVIEWER_ENV_PASSTHROUGH"
-ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+# The reviewer environment allowlist, the per-reviewer extras and the
+# operator's passthrough all live in local_reviewer_support, because the
+# shims apply the same table to the CLI they spawn and a second copy here
+# would be free to drift from the one they enforce. Imported above rather
+# than re-exported by hand.
 # Everything a run writes into the work tree, removed before each run so a
 # stale verdict is never read as this run's output. The reviewer-owned names
 # are built from REVIEWER_NAMES rather than respelled: a name that drifts
@@ -1348,38 +1295,6 @@ def verdict_failure(work: Path, name: str) -> str | None:
     return error if isinstance(error, str) and error else "no kind given"
 
 
-def passthrough_names(config: LocalConfig) -> tuple[str, ...]:
-    """The extra variable names the operator asked to forward.
-
-    Malformed entries are dropped WITH A WARNING rather than passed on: a
-    name with a space or a `=` in it can never match a variable, so
-    forwarding it silently would leave an operator reading their own
-    setting back and still not getting the value.
-    """
-    # `get` alone would raise: it ends at the workflow YAML, and this
-    # setting describes running OFF Actions, so no `vars.NAME || 'default'`
-    # declares it. `is_overridden` is the existing answer to "did the
-    # operator set this, rather than the workflow", and asking it first
-    # keeps the one precedence order -- environment, then config file --
-    # instead of a second one written here.
-    if not config.is_overridden(PASSTHROUGH_SETTING):
-        return ()
-    names: list[str] = []
-    for token in config.get(PASSTHROUGH_SETTING).split(","):
-        candidate = token.strip()
-        if not candidate:
-            continue
-        if not ENV_NAME_RE.match(candidate):
-            print(
-                f"::warning::{PASSTHROUGH_SETTING} entry {candidate!r} is not"
-                " an environment variable name; ignoring it",
-                file=sys.stderr,
-            )
-            continue
-        names.append(candidate)
-    return tuple(names)
-
-
 def reviewer_env(
     name: str, config: LocalConfig, thread_count: str, existing: str
 ) -> dict[str, str]:
@@ -1412,15 +1327,13 @@ def reviewer_env(
     reviewers have different cwds, so a relative one would name the
     reviewer's own tree and read as an empty file (record 2-E).
     """
-    allowed = set(REVIEWER_ENV_ALLOWLIST)
-    allowed.update(REVIEWER_ENV_EXTRA.get(name, ()))
-    allowed.update(passthrough_names(config))
+    allowed = reviewer_env_allowlist(name, config)
     env = {key: value for key, value in os.environ.items() if key in allowed}
-    # AFTER the filter, and the name is in no allowlist above: an operator
-    # who exported it has their value dropped here and replaced, so in a
-    # shim this marker can only have come from this line. The shim reads
-    # its PRESENCE -- warn_unless_driver_spawned, which tells an operator
-    # running a shim by hand that the filter above is not in the picture.
+    # AFTER the filter, and the name is in no allowlist: an operator who
+    # exported it has their value dropped here and replaced, so in a shim
+    # this marker can only have come from this line. The shim reads its
+    # PRESENCE -- warn_unless_driver_spawned, which tells an operator
+    # running a shim by hand which of the two callers they are.
     env[DRIVER_ENV_MARKER] = "1"
     env["THREAD_COUNT"] = thread_count
     env["EXISTING_COMMENTS"] = existing

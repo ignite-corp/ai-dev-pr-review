@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import traceback
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from github_pr_support import SEVERITY_ICONS
+from local_review_config import LocalConfig
 
 logger = logging.getLogger(__name__)
 
@@ -77,25 +79,173 @@ DRIVER_ENV_MARKER = "LENS_REVIEWER_ENV_FILTERED"
 
 
 def warn_unless_driver_spawned(cli: str) -> None:
-    """Warn when a shim was started by something other than the driver.
+    """Note that a shim was started by something other than the driver.
 
-    Not a refusal. Re-running a shim by hand inside a run directory is how
-    a review is debugged, and that path keeps working. What it does not
-    keep is the allowlist, which lives in the driver
-    (review_pr_local.reviewer_env, where the entries and their reasons are)
-    -- so the warning states the consequence rather than only that
-    something is unusual. A second allowlist here would be a second copy of
-    that table, free to drift from the one that is enforced.
+    INFORMATIONAL, and only that. It used to be the whole of what stood
+    between a directly-launched shim and an unbounded child environment,
+    which a reviewer named for what it was: a warning is a diagnostic, not
+    a boundary, and the boundary is now `reviewer_cli_env` -- applied in
+    the shim, so it holds however the shim was started.
+
+    Kept because the two paths are still not identical: the driver resolves
+    `--config` and passes it down, and it alone prints the withheld names.
+    Re-running a shim by hand inside a run directory is how a review is
+    debugged, and saying which of the two is running is worth a line.
     """
     if DRIVER_ENV_MARKER in os.environ:
         return
     print(
         f"::warning::started outside the local review driver, so the {cli} CLI"
-        " is handed this shell's whole environment -- every token exported"
-        " here, not the filtered set review_pr_local.reviewer_env builds"
-        f" ({DRIVER_ENV_MARKER} is unset)",
+        " gets this shell's allowlisted names rather than the driver's"
+        " filtered set -- same allowlist, but --config is not passed down"
+        f" and the withheld names are not printed ({DRIVER_ENV_MARKER} is"
+        " unset)",
         file=sys.stderr,
     )
+
+
+# The operator's own additions, resolved like every other setting: process
+# environment first, then the config file. Comma-separated names.
+PASSTHROUGH_SETTING = "LENS_REVIEWER_ENV_PASSTHROUGH"
+# What every reviewer subprocess inherits from the operator's environment.
+# An ALLOWLIST, because the reviewer is an LLM CLI reading the head of a
+# pull request anyone can open: handed the whole environment it also holds
+# the operator's GitHub token, cloud keys and every other service token that
+# happens to be exported, none of which any part of a review needs.
+#
+# Each entry is here for a reason that can be stated, and the reasons are
+# two: the process must be able to start and reach the model API, or this
+# repository's own reviewer code reads the name. NO CREDENTIAL FOR THE
+# REVIEWER'S OWN CLI IS NAMED HERE -- see review_pr_local.reviewer_env for
+# why that is the operator's decision and how they make it.
+#
+# HERE rather than in the driver because the driver is not the only thing
+# that spawns a CLI. Both shims run standalone -- by hand, by a wrapper,
+# by a Makefile -- and while the table lived in the driver that path had no
+# allowlist at all, only a warning that it had none. One table, applied at
+# every spawn.
+#
+# Both tables are annotated because neither is an enumeration: they are
+# LISTS OF NAMES, and a name is compared against os.environ's keys, never
+# passed where one of these spellings is required. Left to inference the
+# tuple became `tuple[Literal['PATH'], ...]`, which made the operator's own
+# `tuple[str, ...]` an argument error, and the dict became
+# `dict[str, Unknown]` -- unchecked rather than over-checked, the worse of
+# the two, since a value of the wrong shape there would pass silently.
+REVIEWER_ENV_ALLOWLIST: tuple[str, ...] = (
+    "PATH",  # the shims spawn `claude` / `codex` by name
+    "HOME",  # `claude login` / `codex login` write under it; so does --config
+    "SHELL",  # the claude CLI's allowed Bash tools (`cat pr.diff`) need one
+    "TMPDIR",  # an operator who set it did so because the default is unusable
+    "LANG",  # a diff is decoded by the locale's codec; a non-ASCII path
+    "LC_ALL",  # otherwise fails to decode in a reviewer that should read it
+    "LC_CTYPE",
+    "HTTP_PROXY",  # on a proxied machine these are the only route to the
+    "HTTPS_PROXY",  # model API; lowercase too, since libcurl and requests
+    "NO_PROXY",  # read the lowercase spelling and Node reads the upper
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",  # a TLS-inspecting proxy is reached only with its CA
+    "SSL_CERT_DIR",  # bundle; all four name FILES, not secrets
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "LENS_LOCAL_CONFIG",  # the shims call LocalConfig.load() with no argument
+    # The operator's own list of names, forwarded so the SHIM can resolve
+    # the same passthrough the driver did. Withheld, a shim under the driver
+    # re-derived a SHORTER allowlist than the one it was handed and dropped
+    # the very credential the operator had named -- the filter being too
+    # narrow, which breaks a working review as surely as too wide leaks one.
+    # A list of names, never a value.
+    PASSTHROUGH_SETTING,
+)
+# Per reviewer, because a name only one reviewer reads has no business in
+# another's environment -- GOOGLE_AI_API_KEY in the `claude` CLI's process
+# is the finding this allowlist exists for, in miniature. Read with `.get`
+# and an empty default, so a reviewer added to REVIEWER_NAMES and missed
+# here inherits nothing extra rather than everything.
+REVIEWER_ENV_EXTRA: dict[str, tuple[str, ...]] = {
+    # Both read by review_claude_local.cli_environ; an operator who raised
+    # API_TIMEOUT_MS must keep it, or the Python bound derived from it kills
+    # the CLI before its own deadline (record 2-D).
+    "claude": ("API_TIMEOUT_MS", "CLAUDE_STREAM_IDLE_TIMEOUT_MS"),
+    "codex": (),
+    # Both read by name in review_gemini.py -- that module already decides
+    # gemini authenticates with this key, so forwarding it decides nothing.
+    "gemini": ("GOOGLE_AI_API_KEY", "GEMINI_MAX_OUTPUT_TOKENS"),
+}
+ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def passthrough_names(config: LocalConfig) -> tuple[str, ...]:
+    """The extra variable names the operator asked to forward.
+
+    Malformed entries are dropped WITH A WARNING rather than passed on: a
+    name with a space or a `=` in it can never match a variable, so
+    forwarding it silently would leave an operator reading their own
+    setting back and still not getting the value.
+    """
+    # `get` alone would raise: it ends at the workflow YAML, and this
+    # setting describes running OFF Actions, so no `vars.NAME || 'default'`
+    # declares it. `is_overridden` is the existing answer to "did the
+    # operator set this, rather than the workflow", and asking it first
+    # keeps the one precedence order -- environment, then config file --
+    # instead of a second one written here.
+    if not config.is_overridden(PASSTHROUGH_SETTING):
+        return ()
+    names: list[str] = []
+    for token in config.get(PASSTHROUGH_SETTING).split(","):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        if not ENV_NAME_RE.match(candidate):
+            print(
+                f"::warning::{PASSTHROUGH_SETTING} entry {candidate!r} is not"
+                " an environment variable name; ignoring it",
+                file=sys.stderr,
+            )
+            continue
+        names.append(candidate)
+    return tuple(names)
+
+
+def reviewer_env_allowlist(name: str, config: LocalConfig) -> set[str]:
+    """Every environment name reviewer `name` may inherit.
+
+    ONE answer, asked twice: by the driver, building the environment it
+    hands the shim, and by the shim, building the environment it hands the
+    CLI. The two must agree or the second undoes the first -- wider and the
+    shim reopens the hole the driver closed, narrower and it drops a
+    credential the driver was asked to forward.
+    """
+    allowed = set(REVIEWER_ENV_ALLOWLIST)
+    allowed.update(REVIEWER_ENV_EXTRA.get(name, ()))
+    allowed.update(passthrough_names(config))
+    return allowed
+
+
+def reviewer_cli_env(name: str, base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment a shim hands its CLI: `base`, under the allowlist.
+
+    THE BOUNDARY, and it is here rather than in the driver because the
+    driver is not always in the picture. Run standalone the shims passed
+    `os.environ` straight through -- the Claude shim explicitly, as
+    `{**cli_env(), **os.environ}`, and the Codex shim by passing no `env=`
+    at all -- so every exported GitHub, cloud and service token reached an
+    LLM CLI and everything it spawns. Under the driver it was already
+    filtered, so this re-filter is a no-op there and the fix costs the
+    supported path nothing.
+
+    `base` is what the shim needs UNDER the operator's environment: the
+    Claude shim's composite defaults, which stand in for a runner that is
+    not here to set them. It is not filtered -- it is the shim's own,
+    already-bounded values, not anything inherited -- and the operator's
+    allowlisted names still win over it, which is the documented order.
+    """
+    allowed = reviewer_env_allowlist(name, LocalConfig.load())
+    env = dict(base or {})
+    env.update({k: v for k, v in os.environ.items() if k in allowed})
+    return env
 
 
 def error_verdict(summary: str, kind: str, detail: str) -> dict[str, Any]:

@@ -69,6 +69,7 @@ from local_reviewer_support import (
     error_verdict,
     exit_reason,
     guarded_main,
+    reviewer_cli_env,
     usable_verdict,
     warn_unless_driver_spawned,
     write_verdict,
@@ -130,7 +131,17 @@ def log_tail(log: str) -> str:
 
 
 def run_cli(prompt: str, model: str) -> tuple[int, str]:
-    """Run the CLI over stdin, returning its exit code and combined log."""
+    """Run the CLI over stdin, returning its exit code and combined log.
+
+    The CLI's environment is ALLOWLISTED, not inherited. Passing no `env=`
+    handed `codex exec --sandbox workspace-write` -- a model that runs
+    commands -- every token the caller had exported, and standalone that is
+    the whole shell's. reviewer_cli_env applies the driver's own table here
+    too, so the bound holds however this shim was started; under the driver
+    the environment is already filtered and this changes nothing. The
+    extractor spawn below is left inheriting: it is this repository's own
+    script reading a log file, not a model.
+    """
     argv = [
         "codex",
         "exec",
@@ -148,6 +159,7 @@ def run_cli(prompt: str, model: str) -> tuple[int, str]:
             capture_output=True,
             text=True,
             timeout=_CLI_TIMEOUT_SEC,
+            env=reviewer_cli_env("codex"),
         )
     except FileNotFoundError:
         print(

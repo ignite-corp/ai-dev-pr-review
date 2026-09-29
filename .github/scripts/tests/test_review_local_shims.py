@@ -899,12 +899,18 @@ def _run_shim_as_its_own_process(tmp_path, name, env_extra: dict[str, str]) -> s
     the fault being reproduced is a shim STARTED by something other than
     the driver. The stand-in CLI reads its prompt and prints nothing, so
     the review fails and writes an error verdict -- which is the point:
-    the warning is not on the success path only.
+    the environment bound is not on the success path only.
+
+    The stand-in also dumps its OWN environment to `cli-env.txt`, because
+    what the CLI receives is the thing under test and the shim's stderr is
+    not evidence about it.
     """
     binder = tmp_path / "bin"
     binder.mkdir(exist_ok=True)
     stand_in = binder / name
-    stand_in.write_text("#!/bin/sh\ncat > /dev/null\n", encoding="utf-8")
+    stand_in.write_text(
+        '#!/bin/sh\ncat > /dev/null\nenv > "$PWD/cli-env.txt"\n', encoding="utf-8"
+    )
     stand_in.chmod(0o755)
     (tmp_path / "context.md").write_text("guidelines", encoding="utf-8")
     (tmp_path / "pr.diff").write_text("+a\n", encoding="utf-8")
@@ -930,22 +936,61 @@ def _run_shim_as_its_own_process(tmp_path, name, env_extra: dict[str, str]) -> s
 
 
 @pytest.mark.parametrize("name", ["claude", "codex"])
-def test_a_shim_run_outside_the_driver_says_what_its_cli_now_gets(tmp_path, name):
-    """Baseline (f790649): a shim run directly warned about nothing.
+def test_a_shim_run_outside_the_driver_still_bounds_its_cli(tmp_path, name):
+    """A directly-launched shim leaked every exported credential.
 
-    Measured on that baseline with a stand-in `claude` that printed its own
-    environment: an exported GH_TOKEN and an unrelated cloud secret both
-    reached the CLI and stderr was empty. The allowlist that would have
-    dropped them is the driver's, and the driver was not in the picture --
-    so the warning names that consequence rather than only reporting that
-    something is unusual. A warning and NOT a refusal: re-running a shim by
-    hand inside a run directory is how a review is debugged, and the
-    verdict file this run still writes is asserted above.
+    Measured on e912c89 with a stand-in CLI that printed its own
+    environment: GITHUB_TOKEN and AWS_SECRET_ACCESS_KEY both arrived. The
+    Claude shim merged `os.environ` OVER its allowlisted base
+    (`{**cli_env(), **os.environ}`) and the Codex shim passed no `env=` at
+    all, so the only allowlist was the driver's and the driver was not in
+    the picture -- the shim merely WARNED that it was not, which is a
+    diagnostic and not a boundary. The bound is now applied in the shim,
+    so it holds however the shim was started.
+
+    A bound and NOT a refusal: re-running a shim by hand inside a run
+    directory is how a review is debugged, and the verdict file this run
+    still writes is asserted by the helper.
     """
     err = _run_shim_as_its_own_process(tmp_path, name, {"MY_CLOUD_SECRET": "hunter2"})
+    seen = dict(
+        line.split("=", 1)
+        for line in (tmp_path / "cli-env.txt").read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert "MY_CLOUD_SECRET" not in seen
+    # The complement, and it is half the test: an allowlist that forwards
+    # nothing stops no leak because it stops the review. PATH is what finds
+    # the CLI at all and HOME is where a logged-in one keeps its credential.
+    assert seen["PATH"].startswith(str(tmp_path / "bin"))
+    assert seen["HOME"] == os.environ["HOME"]
     assert "::warning::started outside the local review driver" in err
     assert f"the {name} CLI" in err
-    assert "whole environment" in err
+
+
+@pytest.mark.parametrize("name", ["claude", "codex"])
+def test_a_shim_forwards_the_credential_the_operator_named(tmp_path, name):
+    """Too NARROW breaks a working review as surely as too wide leaks one.
+
+    $LENS_REVIEWER_ENV_PASSTHROUGH is how an operator says which credential
+    their CLI authenticates with -- the shims name none themselves. The
+    setting's own name is in the allowlist for this reason: withheld, a
+    shim re-deriving the allowlist would drop the very variable the
+    operator had asked for, and under the driver it would drop one the
+    driver had already forwarded.
+    """
+    _run_shim_as_its_own_process(
+        tmp_path,
+        name,
+        {
+            "LENS_REVIEWER_ENV_PASSTHROUGH": "MY_MODEL_KEY",
+            "MY_MODEL_KEY": "chosen-by-the-operator",
+            "MY_CLOUD_SECRET": "hunter2",
+        },
+    )
+    seen = (tmp_path / "cli-env.txt").read_text(encoding="utf-8")
+    assert "MY_MODEL_KEY=chosen-by-the-operator" in seen
+    assert "hunter2" not in seen
 
 
 @pytest.mark.parametrize("name", ["claude", "codex"])

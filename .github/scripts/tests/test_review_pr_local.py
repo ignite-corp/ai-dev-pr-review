@@ -26,6 +26,7 @@ import pytest
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import local_reviewer_support as support  # noqa: E402
 import review_pr_local as driver  # noqa: E402
 from local_review_config import LocalConfig  # noqa: E402
 from reviewer_prompts import existing_threads_block  # noqa: E402
@@ -380,8 +381,8 @@ def test_the_driver_marks_the_environment_it_filtered(monkeypatch):
 def test_the_marker_is_in_no_allowlist():
     """Listed anywhere above, the filter would pass an operator's own value
     through and the shim's check would be fakeable by exporting a name."""
-    assert driver.DRIVER_ENV_MARKER not in driver.REVIEWER_ENV_ALLOWLIST
-    for extra in driver.REVIEWER_ENV_EXTRA.values():
+    assert driver.DRIVER_ENV_MARKER not in support.REVIEWER_ENV_ALLOWLIST
+    for extra in support.REVIEWER_ENV_EXTRA.values():
         assert driver.DRIVER_ENV_MARKER not in extra
 
 
@@ -414,7 +415,7 @@ def test_the_operator_still_decides_which_credential_counts(monkeypatch):
     assert "OPENAI_API_KEY" not in driver.reviewer_env(
         "codex", LocalConfig.load(), "0", ""
     )
-    monkeypatch.setenv(driver.PASSTHROUGH_SETTING, "OPENAI_API_KEY")
+    monkeypatch.setenv(support.PASSTHROUGH_SETTING, "OPENAI_API_KEY")
     env = driver.reviewer_env("codex", LocalConfig.load(), "0", "")
     assert env["OPENAI_API_KEY"] == "chosen-value"
 
@@ -425,15 +426,15 @@ def test_the_passthrough_can_be_set_in_the_config_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "chosen-value")
     path = tmp_path / "local.env"
     path.write_text(
-        f"{driver.PASSTHROUGH_SETTING}=ANTHROPIC_API_KEY\n", encoding="utf-8"
+        f"{support.PASSTHROUGH_SETTING}=ANTHROPIC_API_KEY\n", encoding="utf-8"
     )
     env = driver.reviewer_env("claude", LocalConfig.load(path), "0", "")
     assert env["ANTHROPIC_API_KEY"] == "chosen-value"
 
 
 def test_a_malformed_passthrough_entry_is_reported_not_swallowed(monkeypatch, capsys):
-    monkeypatch.setenv(driver.PASSTHROUGH_SETTING, " , OPENAI_API_KEY ,not a name")
-    assert driver.passthrough_names(LocalConfig.load()) == ("OPENAI_API_KEY",)
+    monkeypatch.setenv(support.PASSTHROUGH_SETTING, " , OPENAI_API_KEY ,not a name")
+    assert support.passthrough_names(LocalConfig.load()) == ("OPENAI_API_KEY",)
     assert "not a name" in capsys.readouterr().err
 
 

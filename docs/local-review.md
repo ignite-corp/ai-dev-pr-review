@@ -51,7 +51,9 @@ so a wrong path costs two API calls rather than a full clone.
 | `GOOGLE_AI_API_KEY` | Read by `review_gemini.py`, and forwarded to that reviewer only. |
 
 **The driver sets no credential of its own, and does not hand your whole
-environment to the reviewers either.** A reviewer is an LLM CLI reading the
+environment to the reviewers either.** The filter is applied twice, by the
+driver and again by each shim, so it holds whether you run `review_pr_local.py`
+or a shim on its own. A reviewer is an LLM CLI reading the
 head of a pull request anyone can open; given your environment it also holds
 your GitHub token, your cloud keys and every other token you happen to have
 exported, none of which a review needs. So each reviewer gets an allowlist:
@@ -66,6 +68,7 @@ exported, none of which a review needs. So each reviewer gets an allowlist:
 | `HTTP(S)_PROXY`, `NO_PROXY` (both cases) | On a proxied machine, the only route to the model API. |
 | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` | A TLS-inspecting proxy is reached only with its CA bundle. All four name files, not secrets. |
 | `LENS_LOCAL_CONFIG` | The shims call `LocalConfig.load()` with no argument. |
+| `LENS_REVIEWER_ENV_PASSTHROUGH` | The names you chose, so the **shim** resolves the same list the driver did. A list of names, never a value. |
 | `API_TIMEOUT_MS`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | Read by the claude shim; **claude only**. |
 | `GOOGLE_AI_API_KEY`, `GEMINI_MAX_OUTPUT_TOKENS` | Read by name in `review_gemini.py`; **gemini only**. |
 | Whatever you name in `LENS_REVIEWER_ENV_PASSTHROUGH` | Your decision -- see below. |
@@ -195,7 +198,7 @@ Per the record's rule that an unmeasured claim is marked as one:
 | Whether the strip actually blunts a real attack | The negative control -- the same hostile files with the protection off -- produced an ordinary review in its one trial. The established claim is narrower: the files are read, they affect output, and a hook in them executes. |
 | A descendant that calls `setsid` for itself | The reviewer timeout kills a process **group**. Anything that leaves the group is out of reach. |
 | Which variables a CLI **needs** | The allowlist is argued from this repository's own code and from what a process needs to start and reach the network. The CLIs were not instrumented for what they read, so an entry may be missing. That is why the withheld list is printed and `LENS_REVIEWER_ENV_PASSTHROUGH` exists. |
-| Running a reviewer shim **directly** | The allowlist is the driver's, so a shim started by hand -- or by a wrapper, a Makefile, CI -- hands its CLI the caller's whole environment. Not refused, because that is a debugging path: the shim warns on startup unless the driver's marker is present, and the driver assigns that marker **after** its filter, so an exported copy never survives into a reviewer. An operator can still silence their own direct run by setting it -- the warning is about the environment they are handing over, not a lock on it. |
+| Running a reviewer shim **directly** | The shim applies the same allowlist itself, so starting one by hand -- or from a wrapper, a Makefile, CI -- bounds its CLI the way the driver would. It used to not: the allowlist was the driver's alone and a direct run handed the CLI the caller's whole environment, with a startup warning saying so and nothing enforcing it. The warning stays, because the two paths are still not identical -- the driver resolves `--config` and passes it down, and it alone prints the withheld names. The driver's marker is what silences it, assigned **after** the filter so an exported copy never survives into a reviewer; an operator can still set it to quiet their own direct run. |
 | What the child can still reach through `HOME` | The allowlist bounds the environment, not the filesystem. The CLIs run as you, so `~/.aws`, `~/.ssh` and the rest are still readable -- the same standing limit as everything below. |
 | Source comments and strings in the tree | Still read by the reviewers. A comment can address the model. |
 | Everything a reviewer CLI could read | Unknowable. The strip list is the measured list, applied -- not a claim of completeness. |
