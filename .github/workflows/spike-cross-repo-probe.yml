@@ -1,0 +1,650 @@
+name: spike-cross-repo-probe
+
+# SPIKE (AT-2520). Not a feature. Delete this one file to remove it.
+#
+# The fallback it aims to retire is AT-2372 (closed): a local hand-review
+# substitute for IGTdesignsystem when the owning account's Actions quota ran
+# out, which explicitly left the permanent fix unbuilt.
+#
+# Question: can an Actions run in ignite-corp/ai-dev-pr-review reach a pull
+# request in a DIFFERENT repository -- including one on a personal account --
+# well enough to review it? Three consumers (hyuk-hur/dev-dotfiles,
+# ignite-pilot-org/max-builder, hyuk-hur/dgt-research) cannot run the review
+# workflow on their own accounts, so the only remaining option is driving the
+# review from here, where the minutes are billed to ignite-corp.
+#
+# This workflow WRITES NOTHING to the target repository. No comments, no
+# reviews, no labels, no commits: every request below is a GET, and the
+# write-capability probe reads the App installation's permission set instead
+# of testing it by posting. Results go to the job summary.
+#
+# This repo is PUBLIC, so these logs are public, and the reviewer App can read
+# every private repository in ignite-corp and ignite-pilot-org. An
+# unrestricted target would therefore make this workflow a metadata oracle
+# over both orgs, usable by anyone who can dispatch it. target_repo is checked
+# against the ALLOWED_TARGETS list below -- the three consumers this spike
+# exists for -- BEFORE any authenticated request, before a token is minted at
+# all. The list lives in this file on purpose: an input or a repository
+# variable would be changeable by whoever dispatches the run.
+#
+# Even for an allowed target the summary answers reachability and nothing
+# else: HTTP status codes, whether an installation exists, the account it
+# sits on, its permission set, its repository_selection, how many
+# repositories the minted token reaches, the diff's size in bytes, and the
+# API's own message for a failed request -- that one length-bounded and
+# character-whitelisted, because a response body is not this file's text.
+# Nothing that describes what the target PR CONTAINS -- not the head
+# SHA, not the base ref, not a file or change count, not the diff itself.
+# "readable: yes, N bytes" is already the whole answer this spike came for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Target in owner/repo form, e.g. hyuk-hur/dev-dotfiles'
+        required: true
+        type: string
+      pr_number:
+        description: 'Pull request number in the target repo'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Gate. Shape first, then the allowlist, both comparing the WHOLE
+      # string: `printf | grep -Eq '^...$'` matches per line, so a multi-line
+      # dispatch input passes on its first line and the remainder reaches
+      # $GITHUB_OUTPUT as attacker-defined step outputs. bash [[ =~ ]] anchors
+      # ^/$ to the whole string, and [ x = y ] is a whole-string compare.
+      - name: Parse and authorize target
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -uo pipefail
+
+          # The only targets this spike may point the reviewer App at.
+          ALLOWED_TARGETS=(
+            'hyuk-hur/dev-dotfiles'
+            'ignite-pilot-org/max-builder'
+            'hyuk-hur/dgt-research'
+          )
+
+          reject() {
+            # Echoed precisely when the value FAILED the shape check, i.e.
+            # when it is known to be arbitrary text. A backtick plus newline
+            # would escape the inline-code span and inject chosen markdown
+            # into a summary this file's header calls public. Bound the
+            # length first, then whitelist: truncating with `head -c` would
+            # SIGPIPE its producer, which pipefail turns into a dead reject().
+            safe_target=$(printf '%s' "${TARGET_REPO:0:64}" | tr -c 'A-Za-z0-9_./-' '?')
+            safe_pr=$(printf '%s' "${PR_NUMBER:0:16}" | tr -c '0-9' '?')
+            {
+              echo "## Cross-repo review reachability probe (AT-2520)"
+              echo
+              echo "**Rejected before any authenticated request.** $1"
+              echo
+              echo "Rejected target: \`${safe_target}\`, PR \`${safe_pr}\`."
+              echo
+              echo "The allowlist is deliberate and lives in the workflow file."
+              echo "This repository is public and the reviewer App can read every"
+              echo "private repository in ignite-corp and ignite-pilot-org, so an"
+              echo "arbitrary target would turn this run into a metadata oracle."
+              echo "Permitted targets:"
+              for t in "${ALLOWED_TARGETS[@]}"; do
+                echo "- \`${t}\`"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ ! $TARGET_REPO =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            reject "target_repo must be a single-line owner/repo."
+          fi
+          if [[ ! $PR_NUMBER =~ ^[0-9]+$ ]]; then
+            reject "pr_number must be a single-line number."
+          fi
+
+          owner=${TARGET_REPO%%/*}
+          name=${TARGET_REPO#*/}
+
+          # curl removes dot segments, so a target like `../..` would silently
+          # redirect every API call built from it to a different endpoint.
+          case "$owner" in
+            . | ..) reject "target_repo owner must not be a dot segment." ;;
+          esac
+          case "$name" in
+            . | ..) reject "target_repo name must not be a dot segment." ;;
+          esac
+
+          allowed=no
+          for t in "${ALLOWED_TARGETS[@]}"; do
+            if [ "$TARGET_REPO" = "$t" ]; then
+              allowed=yes
+              break
+            fi
+          done
+          if [ "$allowed" != "yes" ]; then
+            reject "target_repo is not on this workflow's allowlist."
+          fi
+
+          # The full slug and the PR number are exported too, not just their
+          # parts: every probe builds an API URL from them, and reading the
+          # dispatch input directly would be safe only because THIS step is
+          # not continue-on-error, so its exit 1 skips the probes. Every probe
+          # IS continue-on-error, so one `if: always()` added later would
+          # route unvalidated text into api.github.com. Consuming the gate's
+          # outputs makes the validated form the only reachable form.
+          {
+            echo "owner=${owner}"
+            echo "name=${name}"
+            echo "repo=${TARGET_REPO}"
+            echo "pr=${PR_NUMBER}"
+            echo "allowed=yes"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Cross-repo review reachability probe (AT-2520)"
+            echo
+            echo "Target: \`${TARGET_REPO}\` PR #${PR_NUMBER} -- allowlisted,"
+            echo "read-only, nothing written."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Probe 1. Can the reviewer App mint an installation token scoped to the
+      # TARGET's owner? A failure here is a result, not a crash -- "App not
+      # installed on this account" is exactly what the spike came to find out,
+      # so the step is continue-on-error and Probe 1b reports why.
+      - name: 'Probe 1: App token for the target owner'
+        id: app_token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+
+      # Probe 1b. The App's own view of the target, via an App JWT: whether an
+      # installation exists there at all, and with which permissions. This is
+      # where a Probe 1 failure gets its reason -- the API's own message,
+      # bounded and whitelisted by api_message below before it reaches the
+      # public summary -- and it is also the source for Probe 4: the
+      # installation's permission set says whether the token COULD comment
+      # without any write being attempted.
+      - name: 'Probe 1b: App installation record for the target'
+        id: installation
+        continue-on-error: true
+        env:
+          APP_ID: ${{ vars.REVIEWER_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+        run: |
+          set -uo pipefail
+          if [ -z "${APP_ID:-}" ] || [ -z "${APP_PRIVATE_KEY:-}" ]; then
+            echo "REVIEWER_APP_ID / REVIEWER_APP_PRIVATE_KEY not reachable from this repo"
+            # `unanswered`, not an unset value: nothing was asked here, so
+            # nothing was answered. An empty output renders downstream as
+            # "no installation reachable" -- a measurement reported as taken
+            # when it never was. Probe 4 and the verdict table branch on
+            # this sentinel.
+            {
+              echo "http=000"
+              echo "installed=unanswered"
+            } >> "$GITHUB_OUTPUT"
+            echo "- **Probe 1b**: App credentials not reachable from this repo." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # RS256 App JWT. The key is written with umask 077 and removed by an
+          # EXIT trap armed BEFORE the write: run: blocks are `bash -e`, so a
+          # failing openssl would skip a trailing `rm` and leave the PEM in
+          # $RUNNER_TEMP for every later step -- silently, since the step is
+          # continue-on-error. The response body is declared here and covered
+          # by the SAME trap: a second `trap ... EXIT` REPLACES the first
+          # rather than adding to it, so the installation record -- account
+          # login and type, repository_selection, the full permission set --
+          # would otherwise outlive the one step that reads it. The JWT
+          # reaches curl on stdin (-H @-), never in argv.
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          # API text reaches a PUBLIC summary inside an inline-code span, so
+          # it gets the same treatment the gate's reject() gives a failed
+          # input: bound the length with substring expansion FIRST, then
+          # whitelist. A backtick plus newline would otherwise close the span
+          # and inject chosen markdown. Truncating with `head -c` instead
+          # would SIGPIPE its producer, which pipefail turns into a dead
+          # branch -- so the jq fallback reads the whole body and the bound
+          # is applied after. Repeated in Probes 2 and 5 as well: each
+          # `run:` block is its own shell, so this is the only reuse there is.
+          api_message() {
+            local raw
+            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
+              || raw=$(cat "$1")
+            [ -n "$raw" ] || raw='(empty response body)'
+            printf '%s' "${raw:0:200}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
+          }
+          key_file="$RUNNER_TEMP/app-key.pem"
+          body="$RUNNER_TEMP/installation.json"
+          trap 'rm -f "$key_file" "$body"' EXIT
+          ( umask 077; printf '%s\n' "$APP_PRIVATE_KEY" > "$key_file" )
+          now=$(date +%s)
+          header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+          payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' \
+            "$((now - 60))" "$((now + 300))" "$APP_ID" | b64url)
+          # pipefail is what makes this branch reachable: the pipeline's
+          # status is b64url's, so without it an unusable PEM yields an EMPTY
+          # signature, the request goes out as `header.payload.`, and the 401
+          # that follows renders as "no installation reachable" -- a broken
+          # key masquerading as the answer this probe exists to give.
+          if ! signature=$(printf '%s' "${header}.${payload}" \
+            | openssl dgst -sha256 -sign "$key_file" -binary | b64url); then
+            {
+              echo "http=000"
+              echo "installed=unanswered"
+            } >> "$GITHUB_OUTPUT"
+            echo "- **Probe 1b**: App JWT could not be signed -- the private" \
+              "key is unusable, so reachability is unanswered (not \`no\`)." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          jwt="${header}.${payload}.${signature}"
+
+          code=$(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\n' "$jwt" \
+            | curl -sS -o "$body" -w '%{http_code}' --max-time 30 -H @- \
+              "https://api.github.com/repos/${TARGET_REPO}/installation") || code=000
+          echo "HTTP ${code} on GET /repos/${TARGET_REPO}/installation"
+          echo "http=${code}" >> "$GITHUB_OUTPUT"
+
+          if [ "$code" = "200" ]; then
+            account=$(jq -r '.account.login // "?"' "$body")
+            account_type=$(jq -r '.account.type // "?"' "$body")
+            selection=$(jq -r '.repository_selection // "?"' "$body")
+            perms=$(jq -c '.permissions // {}' "$body")
+            pulls=$(jq -r '.permissions.pull_requests // "none"' "$body")
+            issues=$(jq -r '.permissions.issues // "none"' "$body")
+            contents=$(jq -r '.permissions.contents // "none"' "$body")
+            {
+              echo "installed=yes"
+              echo "selection=${selection}"
+              echo "pull_requests=${pulls}"
+              echo "issues=${issues}"
+              echo "contents=${contents}"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "- **Probe 1b**: installation found on \`${account}\` (${account_type}),"
+              echo "  repository_selection \`${selection}\`."
+              echo "  - permissions: \`${perms}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$code" = "404" ]; then
+            # The ONLY code that means "no installation". GitHub returns it
+            # both when the App is absent from the account and when the
+            # target sits outside a `selected` installation's list; neither
+            # reaches the target, so both are the same answer to this probe.
+            # The message is kept because those two are different answers
+            # and it is the only thing that tells them apart.
+            echo "installed=no" >> "$GITHUB_OUTPUT"
+            {
+              echo "- **Probe 1b**: no installation reachable -- HTTP 404."
+              echo "  - API message: \`$(api_message "$body")\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Every OTHER non-200 -- a 401 from a rejected JWT (clock skew,
+            # wrong App id), a 403, a GitHub 5xx, and the `000` of a request
+            # that never completed -- leaves the question unanswered. Writing
+            # `no` here would publish a bad clock as "the App is not installed
+            # on that account", the exact conflation the `unanswered` sentinel
+            # above exists to prevent. `error` is a distinct value, not a
+            # second spelling of it: there the question was never put, here it
+            # was put and the answer came back unusable.
+            echo "installed=error" >> "$GITHUB_OUTPUT"
+            {
+              echo "- **Probe 1b**: reachability NOT established -- HTTP ${code}."
+              echo "    Not a \`no\`: only HTTP 404 means no installation."
+              echo "  - API message: \`$(api_message "$body")\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Probe 2. Can the App token read the PR at all? The HTTP code is the
+      # whole answer. The head SHA, base ref and change counts this step used
+      # to print describe what the PR contains, not whether it is reachable,
+      # and this summary is public -- so they are neither read nor printed.
+      - name: 'Probe 2: read the target PR with the App token'
+        id: read_pr
+        continue-on-error: true
+        env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          PR_NUMBER: ${{ steps.target.outputs.pr }}
+        run: |
+          set -uo pipefail
+          # Probe 1b's sanitiser, repeated because each `run:` block is its
+          # own shell: bound the length with substring expansion first, then
+          # whitelist, so a backtick plus newline in a response body cannot
+          # close the inline-code span below and inject markdown into this
+          # public summary.
+          api_message() {
+            local raw
+            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
+              || raw=$(cat "$1")
+            [ -n "$raw" ] || raw='(empty response body)'
+            printf '%s' "${raw:0:200}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
+          }
+          if [ -z "${APP_TOKEN:-}" ]; then
+            echo "http=skipped" >> "$GITHUB_OUTPUT"
+            echo "- **Probe 2**: skipped, Probe 1 returned no token." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          body="$RUNNER_TEMP/pr.json"
+          trap 'rm -f "$body"' EXIT
+          code=$(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\n' \
+            "$APP_TOKEN" \
+            | curl -sS -o "$body" -w '%{http_code}' --max-time 30 -H @- \
+              "https://api.github.com/repos/${TARGET_REPO}/pulls/${PR_NUMBER}") || code=000
+          echo "HTTP ${code} on GET /repos/${TARGET_REPO}/pulls/${PR_NUMBER}"
+          echo "http=${code}" >> "$GITHUB_OUTPUT"
+          # Probe 1b's rule, unchanged here: HTTP 404 is the ONLY real
+          # negative -- the PR or the repo is not there. `000` is curl's own
+          # failure and a 5xx is GitHub's; a 401 is a rejected or expired
+          # token, a 403 a blocked request or the primary rate limit, a 429
+          # the secondary one. None of those is a statement about the PR, so
+          # none of them gets to print that it cannot be read.
+          case "$code" in
+            200)
+              echo "- **Probe 2**: PR readable: yes (HTTP 200). No PR metadata printed." \
+                >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            404)
+              {
+                echo "- **Probe 2**: PR NOT readable -- HTTP 404."
+                echo "  - API message: \`$(api_message "$body")\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              {
+                echo "- **Probe 2**: readability NOT established -- HTTP ${code}."
+                echo "    Not a \`no\`: only HTTP 404 means the PR is not readable."
+                echo "  - API message: \`$(api_message "$body")\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+
+      # Probe 3. The diff itself -- would the reviewer have any input, and of
+      # what size? Only the size is reported, and the downloaded diff is
+      # removed by an EXIT trap so a possibly-private target's content does
+      # not sit in $RUNNER_TEMP past the one step that measures it.
+      - name: 'Probe 3: read the target diff with the App token'
+        id: read_diff
+        continue-on-error: true
+        env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          PR_NUMBER: ${{ steps.target.outputs.pr }}
+        run: |
+          set -uo pipefail
+          if [ -z "${APP_TOKEN:-}" ]; then
+            echo "http=skipped" >> "$GITHUB_OUTPUT"
+            echo "- **Probe 3**: skipped, Probe 1 returned no token." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          body="$RUNNER_TEMP/pr.diff"
+          trap 'rm -f "$body"' EXIT
+          code=$(printf 'Authorization: Bearer %s\nAccept: application/vnd.github.v3.diff\n' \
+            "$APP_TOKEN" \
+            | curl -sS -o "$body" -w '%{http_code}' --max-time 30 -H @- \
+              "https://api.github.com/repos/${TARGET_REPO}/pulls/${PR_NUMBER}") || code=000
+          echo "HTTP ${code} on GET .../pulls/${PR_NUMBER} (diff media type)"
+          echo "http=${code}" >> "$GITHUB_OUTPUT"
+          # Probe 1b's rule again, and Probe 2's: only HTTP 404 -- the PR or
+          # the repo is not there -- is a real negative. `000` (the request
+          # never completed), a 5xx (GitHub errored) and a 401, 403 or 429
+          # (the credential or the rate limiter, neither of which is the
+          # diff) measure nothing about readability, so none of them gets to
+          # print one.
+          case "$code" in
+            200)
+              # Size only. A count of `diff --git` headers is a change count:
+              # it describes what the PR contains, which the header above
+              # promises this public summary will not print.
+              bytes=$(wc -c < "$body")
+              echo "- **Probe 3**: diff readable -- ${bytes} bytes." \
+                >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            404)
+              echo "- **Probe 3**: diff NOT readable -- HTTP 404." \
+                >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              {
+                echo "- **Probe 3**: diff readability NOT established -- HTTP ${code}."
+                echo "    Not a \`no\`: only HTTP 404 means the diff is not readable."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+
+      # Probe 4. Could the token comment ON THIS TARGET? Determined WITHOUT
+      # writing, from two answers Probe 1b already holds. Coverage comes from
+      # its App-JWT call on GET /repos/{owner}/{repo}/installation, which is
+      # installation-scoped AND target-specific: it answers 200 only for a
+      # repository some installation of this App reaches, and 404 when the
+      # App is absent or the repository sits outside a `selected`
+      # installation's list -- so `installed=yes` already IS the statement
+      # that the installation covers this target. The permission set, also
+      # from Probe 1b, says what it may do there.
+      #
+      # GET /installation/repositories is still called below, but it measures
+      # the TOKEN's reach and not the installation's, and is labelled and
+      # kept out of the verdict accordingly: Probe 1 mints the token with
+      # `repositories: <target>`, so that endpoint enumerates the restriction
+      # the mint imposed and would report 1 for an installation covering a
+      # hundred. Its "target NOT among them" branch is near-unreachable for
+      # the same reason -- a target outside the installation fails the mint,
+      # leaving no token to list with. No POST is made anywhere here.
+      - name: 'Probe 4: write capability, without writing'
+        id: write_capability
+        continue-on-error: true
+        env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_NAME: ${{ steps.target.outputs.name }}
+          INSTALLED: ${{ steps.installation.outputs.installed }}
+          INSTALLATION_HTTP: ${{ steps.installation.outputs.http }}
+          SELECTION: ${{ steps.installation.outputs.selection }}
+          PULLS_PERM: ${{ steps.installation.outputs.pull_requests }}
+          ISSUES_PERM: ${{ steps.installation.outputs.issues }}
+        run: |
+          set -uo pipefail
+          # One constant for the fetch size and for the guard that reads it:
+          # they must agree, or a partial read becomes a confident
+          # "target NOT among them".
+          page_size=100
+
+          # Step 1: how far does the MINTED TOKEN reach? A check on the
+          # token, not on the installation -- see the note above. "not
+          # checked" is the starting value and survives every path that does
+          # not positively answer: no token, a failed lookup, or a read that
+          # saw only part of the list.
+          scope_line="token scope: not checked, Probe 1 returned no token."
+          if [ -n "${APP_TOKEN:-}" ]; then
+            body="$RUNNER_TEMP/installation-repos.json"
+            trap 'rm -f "$body"' EXIT
+            code=$(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\n' \
+              "$APP_TOKEN" \
+              | curl -sS -o "$body" -w '%{http_code}' --max-time 30 -H @- \
+                "https://api.github.com/installation/repositories?per_page=${page_size}") \
+                || code=000
+            if [ "$code" != "200" ]; then
+              scope_line="token scope: HTTP ${code} on GET /installation/repositories."
+            else
+              total=$(jq -r '.total_count // 0' "$body")
+              # Only one page is read, and total_count here counts what the
+              # TOKEN reaches, so a "not among them" is trustworthy only when
+              # the whole list fit in that page -- which is why the guard
+              # below and the per_page above read the same variable. Names
+              # compare case-insensitively: GitHub repo names are
+              # case-preserving but not case-sensitive, and an input
+              # differing only in case must not read as "not reached".
+              if jq -e --arg n "$TARGET_NAME" \
+                '.repositories[]? | select((.name | ascii_downcase) == ($n | ascii_downcase))' \
+                "$body" > /dev/null; then
+                scope_line="token scope: reaches ${total} repo(s), target among them."
+              elif [ "$total" -le "$page_size" ]; then
+                scope_line="token scope: reaches ${total} repo(s), target NOT among them."
+              else
+                scope_line="token scope: reaches ${total} repo(s), target presence unknown -- only the first ${page_size} were read."
+              fi
+            fi
+          fi
+
+          # Step 1b: the INSTALLATION-scope answer, which is Probe 1b's and
+          # not this step's. Each branch says what was measured, and every
+          # one of them that is not a measurement says so: `unanswered` (the
+          # question was never put), `error` (put, and the answer came back
+          # unusable) and the empty case (Probe 1b did not run at all) are
+          # three separate states, none folded into the one negative they
+          # could each be mistaken for. The HTTP code travels with the two
+          # branches that have one, so a reader can tell the definite 404
+          # from a code that only looks like a verdict.
+          case "${INSTALLED:-}" in
+            yes)
+              install_line="installation scope: covers this target -- Probe 1b's App-JWT GET /repos/<target>/installation returned 200; repository_selection \`${SELECTION:-?}\`."
+              ;;
+            unanswered)
+              install_line="installation scope: unanswered -- the App credentials or key were unusable, so the question was never put."
+              ;;
+            error)
+              install_line="installation scope: not established -- Probe 1b's App-JWT call returned HTTP ${INSTALLATION_HTTP:-?}, which is not a \`no\`; only HTTP 404 means no installation."
+              ;;
+            no)
+              install_line="installation scope: no installation of this App reaches the target (HTTP ${INSTALLATION_HTTP:-?})."
+              ;;
+            *)
+              install_line="installation scope: not established -- Probe 1b produced no result."
+              ;;
+          esac
+
+          # Step 2: the verdict, which needs BOTH the coverage answer and the
+          # permission set, and both come from Probe 1b. "credentials
+          # unusable", "not installed" and "installed but read-only" are
+          # three answers this probe exists to tell apart, and the first two
+          # leave PULLS_PERM and ISSUES_PERM unset -- so coverage is branched
+          # on first. Both states in which nothing was measured -- the
+          # sentinel, and an empty value from a Probe 1b that did not run at
+          # all -- are taken BEFORE the negative one, or else an unasked
+          # question reports as a measured `no`. An unread permission set
+          # yields `unknown` for the same reason: defaulting it to `none`
+          # would state a measurement that was never taken. `no` now reaches
+          # the third branch only from a 404, so "no installation reachable"
+          # is a measurement wherever it is printed.
+          if [ "${INSTALLED:-}" = "unanswered" ]; then
+            verdict="unknown (App credentials or key unusable; reachability not tested)"
+          elif [ "${INSTALLED:-}" = "error" ]; then
+            verdict="unknown (Probe 1b's installation lookup returned HTTP ${INSTALLATION_HTTP:-?}; reachability not established)"
+          elif [ -z "${INSTALLED:-}" ]; then
+            verdict="unknown (Probe 1b produced no result)"
+          elif [ "$INSTALLED" != "yes" ]; then
+            verdict="unknown (no installation reachable)"
+          elif [ -z "${PULLS_PERM:-}" ] || [ -z "${ISSUES_PERM:-}" ]; then
+            verdict="unknown (installation found, permission set not read)"
+          elif [ "$PULLS_PERM" = "write" ] || [ "$ISSUES_PERM" = "write" ]; then
+            verdict="yes (pull_requests=${PULLS_PERM}, issues=${ISSUES_PERM})"
+          else
+            verdict="no (pull_requests=${PULLS_PERM}, issues=${ISSUES_PERM})"
+          fi
+          echo "can_comment=${verdict}" >> "$GITHUB_OUTPUT"
+          {
+            echo "- **Probe 4**: could comment on this target: ${verdict} -- inferred"
+            echo "  from the installation scope and permission set, never tested by posting."
+            echo "  - ${install_line}"
+            echo "  - ${scope_line}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Probe 5. The fallback: does the default GITHUB_TOKEN reach across
+      # repositories? It should not. Record what actually happens rather than
+      # what is expected -- and record the confound with it. This workflow
+      # grants `contents: read` and nothing else, so a non-200 on this
+      # pull_requests-scoped read has two independent possible causes and is
+      # not on its own evidence of a cross-repo boundary. The minimal
+      # permission block is deliberate for a read-only spike, so the caveat
+      # is printed rather than the block widened to sharpen a side probe.
+      - name: 'Probe 5: same read with the default GITHUB_TOKEN'
+        id: default_token
+        continue-on-error: true
+        env:
+          GH_DEFAULT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          PR_NUMBER: ${{ steps.target.outputs.pr }}
+        run: |
+          set -uo pipefail
+          # Probe 1b's sanitiser, repeated because each `run:` block is its
+          # own shell: bound the length with substring expansion first, then
+          # whitelist, so a backtick plus newline in a response body cannot
+          # close the inline-code span below and inject markdown into this
+          # public summary.
+          api_message() {
+            local raw
+            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
+              || raw=$(cat "$1")
+            [ -n "$raw" ] || raw='(empty response body)'
+            printf '%s' "${raw:0:200}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
+          }
+          body="$RUNNER_TEMP/pr-default.json"
+          trap 'rm -f "$body"' EXIT
+          code=$(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\n' \
+            "$GH_DEFAULT_TOKEN" \
+            | curl -sS -o "$body" -w '%{http_code}' --max-time 30 -H @- \
+              "https://api.github.com/repos/${TARGET_REPO}/pulls/${PR_NUMBER}") || code=000
+          echo "HTTP ${code} on GET /repos/${TARGET_REPO}/pulls/${PR_NUMBER}"
+          echo "http=${code}" >> "$GITHUB_OUTPUT"
+          if [ "$code" = "200" ]; then
+            echo "- **Probe 5**: the default GITHUB_TOKEN DID read the target PR (HTTP 200)." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Parsed here, not before the status check: on the success path
+            # the body is a possibly-private target's full PR JSON, and
+            # nothing in this probe needs it. Matches Probes 1b and 2.
+            {
+              echo "- **Probe 5**: default GITHUB_TOKEN got HTTP ${code}."
+              echo "  - API message: \`$(api_message "$body")\`"
+              echo "  - caveat: this run grants \`contents: read\` only, so a non-200"
+              echo "    here is not by itself evidence of a cross-repo boundary."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Skipped when the gate rejected the target: no probe ran, so there is
+      # nothing to tabulate, and the gate already wrote its own summary.
+      - name: Verdict table
+        if: ${{ always() && steps.target.outputs.allowed == 'yes' }}
+        env:
+          APP_TOKEN_OUTCOME: ${{ steps.app_token.outcome }}
+          INSTALLATION_HTTP: ${{ steps.installation.outputs.http }}
+          INSTALLED: ${{ steps.installation.outputs.installed }}
+          CONTENTS_PERM: ${{ steps.installation.outputs.contents }}
+          PR_HTTP: ${{ steps.read_pr.outputs.http }}
+          DIFF_HTTP: ${{ steps.read_diff.outputs.http }}
+          CAN_COMMENT: ${{ steps.write_capability.outputs.can_comment }}
+          DEFAULT_HTTP: ${{ steps.default_token.outputs.http }}
+        run: |
+          set -uo pipefail
+          {
+            echo
+            echo "### Verdict"
+            echo
+            echo "| Probe | Credential | Result |"
+            echo "| --- | --- | --- |"
+            echo "| 1 mint token | reviewer App | ${APP_TOKEN_OUTCOME:-?} |"
+            echo "| 1b installation | App JWT | HTTP ${INSTALLATION_HTTP:-?}, installed=${INSTALLED:-?} |"
+            echo "| 2 read PR | App token | HTTP ${PR_HTTP:-?} |"
+            echo "| 3 read diff | App token | HTTP ${DIFF_HTTP:-?} |"
+            echo "| 4 could comment | App token | ${CAN_COMMENT:-?} |"
+            echo "| 5 read PR | default GITHUB_TOKEN | HTTP ${DEFAULT_HTTP:-?} |"
+            echo "| checkout permission | App installation | contents=${CONTENTS_PERM:-?} |"
+            echo
+            echo "Nothing was written to the target repository."
+          } >> "$GITHUB_STEP_SUMMARY"
