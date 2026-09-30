@@ -26,7 +26,6 @@ one place is what keeps the three sides agreeing.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import signal
@@ -36,10 +35,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from github_pr_support import SEVERITY_ICONS
+# Re-exported for the two shims: the payload shape is aggregate_reviews.py's
+# contract and now lives in the neutral module, so a shim importing it from
+# here still gets the aggregate's own functions and not a second copy
+# (AT-2510). It cannot live here -- this module is the LOCAL driver's, and
+# the Actions-path aggregate must not be made to import it.
+from github_pr_support import (  # noqa: F401
+    is_valid_review,
+    normalize_severity,
+    usable_verdict,
+)
 from local_review_config import LocalConfig
-
-logger = logging.getLogger(__name__)
 
 # The `error` values aggregate_reviews.py distinguishes. Named here so a
 # shim cannot invent a fourth spelling that renders as an unknown failure.
@@ -267,90 +273,6 @@ def error_verdict(summary: str, kind: str, detail: str) -> dict[str, Any]:
 
 def write_verdict(path: str, payload: dict[str, Any]) -> None:
     Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-_SEVERITY_ALIASES: dict[str, str] = {
-    "high": "major",
-    "medium": "minor",
-    "low": "suggestion",
-    "info": "suggestion",
-    "warning": "minor",
-    "note": "suggestion",
-    "error": "major",
-}
-
-
-def normalize_severity(data: Any) -> None:
-    """Map reviewer severity spellings onto the canonical set, in place.
-
-    Unknown values are left alone so ``is_valid_review`` rejects the
-    payload rather than this silently inventing a severity for it.
-    """
-    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
-        return
-    for issue in data["issues"]:
-        if not isinstance(issue, dict):
-            continue
-        sev = issue.get("severity")
-        if not isinstance(sev, str):
-            continue
-        lowered = sev.lower()
-        if lowered in SEVERITY_ICONS:
-            issue["severity"] = lowered
-        elif lowered in _SEVERITY_ALIASES:
-            issue["severity"] = _SEVERITY_ALIASES[lowered]
-        else:
-            logger.warning("Unknown severity %r, leaving as-is", sev)
-
-
-def is_valid_review(data: Any) -> bool:
-    """Check that a review payload has the required shape."""
-    if not isinstance(data, dict):
-        return False
-    if not isinstance(data.get("summary"), str):
-        return False
-    if not isinstance(data.get("early_exit"), bool):
-        return False
-    if not isinstance(data.get("issues"), list):
-        return False
-    for issue in data["issues"]:
-        if not isinstance(issue, dict):
-            return False
-        if issue.get("severity") not in SEVERITY_ICONS:
-            return False
-        if not isinstance(issue.get("description"), str):
-            return False
-        for key in ("file", "line", "suggestion"):
-            if key not in issue:
-                return False
-        if issue["file"] is not None and not isinstance(issue["file"], str):
-            return False
-        if issue["line"] is not None and not isinstance(issue["line"], int):
-            return False
-        if issue["suggestion"] is not None and not isinstance(issue["suggestion"], str):
-            return False
-    return True
-
-
-def usable_verdict(payload: Any) -> bool:
-    """Would aggregate_reviews.load_reviews read this payload as a verdict?
-
-    THE AGGREGATE'S OWN SEQUENCE, not a second opinion about it: normalize
-    the severities, then apply the shape test, because that is the order
-    load_reviews uses and a shim answering only the second half would
-    refuse a payload the aggregate accepts -- an "output_unparseable" for a
-    review whose only fault was spelling `High`.
-
-    Here rather than in a shim for the reason the rest of this module is:
-    the shape belongs to aggregate_reviews.py, so a copy per shim is a copy
-    of a third party's schema. Both shims gate their direct-write path on
-    this one call, and `isinstance(payload, dict)` -- the gate it replaced
-    -- accepted any JSON object at all, so a CLI that half-wrote its
-    verdict file suppressed the log-extraction fallback that would have
-    recovered the real one and the aggregate then saw a malformed review.
-    """
-    normalize_severity(payload)
-    return is_valid_review(payload)
 
 
 def spawn_exit_reason(exit_code: int, timeout_sec: int) -> str:

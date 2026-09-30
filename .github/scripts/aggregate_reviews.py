@@ -39,6 +39,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, TypeGuard
 
+# The payload-shape pair is written once, in github_pr_support, so the two
+# reviewer shims can gate their direct-write path on the SAME test this
+# module applies -- see usable_verdict there. Imported under the names this
+# module already used, because the shape is still this module's contract.
+#
+# It sits in github_pr_support and NOT in local_reviewer_support: this
+# script is the Actions-path aggregate, run straight after setup-python
+# with no `pip install`, so importing the local driver's support module
+# put it behind that module's PyYAML dependency and broke every consumer
+# (AT-2510).
 from github_pr_support import (
     REVIEW_MARKER,
     REVIEWER_NAMES,
@@ -47,16 +57,8 @@ from github_pr_support import (
     display_path,
     fetch_paginated_nodes,
     int_env,
-    normalize_bot_login,
-)
-
-# The payload-shape pair moved to local_reviewer_support so the two reviewer
-# shims can gate their direct-write path on the SAME test this module applies
-# -- see usable_verdict there. Imported under the names this module already
-# used, because the shape is still this module's contract; what changed is
-# that it is now written once rather than approximated a second time.
-from local_reviewer_support import (
     is_valid_review as _is_valid_review,
+    normalize_bot_login,
     normalize_severity as _normalize_severity,
 )
 
