@@ -37,7 +37,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from github_pr_support import (
     REVIEW_MARKER,
@@ -330,7 +330,12 @@ def _emit_partial_observability(
 def _all_reviewer_jobs_succeeded(total: int) -> bool:
     """True when every reviewer job exited 0 but produced no review payload.
 
-    Indicates a benign trivial-diff early-exit, not an infrastructure failure.
+    Says nothing about why. The reviewer step in base-ai-review-single.yml
+    is continue-on-error, so a reviewer whose CLI or action dies on a
+    missing or bad credential reports `success` having uploaded nothing --
+    the same two facts this reads. Callers must not treat it as a benign
+    classification; it only suppresses the sub-quorum CI failure, which is
+    pre-existing behaviour on this path.
     """
     conclusions = load_reviewer_conclusions()
     return len(conclusions) == total and all(
@@ -344,8 +349,9 @@ def _artifacts_entirely_absent(
     """True when no reviewer wrote any artifact at all.
 
     Error-bearing fallback payloads (e.g. the codex CLI-failure verdict)
-    are artifacts: their presence marks an infrastructure failure, never a
-    benign trivial-diff early-exit.
+    are artifacts: their presence marks an infrastructure failure the
+    reviewer was able to report, which is strictly more than this predicate
+    can tell its callers.
     """
     return all(v is None for v in reviews.values())
 
@@ -367,7 +373,8 @@ def _check_insufficient(
             ):
                 return (
                     "approve",
-                    f"0/{total} LLM responses -- all early-exit (benign skip)",
+                    f"0/{total} LLM responses -- all early-exit or no-output,"
+                    " cause indeterminate",
                 )
             return (
                 "comment",
@@ -651,6 +658,11 @@ LENS_IGNORE_PATH = ".github/lens-ignore"
 # It cannot key on the conclusion alone, because that path reports success by
 # decision (see main), and a job conclusion cannot be neutral.
 POLICY_SKIP_MARKER = "<!-- lens:skipped reason=policy-excluded-only files={n} -->"
+# Roster reason on the policy-skip path. Spelled apart from the plain
+# "skipped" of a REVIEW_MODE-excluded job: that one means the round ran
+# without this reviewer, this one means no round ran at all, and a gate
+# reading a zero roster on a green run has only the reason to tell them apart.
+POLICY_SKIP_ROSTER_REASON = "skipped (policy)"
 
 
 def _excluded_paths() -> list[str]:
@@ -796,6 +808,201 @@ def _failed_status_detail(review: dict[str, Any]) -> str:
     return "reviewer reported status=failed"
 
 
+def _has_payload(review: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
+    """True when a reviewer wrote a payload carrying a summary.
+
+    A ``TypeGuard`` rather than a plain ``bool`` so callers can pass the
+    narrowed value straight on: with a plain ``bool`` the type checker
+    still sees ``dict | None`` inside the branch, and the ``or {}``
+    fallbacks that used to satisfy it read as defensive code guarding a
+    case this predicate has already excluded.
+    """
+    return review is not None and "summary" in review
+
+
+# Roster reason for the one sub-quorum green path the aggregate can
+# positively recognise, in the same family as POLICY_SKIP_ROSTER_REASON and
+# coined for the same reason: a gate reading `responded < expected` on a run
+# that ended green has only the reason to tell a benign round from a
+# degraded one. It is spelled apart from the conclusion-derived reason it
+# displaces, because a reviewer a sequential early exit gated off reads as
+# the same bare "skipped" as one the REVIEW_MODE condition excluded from a
+# round that did run (AT-2511). What makes it safe to coin is the payload it
+# rests on: some reviewer wrote an artifact whose `early_exit` is true, so
+# the round is known to have run and to have stopped on purpose.
+#
+# There is deliberately no counterpart for the parallel round where no
+# reviewer wrote any artifact at all. That signature -- every job green,
+# nothing uploaded -- is exactly what a credential outage produces
+# (base-ai-review-orchestrator.yml, the note above review-codex-s: the
+# review step is continue-on-error, so a reviewer whose CLI or action dies
+# on a missing or bad credential reports `success` with no verdict
+# artifact), and the aggregate is given nothing that separates the two: it
+# reads job conclusions and artifacts, and both are identical in the two
+# cases. Nor is there a trivial-diff round hiding behind it to protect --
+# every "nothing to review" state is decided before the reviewers run and
+# is reported elsewhere: prepare fails the round on an empty diff
+# (extract_pr_diff.sh, AT-2201), a size skip exits 1, and a policy skip
+# takes its own branch in main() with POLICY_SKIP_ROSTER_REASON.
+# base-ai-review-single.yml says the same thing from the reviewer's side --
+# "the prompt requires a verdict file even for early_exit, so a missing
+# file here is always an infrastructure failure, never a benign skip".
+# Those reviewers therefore keep the conclusion-derived
+# "early-exit or no-output", which is honest about not knowing.
+SEQUENTIAL_EARLY_EXIT_ROSTER_REASON = "skipped (sequential early exit)"
+# Every reason that means "this round was fine without them". Exported so a
+# reader has one place to find the partition the output descriptions and
+# README promise, rather than two constants to collect by hand.
+BENIGN_ROSTER_REASONS = frozenset(
+    {
+        POLICY_SKIP_ROSTER_REASON,
+        SEQUENTIAL_EARLY_EXIT_ROSTER_REASON,
+    }
+)
+# The one reason in the roster that is not chosen from a closed set here:
+# a failed reviewer's own ``error`` text, which is LLM-authored over PR
+# content this project's prompt treats as untrusted (context.md R6). A
+# gate decides on whole-string equality against BENIGN_ROSTER_REASONS, so
+# without a namespace of its own that text can spell a benign reason and
+# a broken reviewer presents itself as a skipped one. Prefixing is
+# unconditional -- a conditional escape would have to re-derive the
+# collision every time the benign set grows.
+FAILED_DETAIL_PREFIX = "failed: "
+
+
+def _payload_failure_reason(review: dict[str, Any]) -> str:
+    """Roster reason for a reviewer whose own payload reported failure.
+
+    The single place payload-derived text enters ``missing``: everything
+    else there is a module constant or a ``_missing_reason`` lookup over a
+    closed set of job conclusions. Keeping it to one function is what lets
+    the namespacing be a property of the roster rather than of one branch.
+    """
+    return f"{FAILED_DETAIL_PREFIX}{_failed_status_detail(review)}"
+
+
+def _missing_reviewer_reasons(
+    reviews: dict[str, dict[str, Any] | None],
+    available: dict[str, dict[str, Any]],
+    conclusions: dict[str, str] | None,
+    *,
+    sequential_bypass: bool = False,
+) -> dict[str, str]:
+    """Reason per configured reviewer that produced no usable verdict.
+
+    Keyed on absence from ``available`` -- the same set the coverage figure
+    counts -- so the prose headline and the machine-readable roster can
+    never name different reviewers as missing (AT-2511). Ordered by
+    ``REVIEWERS`` so both renderings list them the same way.
+
+    The reason strings are the ones already in use: a job conclusion for a
+    reviewer that wrote no payload, the payload's own detail -- namespaced
+    by ``_payload_failure_reason`` -- for one whose normalized status is
+    "failed". The two are conflated in places (AT-2276) and that is fixed
+    there, not by a second spelling introduced here.
+
+    The exception is the sequential early-exit round, which the caller
+    identifies because it is not visible from a reviewer's conclusion
+    alone: the same "skipped" means gated off by an early exit or excluded
+    by REVIEW_MODE. It gets a reason of its own so ``missing`` partitions
+    into benign and did-not-run -- the distinction a gate cannot make from
+    the count, which is honestly 1/3 on that path.
+
+    A parallel round where no reviewer wrote an artifact gets no such
+    exception, and deliberately: see SEQUENTIAL_EARLY_EXIT_ROSTER_REASON's
+    comment. Nothing the aggregate is given separates that round from a
+    credential outage, so those reviewers keep the conclusion-derived
+    "early-exit or no-output" -- which names the ambiguity rather than
+    resolving it in the direction that merges.
+    """
+    reasons: dict[str, str] = {}
+    for name in REVIEWERS:
+        if name in available:
+            continue
+        review = reviews.get(name)
+        if _has_payload(review):
+            reasons[name] = _payload_failure_reason(review)
+            continue
+        conclusion = (conclusions or {}).get(name, "")
+        # The benign reason is narrowed to the conclusion its path actually
+        # produces, so a reviewer that failed on such a round is still
+        # reported as failed. Redundant against today's flag -- and
+        # deliberately so: the naming stays correct here rather than
+        # depending on how the caller happens to define it.
+        if sequential_bypass and conclusion == "skipped":
+            # Keyed on the conclusion alone, so on a sequential early-exit
+            # round every reviewer reporting "skipped" reads as gated off
+            # by that exit -- including one a caller excluded for its own
+            # reasons. Base's orchestrator dispatches all three in
+            # sequential mode and falls the parallel-mode conclusion
+            # through to its sequential twin, so there the two cannot
+            # differ; a caller that reimplements the chain can make them.
+            # Telling them apart needs a dispatched-reviewer set the
+            # aggregate is not given, which is a new consumer-facing input
+            # across the orchestrator and the wrapper's lockstep -- so the
+            # wider meaning is documented in the README reason table
+            # instead of narrowed here (AT-2511).
+            reasons[name] = SEQUENTIAL_EARLY_EXIT_ROSTER_REASON
+        else:
+            reasons[name] = _missing_reason(conclusion)
+    return reasons
+
+
+# Conclusions that say nothing worth putting on the headline: a reviewer the
+# workflow deliberately excluded, or one whose job reported nothing at all.
+_QUIET_CONCLUSIONS = frozenset({"", "skipped"})
+
+
+def write_reviewer_roster(
+    available: dict[str, dict[str, Any]],
+    missing_reasons: dict[str, str],
+) -> None:
+    """Publish who reviewed, and who did not, to ``$GITHUB_OUTPUT`` (AT-2511).
+
+    Everything here is already known -- it reaches the reader as a prose
+    sentence on the summary comment -- but a merge gate cannot read prose.
+    All a gate sees is the job's conclusion, and that is `success` whether
+    three reviewers produced a verdict or one did: on PR #174 the job ended
+    green in 10m26s with claude cut at the step timeout, and the only trace
+    was a parenthesis in the comment body.
+
+    This changes no conclusion and no exit status. Whether a 2/3 round
+    should go red is a fleet policy question -- 17 pilot consumers plus the
+    wrapper's lockstep -- and the point of emitting the roster is to let
+    that decision be made somewhere it can be made, not to pre-empt it here.
+
+    ``responded`` is derived from ``available``, the same dict the coverage
+    figure counts, rather than recomputed: a roster that could disagree
+    with the headline would reproduce the defect it exists to report.
+    """
+    output_path = os.environ.get("GITHUB_OUTPUT", "")
+    if not output_path:
+        return
+    responded = [name for name in REVIEWERS if name in available]
+    roster = {
+        "expected": list(REVIEWERS),
+        "responded": responded,
+        "missing": missing_reasons,
+    }
+    # One line, no heredoc delimiter: reviewer-supplied reason text can carry
+    # newlines, and json.dumps escapes them, so the value cannot break out of
+    # the line-oriented $GITHUB_OUTPUT format or forge a second key.
+    payload = json.dumps(roster, separators=(",", ":"))
+    # Degrades to a ::warning the way _emit_partial_observability does. An
+    # unwritable or full $GITHUB_OUTPUT must not abort main before
+    # post_verdict runs: the PR would get a red required check and no
+    # comment saying why, and an annotation would have taken down the
+    # verdict it exists only to annotate -- which is also what the
+    # docstring above promises.
+    try:
+        with open(output_path, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"reviewer_roster={payload}\n")
+            fh.write(f"reviewers_expected_count={len(REVIEWERS)}\n")
+            fh.write(f"reviewers_responded_count={len(responded)}\n")
+    except OSError as e:
+        print(f"::warning::Failed to write GITHUB_OUTPUT: {e}", file=sys.stderr)
+
+
 def format_summary(
     reviews: dict[str, dict[str, Any] | None],
     verdict: str,
@@ -805,6 +1012,7 @@ def format_summary(
     *,
     comment_only: bool = False,
     approve_quorum: bool = True,
+    sequential_bypass: bool = False,
 ) -> str:
     """Build the headline as three independent axes (AT-2240).
 
@@ -815,6 +1023,13 @@ def format_summary(
     of the configured reviewers produced a verdict (coverage). Callers pass
     the same ``approve_quorum`` used for ``post_verdict`` so the headline
     can never describe a different outcome than the one actually posted.
+
+    ``sequential_bypass`` is passed for the same reason and forwarded to
+    ``_missing_reviewer_reasons``: sharing the helper only makes the prose
+    and the roster one rendering of one computation if both are told which
+    round this is. Without it a sequential early-exit round says
+    "skipped" on the comment about the same reviewers the roster is at
+    that moment reporting as gated off by that exit (AT-2511).
     """
     total = len(REVIEWERS)
     n_available = len(available)
@@ -863,15 +1078,29 @@ def format_summary(
     # reviewers that did produce a payload but reported status "failed" -- an
     # infrastructure failure has to be named on the headline too, not only in
     # that reviewer's section further down (AT-1837).
-    missing_notes: list[str] = []
-    for name in REVIEWERS:
-        review = reviews.get(name)
-        if review is None or "summary" not in review:
-            conclusion = (conclusions or {}).get(name, "")
-            if conclusion and conclusion != "skipped":
-                missing_notes.append(f"{name}: {_missing_reason(conclusion)}")
-        elif _normalize_status(name, review) == STATUS_FAILED:
-            missing_notes.append(f"{name}: {_failed_status_detail(review)}")
+    #
+    # Shared with the machine-readable roster (AT-2511): the headline shows a
+    # subset of the same reasons -- a reviewer that wrote no payload and was
+    # either skipped on purpose or reported no conclusion at all is not news
+    # here, but it is still absent, so the roster names it.
+    #
+    # One source, two renderings: FAILED_DETAIL_PREFIX namespaces the roster
+    # value a gate compares as a whole string, and nothing compares this
+    # prose, so it comes off at the rendering edge rather than being
+    # re-derived here. Left on, the detail's own wording doubles it --
+    # "claude: failed: reviewer reported status=failed".
+    missing_reasons = _missing_reviewer_reasons(
+        reviews,
+        available,
+        conclusions,
+        sequential_bypass=sequential_bypass,
+    )
+    missing_notes = [
+        f"{name}: {reason.removeprefix(FAILED_DETAIL_PREFIX)}"
+        for name, reason in missing_reasons.items()
+        if _has_payload(reviews.get(name))
+        or (conclusions or {}).get(name, "") not in _QUIET_CONCLUSIONS
+    ]
     reason_suffix = f" ({', '.join(missing_notes)})" if missing_notes else ""
 
     lines = [
@@ -908,8 +1137,12 @@ def format_summary(
         if review is None or "summary" not in review:
             err_msg = (review or {}).get("error", "")
             conclusion = (conclusions or {}).get(name, "")
+            # The same reason the headline and the roster carry, not a
+            # third derivation of it: on a benign round the conclusion-
+            # derived spelling would contradict both, two paragraphs apart
+            # in one comment.
             na_label = (
-                f"[ ] N/A -- {_missing_reason(conclusion)}" if conclusion else "[ ] N/A"
+                f"[ ] N/A -- {missing_reasons[name]}" if conclusion else "[ ] N/A"
             )
             lines += ["", f"### {name.title()} -- {na_label}"]
             if err_msg:
@@ -1227,6 +1460,17 @@ def main() -> None:
             f"Final verdict: none -- review skipped, {len(policy_skip)}"
             " policy-excluded file(s) only"
         )
+        # The only path that ends green having reached no reviewer, so the
+        # only one where a gate reads these counts -- and an absent output is
+        # an empty string, not a zero, to whatever comparison it feeds. The
+        # three paths above exit 1 and deliberately emit nothing: a red run
+        # already blocks on its conclusion, and a roster for a round that
+        # never ran would assert a coverage figure about this PR that no
+        # reviewer was ever asked to produce. On a superseded head that
+        # assertion would also be racing the live run's true one.
+        write_reviewer_roster(
+            {}, {name: POLICY_SKIP_ROSTER_REASON for name in REVIEWERS}
+        )
         # Success by decision (AT-2206): the consumer's own rule says the
         # content is not review material, and a failure would block merge on
         # a repository with no ruleset to override it. A neutral conclusion
@@ -1263,6 +1507,42 @@ def main() -> None:
     # Computed once so the headline and the posted event can never disagree
     # about whether every configured reviewer produced a verdict (AT-2240).
     approve_quorum = _has_full_reviewer_coverage(available)
+
+    review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
+    sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
+        available
+    )
+    # Every job exited 0 AND no reviewer wrote any artifact. Error-bearing
+    # fallback payloads disqualify the bypass -- provider failures must fail
+    # CI. It suppresses the sub-quorum exit below and nothing else: it is
+    # NOT a benign classification, and does not reach the roster. The same
+    # signature is what a credential outage produces
+    # (SEQUENTIAL_EARLY_EXIT_ROSTER_REASON's comment), and the aggregate is
+    # given nothing that separates the two, so the reasons say
+    # "early-exit or no-output" and a gate reading the reason table blocks
+    # on it even though this run stays green. Keeping the run green is the
+    # pre-existing behaviour on this path -- _check_insufficient already
+    # returns "approve" here -- and turning it red is a fleet decision
+    # across the pilot consumers and the wrapper's lockstep, not one to
+    # make as a side effect of naming the reason honestly.
+    no_artifact_bypass = (
+        _artifacts_entirely_absent(reviews)
+        and _all_reviewer_jobs_succeeded(len(REVIEWERS))
+        and verdict == "approve"
+    )
+    # Computed before the emit, not just before the exit check below, so the
+    # roster and the exit code read the same flags. A round sequential_bypass
+    # lets through ends green sub-quorum by design, and the reason string is
+    # the only place that can say so.
+    write_reviewer_roster(
+        available,
+        _missing_reviewer_reasons(
+            reviews,
+            available,
+            conclusions,
+            sequential_bypass=sequential_bypass,
+        ),
+    )
     comment = format_summary(
         reviews,
         verdict,
@@ -1271,6 +1551,7 @@ def main() -> None:
         conclusions,
         comment_only=comment_only,
         approve_quorum=approve_quorum,
+        sequential_bypass=sequential_bypass,
     )
     post_verdict(
         comment,
@@ -1280,22 +1561,10 @@ def main() -> None:
     )
     print(f"Final verdict: {verdict} -- {reason}")
 
-    review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
-    sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
-        available
-    )
-    # Parallel mode: all jobs succeeded AND no reviewer wrote any artifact
-    # (benign trivial-diff early-exit). Error-bearing fallback payloads
-    # disqualify the bypass -- provider failures must fail CI.
-    parallel_benign_bypass = (
-        _artifacts_entirely_absent(reviews)
-        and _all_reviewer_jobs_succeeded(len(REVIEWERS))
-        and verdict == "approve"
-    )
     if (
         len(available) < MIN_REVIEWERS_FOR_VERDICT
         and not sequential_bypass
-        and not parallel_benign_bypass
+        and not no_artifact_bypass
     ):
         print("ERROR: Insufficient LLM responses -- failing CI", file=sys.stderr)
         sys.exit(1)

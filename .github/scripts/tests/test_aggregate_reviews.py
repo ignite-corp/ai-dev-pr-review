@@ -35,9 +35,21 @@ from aggregate_reviews import (
     load_reviews,
     main,
     post_verdict,
+    FAILED_DETAIL_PREFIX,
     REVIEWER_NAMES,
 )
 from github_pr_support import REVIEW_MARKER, normalize_bot_login
+
+# The two reasons _check_insufficient can return when nothing is available.
+# Spelled out here rather than imported so a change to either prose breaks the
+# assertions that discriminate the paths instead of travelling with them.
+_INDETERMINATE_REASON = (
+    f"0/{len(REVIEWER_NAMES)} LLM responses -- all early-exit or no-output,"
+    " cause indeterminate"
+)
+_ALL_FAILED_REASON = (
+    f"0/{len(REVIEWER_NAMES)} LLM responses -- all failed, manual review required"
+)
 
 
 def _make_review(**overrides: Any) -> dict[str, Any]:
@@ -271,24 +283,25 @@ class TestAllEarlyExitBenign:
     def test_all_success_no_payload_approves(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # All REVIEWER_RESULT_* = "success", zero review files -> benign skip APPROVE.
+        # All REVIEWER_RESULT_* = "success", zero review files -> the
+        # indeterminate 0-response path.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         verdict, reason, _ = apply_verdict_rules(self._empty_reviews())
         assert verdict == "approve"
-        assert "benign skip" in reason
+        assert reason == _INDETERMINATE_REASON
 
     def test_one_failure_no_payload_returns_comment(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # One reviewer failed -> not benign -> comment verdict.
+        # One reviewer failed -> the indeterminate path must not fire.
         names = list(REVIEWER_NAMES)
         monkeypatch.setenv(f"REVIEWER_RESULT_{names[0].upper()}", "failure")
         for name in names[1:]:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         verdict, reason, _ = apply_verdict_rules(self._empty_reviews())
         assert verdict == "comment"
-        assert "benign skip" not in reason
+        assert reason == _ALL_FAILED_REASON
 
     def test_missing_env_var_not_benign(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Empty/missing env var means unknown conclusion -> not benign.
@@ -384,13 +397,12 @@ class TestErrorPayloadExclusion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Jobs conclude "success" (continue-on-error) but every reviewer wrote
-        # an error payload -> must NOT be treated as a benign skip.
+        # an error payload -> the indeterminate path must not fire.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         verdict, reason, _ = apply_verdict_rules(_error_payloads())
         assert verdict == "comment"
-        assert "all failed" in reason
-        assert "benign skip" not in reason
+        assert reason == _ALL_FAILED_REASON
 
 
 class TestNormalFullResponses:
@@ -443,7 +455,8 @@ class TestMainAllEarlyExitBenign:
     def test_main_all_early_exit_does_not_exit_nonzero(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # All REVIEWER_RESULT_* = "success", no review files -> benign skip -> exit 0.
+        # All REVIEWER_RESULT_* = "success", no review files -> the
+        # indeterminate 0-response path -> exit 0.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         monkeypatch.setenv("PR_NUMBER", "42")
@@ -940,15 +953,14 @@ class TestUnknownStatusFailClosed:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All jobs "success" but one artifact carries an unknown status:
-        # the payload exists, so the benign trivial-diff skip must not fire.
+        # the payload exists, so the indeterminate path must not fire.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         reviews[list(REVIEWER_NAMES)[0]] = _make_review(status="weird")
         verdict, reason, _ = apply_verdict_rules(reviews)
         assert verdict == "comment"
-        assert "benign skip" not in reason
-        assert "all failed" in reason
+        assert reason == _ALL_FAILED_REASON
 
 
 class TestMissingStatusFailClosed:
@@ -994,15 +1006,14 @@ class TestMissingStatusFailClosed:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All jobs "success" but one artifact omits status: the payload
-        # exists and fails closed, so the benign trivial-diff skip must not fire.
+        # exists and fails closed, so the indeterminate path must not fire.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         reviews[list(REVIEWER_NAMES)[0]] = _make_status_less_review()
         verdict, reason, _ = apply_verdict_rules(reviews)
         assert verdict == "comment"
-        assert "benign skip" not in reason
-        assert "all failed" in reason
+        assert reason == _ALL_FAILED_REASON
 
     def test_normalization_is_idempotent_and_stamped(self) -> None:
         review = _make_status_less_review()
@@ -1169,7 +1180,14 @@ class TestClaudeInfrastructureFailure:
         conclusions = {name: "success" for name in REVIEWER_NAMES}
         verdict, reason, available = apply_verdict_rules(reviews)
         summary = format_summary(reviews, verdict, reason, available, conclusions)
+        # The headline note and the roster share one derivation (AT-2511),
+        # but only the roster value is compared as a whole string, so the
+        # namespacing prefix that keeps reviewer-authored text from
+        # spelling a benign roster reason comes off for the prose -- left
+        # on it doubles the detail's own wording. The reviewer's own
+        # section states the detail unprefixed for the same reason.
         assert "claude: action_invocation_failed" in summary
+        assert f"claude: {FAILED_DETAIL_PREFIX}" not in summary
         assert "### Claude -- [ ] not run (action_invocation_failed)" in summary
         assert "issue(s)" not in summary.split("### Claude")[1].split("###")[0]
         assert "early-exit or no-output" not in summary
@@ -1221,15 +1239,15 @@ class TestClaudeInfrastructureFailure:
     def test_failed_payload_disqualifies_benign_skip(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Claude's error verdict is an artifact: all-jobs-success must not be
-        # read as a trivial-diff skip.
+        # Claude's error verdict is an artifact: all-jobs-success must not
+        # reach the indeterminate 0-response path.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         reviews["claude"] = self._claude_failed()
         verdict, reason, _ = apply_verdict_rules(reviews)
         assert verdict == "comment"
-        assert "benign skip" not in reason
+        assert reason == _ALL_FAILED_REASON
 
 
 class TestNotRunVsPartialVsClean:

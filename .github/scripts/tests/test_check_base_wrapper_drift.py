@@ -69,16 +69,19 @@ from check_base_wrapper_drift import (
     DriftConfig,
     Exceptions,
     MalformedConfigError,
+    OutputCorrespondence,
     StepCorrespondence,
     StepNotFoundError,
     check_env_keys,
     check_vars_consumed,
+    check_workflow_outputs,
     extract_vars_consumed,
     find_step_env_keys,
     load_correspondence,
     load_exceptions,
     run,
     steps_with_env,
+    workflow_call_outputs,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -432,6 +435,190 @@ def test_vars_check_wrapper_only_variable_is_informational(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# check_workflow_outputs: the AT-2511 shape -- a workflow_call output base
+# declares and the wrapper never does, which neither axis above can see
+# ---------------------------------------------------------------------------
+
+_ROSTER_KEYS = ("reviewer_roster", "reviewers_expected_count", "reviewers_responded_count")
+
+
+def _outputs_yml(*names: str) -> str:
+    """A reusable workflow declaring ``names`` under on.workflow_call.outputs."""
+    lines = ["on:", "  workflow_call:"]
+    if names:
+        lines.append("    outputs:")
+        for name in names:
+            lines.append(f"      {name}:")
+            lines.append(f"        value: ${{{{ jobs.j.outputs.{name} }}}}")
+    return "\n".join(lines) + "\njobs:\n  j:\n    steps: []\n"
+
+
+def _outputs_dirs(tmp_path: Path, base_text: str, wrapper_text: str) -> tuple[Path, Path]:
+    base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
+    base_dir.mkdir()
+    wrapper_dir.mkdir()
+    (base_dir / "base-ai-review-orchestrator.yml").write_text(base_text, encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(wrapper_text, encoding="utf-8")
+    return base_dir, wrapper_dir
+
+
+def _outputs_config(*entries: OutputCorrespondence) -> DriftConfig:
+    return DriftConfig(
+        base_files=("base-ai-review-orchestrator.yml",),
+        wrapper_files=("wrapper.yml",),
+        steps=(),
+        outputs=entries,
+    )
+
+
+_MAPPED_ORCHESTRATOR = OutputCorrespondence(
+    base_file="base-ai-review-orchestrator.yml", wrapper_files=("wrapper.yml",)
+)
+
+
+def test_workflow_call_outputs_reads_the_unquoted_on_key() -> None:
+    """`on:` is a YAML 1.1 boolean, so the parsed key is True, not "on".
+    Reading only the string spelling would report every workflow as
+    declaring nothing -- indistinguishable from a pass on this axis."""
+    doc = _parse(_outputs_yml(*_ROSTER_KEYS))
+    assert True in doc and "on" not in doc
+    assert workflow_call_outputs(doc) == set(_ROSTER_KEYS)
+
+
+def test_workflow_call_outputs_reads_the_quoted_on_key() -> None:
+    assert workflow_call_outputs(_parse('"on":\n  workflow_call:\n    outputs:\n      a: {value: x}\n')) == {"a"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "on:\n  pull_request:\n    branches: [main]\n",  # not callable at all
+        "on:\n  workflow_call:\n    inputs:\n      x: {type: string}\n",  # callable, no outputs
+        "jobs:\n  j:\n    steps: []\n",  # no trigger block
+    ],
+)
+def test_workflow_call_outputs_is_empty_when_there_is_no_contract(text: str) -> None:
+    assert workflow_call_outputs(_parse(text)) == set()
+
+
+def test_outputs_check_catches_the_at_2511_shape(tmp_path: Path) -> None:
+    """The finding the reviewer asked for: base declares the roster, the
+    wrapper declares nothing, and axes 1 and 2 stay silent because a
+    workflow output is neither an env key nor a vars.* token."""
+    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml(*_ROSTER_KEYS), _outputs_yml())
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), Exceptions.empty()
+    )
+    assert findings == [
+        f"outputs drift: base base-ai-review-orchestrator.yml declares workflow_call output "
+        f"{key!r}, which none of wrapper's ['wrapper.yml'] declare "
+        "(a caller's gate reads nothing on the wrapper path)"
+        for key in sorted(_ROSTER_KEYS)
+    ]
+    assert notes == []
+
+
+def test_outputs_check_passes_once_the_wrapper_declares_them(tmp_path: Path) -> None:
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml(*_ROSTER_KEYS), _outputs_yml(*_ROSTER_KEYS)
+    )
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), Exceptions.empty()
+    )
+    assert findings == []
+    assert notes == []
+
+
+def test_outputs_check_partial_port_still_names_the_missing_one(tmp_path: Path) -> None:
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml(*_ROSTER_KEYS), _outputs_yml("reviewer_roster")
+    )
+    findings, _ = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), Exceptions.empty()
+    )
+    assert len(findings) == 2
+    assert not any("'reviewer_roster'" in f for f in findings)
+
+
+def test_outputs_check_wrapper_only_output_is_not_a_finding(tmp_path: Path) -> None:
+    """Same direction as the other two axes: a wrapper-only output is
+    scaffolding its shape needs, not a swallowed base feature."""
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml("reviewer_roster", "wrapper_only")
+    )
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), Exceptions.empty()
+    )
+    assert findings == []
+    assert notes == []
+
+
+def test_outputs_check_excepted_key_is_noted_not_failed(tmp_path: Path) -> None:
+    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml())
+    exceptions = Exceptions(
+        vars={},
+        env={},
+        outputs={"base-ai-review-orchestrator.yml": {"reviewer_roster": "tracked in AT-9999"}},
+    )
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), exceptions
+    )
+    assert findings == []
+    assert notes == ["  outputs base-ai-review-orchestrator.yml key reviewer_roster: tracked in AT-9999"]
+
+
+def test_outputs_check_structural_exception_is_noted_not_failed(tmp_path: Path) -> None:
+    """prepare.yml's shape: outputs that exist only for the next job, which
+    the single-job wrapper has no surface to declare."""
+    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml("head_sha", "skip"), _outputs_yml())
+    entry = OutputCorrespondence(
+        base_file="base-ai-review-orchestrator.yml", wrapper_files=(), reason="inter-job plumbing"
+    )
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(entry), Exceptions.empty()
+    )
+    assert findings == []
+    assert notes == [
+        "  outputs base-ai-review-orchestrator.yml has no wrapper counterpart: inter-job plumbing"
+    ]
+
+
+def test_outputs_check_unmapped_base_file_is_a_finding(tmp_path: Path) -> None:
+    """Completeness, the same rule axis 1 applies to a new env-bearing step:
+    a base workflow that becomes callable with outputs must not be invisible
+    here the way a new output name used to be."""
+    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml())
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(), Exceptions.empty()
+    )
+    assert findings == [
+        "unmapped base outputs: base-ai-review-orchestrator.yml declares "
+        "on.workflow_call.outputs but has no entry under the correspondence's "
+        "'outputs' (map it to wrapper file(s), or declare it as having no "
+        "counterpart with a reason)"
+    ]
+    assert notes == []
+
+
+def test_outputs_check_base_file_declaring_nothing_needs_no_entry(tmp_path: Path) -> None:
+    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml(), _outputs_yml())
+    findings, notes = check_workflow_outputs(
+        base_dir, wrapper_dir, _outputs_config(), Exceptions.empty()
+    )
+    assert findings == []
+    assert notes == []
+
+
+def test_outputs_check_stale_base_file_name_raises(tmp_path: Path) -> None:
+    """A config naming a file that no longer exists must fail like a stale
+    step name, not compare against nothing."""
+    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml(), _outputs_yml())
+    entry = OutputCorrespondence(base_file="gone.yml", wrapper_files=("wrapper.yml",))
+    with pytest.raises(FileNotFoundError):
+        check_workflow_outputs(base_dir, wrapper_dir, _outputs_config(entry), Exceptions.empty())
+
+
+# ---------------------------------------------------------------------------
 # load_correspondence / load_exceptions: every escape hatch carries a reason
 # ---------------------------------------------------------------------------
 
@@ -547,6 +734,70 @@ def test_load_exceptions_env_entry_requires_a_reason(tmp_path: Path) -> None:
     path = tmp_path / "exceptions.yml"
     _write(path, "env:\n  a.yml:\n    One:\n      KEY: {}\n")
     with pytest.raises(MalformedConfigError):
+        load_exceptions(path)
+
+
+def test_load_correspondence_reads_mapped_and_structural_output_entries(tmp_path: Path) -> None:
+    path = tmp_path / "correspondence.yml"
+    _write(
+        path,
+        """\
+        base_files: [a.yml, b.yml]
+        wrapper_files: [wrapper.yml]
+        steps: []
+        outputs:
+          - base_file: a.yml
+            wrapper_files: [wrapper.yml]
+          - base_file: b.yml
+            wrapper_files: []
+            reason: inter-job plumbing only
+        """,
+    )
+    config = load_correspondence(path)
+    assert config.outputs == (
+        OutputCorrespondence(base_file="a.yml", wrapper_files=("wrapper.yml",)),
+        OutputCorrespondence(base_file="b.yml", wrapper_files=(), reason="inter-job plumbing only"),
+    )
+
+
+def test_load_correspondence_outputs_default_to_empty_when_absent(tmp_path: Path) -> None:
+    path = tmp_path / "correspondence.yml"
+    _write(path, "base_files: [a.yml]\nwrapper_files: [wrapper.yml]\nsteps: []\n")
+    assert load_correspondence(path).outputs == ()
+
+
+def test_load_correspondence_rejects_an_outputs_entry_missing_base_file(tmp_path: Path) -> None:
+    path = tmp_path / "correspondence.yml"
+    _write(path, "outputs:\n  - wrapper_files: [wrapper.yml]\n")
+    with pytest.raises(MalformedConfigError, match="missing 'base_file'"):
+        load_correspondence(path)
+
+
+def test_load_correspondence_rejects_an_unmapped_outputs_entry_without_reason(tmp_path: Path) -> None:
+    path = tmp_path / "correspondence.yml"
+    _write(path, "outputs:\n  - base_file: a.yml\n    wrapper_files: []\n")
+    with pytest.raises(MalformedConfigError, match="no wrapper_files and no reason"):
+        load_correspondence(path)
+
+
+def test_load_correspondence_rejects_a_blank_outputs_reason(tmp_path: Path) -> None:
+    path = tmp_path / "correspondence.yml"
+    _write(path, "outputs:\n  - base_file: a.yml\n    wrapper_files: []\n    reason: '   '\n")
+    with pytest.raises(MalformedConfigError, match="no wrapper_files and no reason"):
+        load_correspondence(path)
+
+
+def test_load_correspondence_rejects_a_reason_on_a_mapped_outputs_entry(tmp_path: Path) -> None:
+    path = tmp_path / "correspondence.yml"
+    _write(path, "outputs:\n  - base_file: a.yml\n    wrapper_files: [wrapper.yml]\n    reason: why\n")
+    with pytest.raises(MalformedConfigError, match="maps wrapper files and also carries"):
+        load_correspondence(path)
+
+
+def test_load_exceptions_outputs_entry_requires_a_reason(tmp_path: Path) -> None:
+    path = tmp_path / "exceptions.yml"
+    _write(path, "outputs:\n  a.yml:\n    reviewer_roster: {}\n")
+    with pytest.raises(MalformedConfigError, match="outputs a.yml reviewer_roster has no reason"):
         load_exceptions(path)
 
 
@@ -686,6 +937,46 @@ def test_run_exits_one_on_an_unparsable_config_file(tmp_path: Path, capsys) -> N
     assert "malformed drift-check config" in capsys.readouterr().out
 
 
+def _run_outputs_dirs(tmp_path: Path, *, wrapper_declares: bool) -> tuple[int, str]:
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path,
+        _outputs_yml(*_ROSTER_KEYS),
+        _outputs_yml(*_ROSTER_KEYS) if wrapper_declares else _outputs_yml(),
+    )
+    correspondence = tmp_path / "correspondence.yml"
+    _write(
+        correspondence,
+        """\
+        base_files: [base-ai-review-orchestrator.yml]
+        wrapper_files: [wrapper.yml]
+        steps: []
+        outputs:
+          - base_file: base-ai-review-orchestrator.yml
+            wrapper_files: [wrapper.yml]
+        """,
+    )
+    exceptions = tmp_path / "exceptions.yml"
+    exceptions.write_text("vars: {}\nenv: {}\noutputs: {}\n", encoding="utf-8")
+    return run(base_dir, wrapper_dir, correspondence, exceptions), str(correspondence)
+
+
+def test_run_exits_one_on_an_unported_workflow_output(tmp_path: Path, capsys) -> None:
+    code, _ = _run_outputs_dirs(tmp_path, wrapper_declares=False)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "DRIFT FOUND:" in out
+    assert "outputs drift" in out
+
+
+def test_run_exits_zero_once_the_output_is_ported(tmp_path: Path) -> None:
+    code, _ = _run_outputs_dirs(tmp_path, wrapper_declares=True)
+    assert code == 0
+
+
+def test_run_exits_one_on_a_malformed_outputs_exception(tmp_path: Path) -> None:
+    assert _run_dirs(tmp_path, with_round_cutoff=True, exceptions_text="outputs:\n  a.yml:\n    x: {}\n") == 1
+
+
 def test_run_exits_one_on_a_malformed_exceptions_file(tmp_path: Path) -> None:
     assert _run_dirs(tmp_path, with_round_cutoff=True, exceptions_text="vars:\n  SOMETHING: {}\nenv: {}\n") == 1
 
@@ -703,6 +994,7 @@ def test_live_correspondence_and_exceptions_are_well_formed() -> None:
     assert config.base_files
     assert config.wrapper_files
     assert config.steps
+    assert config.outputs
 
 
 def test_live_correspondence_maps_every_env_bearing_base_step() -> None:
@@ -729,6 +1021,56 @@ def test_live_exceptions_name_only_mapped_steps() -> None:
     config = load_correspondence(LIVE_CORRESPONDENCE)
     mapped = {entry.key for entry in config.steps if not entry.has_no_counterpart}
     assert set(load_exceptions(LIVE_EXCEPTIONS).env) <= mapped
+
+
+def test_live_correspondence_maps_every_output_bearing_base_file() -> None:
+    """Axis 3's completeness against this repo's own tree: a base workflow
+    that declares workflow_call outputs and is not in the correspondence
+    would be excluded from the comparison silently."""
+    config = load_correspondence(LIVE_CORRESPONDENCE)
+    mapped = {entry.base_file for entry in config.outputs}
+    unmapped = [
+        base_file
+        for base_file in config.base_files
+        if workflow_call_outputs(_load_yaml(LIVE_WORKFLOWS / base_file)) and base_file not in mapped
+    ]
+    assert unmapped == [], "add an 'outputs' correspondence entry (or a no-counterpart reason) for each"
+
+
+def test_live_outputs_correspondence_names_only_existing_base_files() -> None:
+    config = load_correspondence(LIVE_CORRESPONDENCE)
+    for entry in config.outputs:
+        assert (LIVE_WORKFLOWS / entry.base_file).exists(), entry.base_file
+
+
+def test_live_outputs_exceptions_name_only_mapped_files() -> None:
+    """Same rule as the env exceptions: an entry for a file the
+    correspondence does not map would never be consulted."""
+    config = load_correspondence(LIVE_CORRESPONDENCE)
+    mapped = {entry.base_file for entry in config.outputs if not entry.has_no_counterpart}
+    assert set(load_exceptions(LIVE_EXCEPTIONS).outputs) <= mapped
+
+
+def test_live_roster_outputs_are_on_the_axis(tmp_path: Path) -> None:
+    """The AT-2511 outputs must actually be compared, not merely declared.
+    Run the live config's axis 3 against a wrapper that declares nothing --
+    the shape the real wrapper is in -- and require every roster name to be
+    reported. Written against the live workflow files so that removing the
+    orchestrator's re-export, or dropping its correspondence entry, is what
+    fails here."""
+    wrapper_dir = tmp_path / "wrapper"
+    wrapper_dir.mkdir()
+    (wrapper_dir / "wrapper.yml").write_text(
+        "on:\n  workflow_call:\n    inputs:\n      pr_number: {type: string}\njobs:\n  review:\n    steps: []\n",
+        encoding="utf-8",
+    )
+    findings, _ = check_workflow_outputs(
+        LIVE_WORKFLOWS, wrapper_dir, load_correspondence(LIVE_CORRESPONDENCE), load_exceptions(LIVE_EXCEPTIONS)
+    )
+    for key in _ROSTER_KEYS:
+        assert any(f"base-ai-review-orchestrator.yml declares workflow_call output {key!r}" in f for f in findings), (
+            f"{key} is declared on the orchestrator but axis 3 does not compare it"
+        )
 
 
 # ---------------------------------------------------------------------------
