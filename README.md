@@ -219,6 +219,74 @@ All workflows accept `workflow_call` inputs:
 
 The `single` and `aggregate` workflows additionally accept reviewer-routing inputs (`reviewer`, `claude_result`, `codex_result`, `gemini_result`) but consumers do not invoke them directly — the orchestrator wires them.
 
+## Output contract reference
+
+`base-ai-review-orchestrator.yml` — the workflow a thin trigger calls — returns three `workflow_call` outputs. They exist because the job's conclusion is `success` whether every reviewer produced a verdict or one of three did, so a merge gate reading the conclusion alone cannot see a degraded round.
+
+| Output | Type | Notes |
+|---|---|---|
+| `reviewer_roster` | string (JSON) | `{"expected": [...], "responded": [...], "missing": {"<name>": "<reason>"}}`. `expected` lists every configured reviewer, `responded` the ones that produced a usable verdict, `missing` the rest with one reason each. `responded` and `missing` partition `expected`. |
+| `reviewers_expected_count` | string | `expected`'s length. |
+| `reviewers_responded_count` | string | `responded`'s length. |
+
+`base-ai-review-aggregate.yml` declares the same three; consumers read them from the orchestrator.
+
+**A sub-quorum count is not by itself a problem.** Two green paths legitimately end with `reviewers_responded_count < reviewers_expected_count`, so a gate must read the `missing` reasons rather than compare the counts alone:
+
+| `missing` reason | Meaning | Benign? |
+|---|---|---|
+| `skipped (sequential early exit)` | `REVIEW_MODE=sequential` and an earlier reviewer early-exited. Read it as "the round early-exited and this reviewer's job reported `skipped`", not as proof the early exit is why: the aggregate sees job conclusions only, so on such a round a reviewer the caller excluded for its own reasons is reported the same way. The orchestrator in this repository dispatches all three reviewers in sequential mode, so there the two cannot differ; a caller that reimplements the chain can make them. | Yes |
+| `skipped (policy)` | Every changed file was excluded by `.github/lens-ignore`, so no round ran at all. | Yes |
+| `skipped` | The reviewer's job was skipped without one of the causes above — a `REVIEW_MODE` exclusion, or a job that never ran. The aggregate cannot tell those apart from a job conclusion. | Ambiguous |
+| `early-exit or no-output` | The job exited 0 but uploaded no verdict artifact. This is **not** read as a benign skip, in particular not when every reviewer reports it: the reviewer step is `continue-on-error`, so a reviewer whose CLI or action dies on a missing or bad credential reports `success` with nothing uploaded, and the aggregate sees the same two facts either way. Nor is there a trivial-diff round behind it to protect — every "nothing to review" state is decided before the reviewers run (an empty diff fails `prepare`, a size skip ends red, and an all-excluded diff reports `skipped (policy)`), and the reviewer prompt requires a verdict file even for an early exit. | No |
+| `failed (see logs)`, `cancelled`, `no verdict (unknown)` | The job did not complete. | No |
+| `failed: <detail>` | The reviewer's own failure detail, taken from its payload. The `failed: ` prefix is unconditional and no benign reason carries it, so payload text — which is LLM-authored over PR content — can never spell a benign reason whole and pass the gate below. | No |
+
+Gate snippet — block a merge when a reviewer is missing for a reason that is not benign:
+
+```yaml
+jobs:
+  review:
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
+    secrets: inherit
+
+  gate:
+    needs: review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require full reviewer coverage
+        env:
+          ROSTER: ${{ needs.review.outputs.reviewer_roster }}
+          RESPONDED: ${{ needs.review.outputs.reviewers_responded_count }}
+          EXPECTED: ${{ needs.review.outputs.reviewers_expected_count }}
+        run: |
+          echo "$RESPONDED/$EXPECTED reviewers responded"
+          # Fail closed on an absent output, before any comparison: two empty
+          # strings are equal, so a gate that compared first would read lost
+          # coverage as full coverage. See the note below this block.
+          [ -n "$ROSTER" ] && [ -n "$EXPECTED" ] && [ -n "$RESPONDED" ] \
+            || { echo "::error::reviewer roster output is missing"; exit 1; }
+          [ "$RESPONDED" = "$EXPECTED" ] && exit 0
+          # Compared as whole strings, not matched as patterns: every benign
+          # reason carries parentheses, which a regex would read as groups.
+          echo "$ROSTER" | jq -e '
+            ["skipped (sequential early exit)",
+             "skipped (policy)"] as $benign
+            | all(.missing[]; . as $r | $benign | index($r) != null)
+          ' >/dev/null \
+            || { echo "::error::a reviewer is missing for a non-benign reason"; exit 1; }
+```
+
+**`reviewer_roster` is untrusted input: read it through `env:`, never through `${{ ... }}` in a `run:` body.** A `failed: <detail>` reason carries text an LLM wrote over the PR's own content, so anyone who can open a PR can influence it. The snippet binds the output to `ROSTER` and quotes `"$ROSTER"`; interpolating `${{ needs.review.outputs.reviewer_roster }}` into the `run:` body instead is an expression-injection sink in the consumer's own workflow, because the text is substituted into the script before the shell ever parses it — no quoting downstream can undo that. The two counts are integers this repository computes, not payload text, so they carry no such risk; the snippet reads them through `env:` anyway, which costs nothing and leaves one rule for all three.
+
+**A green run can fail this gate, and the 0/3 round is the case to expect.** When every reviewer reports `early-exit or no-output` the aggregate still posts an approve verdict and the run stays green — that is pre-existing behaviour, unchanged here — but the roster reports three non-benign reasons and the snippet blocks. Treat it as an outage to look into (start with the reviewer jobs' logs and the provider credentials), not as a gate to relax: the state is indistinguishable from a credential outage, so adding the reason to `$benign` would merge on one.
+
+The snippet takes the strict reading of the ambiguous row and blocks on a bare `skipped`. A consumer that deliberately excludes a reviewer — `REVIEW_MODE` routing, a reviewer whose job is gated off by its own `if:` — should add `"skipped"` to `$benign`, accepting that it can no longer tell that case from a job that never ran.
+
+All three are emitted on every path that ends green, the policy skip included — there `reviewers_responded_count` is an explicit `0`, not an empty string. One green path is the exception, and the snippet's emptiness guard is there for it: when `$GITHUB_OUTPUT` is unset or cannot be written, the aggregate reports a `::warning::` and goes on to post the verdict rather than failing the round, so a green run can reach a gate with all three absent. An absent output reads as an empty string rather than `0`, and empty is unknown coverage, never full coverage — which is why the guard runs before the comparison rather than after it.
+
+The paths that end red before reaching a reviewer — the head was superseded, prepare failed, the PR exceeded `PR_SIZE_LIMIT` — emit nothing at all, deliberately: a roster for a round that never ran would assert a coverage figure about the PR that nothing measured. A gate does not have to handle those separately: the runs are red, so a `needs:` gate never runs.
+
 ## Runtime configuration via `vars.*`
 
 These tune behavior without code changes. Set them under repository or organization `Settings -> Secrets and variables -> Actions -> Variables`.

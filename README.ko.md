@@ -208,6 +208,74 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 `single`과 `aggregate` 워크플로우는 추가로 리뷰어 라우팅 입력(`reviewer`, `claude_result`, `codex_result`, `gemini_result`)을 받지만, 소비자가 직접 호출하지 않습니다 — orchestrator가 연결합니다.
 
+## 출력 계약 레퍼런스
+
+thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml`은 `workflow_call` 출력 세 개를 반환합니다. 잡의 conclusion은 리뷰어 전원이 판정을 냈든 셋 중 하나만 냈든 똑같이 `success`이므로, conclusion만 읽는 머지 게이트는 퇴화한(degraded) 라운드를 볼 수 없습니다. 이 출력들은 그 사실을 게이트가 읽을 수 있는 형태로 내보냅니다.
+
+| 출력 | 타입 | 비고 |
+|---|---|---|
+| `reviewer_roster` | string (JSON) | `{"expected": [...], "responded": [...], "missing": {"<name>": "<reason>"}}`. `expected`는 구성된 전체 리뷰어, `responded`는 쓸 수 있는 판정을 낸 리뷰어, `missing`은 나머지와 각각의 사유 하나씩. `responded`와 `missing`은 `expected`를 분할합니다. |
+| `reviewers_expected_count` | string | `expected`의 길이. |
+| `reviewers_responded_count` | string | `responded`의 길이. |
+
+`base-ai-review-aggregate.yml`도 같은 세 개를 선언하지만, 소비자는 orchestrator에서 읽습니다.
+
+**응답 수가 정족수에 못 미친다는 것 자체는 문제가 아닙니다.** 정상적으로 `reviewers_responded_count < reviewers_expected_count`로 끝나는 초록색 경로가 둘 있으므로, 게이트는 숫자만 비교하지 말고 `missing`의 사유를 읽어야 합니다:
+
+| `missing` 사유 | 의미 | 정상? |
+|---|---|---|
+| `skipped (sequential early exit)` | `REVIEW_MODE=sequential`에서 앞선 리뷰어가 조기 종료함. "그 조기 종료 때문에 차단됐다"는 증명이 아니라 "라운드가 조기 종료했고 이 리뷰어의 잡이 `skipped`를 보고했다"로 읽어야 합니다: aggregate는 잡 conclusion만 보므로, 그런 라운드에서는 호출자가 자체 사유로 제외한 리뷰어도 똑같이 보고됩니다. 이 레포의 오케스트레이터는 sequential 모드에서 세 리뷰어를 모두 디스패치하므로 거기서는 둘이 갈릴 수 없고, 체인을 자체 구현한 호출자에서는 갈릴 수 있습니다. | 예 |
+| `skipped (policy)` | 변경 파일 전부가 `.github/lens-ignore`로 제외되어 라운드 자체가 돌지 않음. | 예 |
+| `skipped` | 위 사유가 아닌 이유로 리뷰어 잡이 건너뛰어짐 — `REVIEW_MODE` 제외이거나, 아예 실행되지 않은 잡. aggregate는 잡 conclusion만으로 둘을 구분할 수 없습니다. | 모호함 |
+| `early-exit or no-output` | 잡은 0으로 끝났지만 판정 아티팩트를 올리지 않음. 이것은 정상 스킵으로 **읽지 않으며**, 특히 리뷰어 전원이 이 사유일 때도 그렇습니다: 리뷰 스텝이 `continue-on-error`라서, 자격증명이 없거나 잘못되어 CLI/액션이 죽은 리뷰어도 아무것도 올리지 않은 채 `success`를 보고하고, aggregate가 보는 두 사실은 어느 쪽이든 같습니다. 이 사유 뒤에 보호해야 할 사소한-diff 라운드가 있는 것도 아닙니다 — "리뷰할 것이 없음"에 해당하는 상태는 모두 리뷰어 실행 전에 결정되며(빈 diff는 `prepare`가 실패시키고, 크기 스킵은 빨간색으로 끝나고, 전부 제외된 diff는 `skipped (policy)`로 보고됩니다), 리뷰어 프롬프트는 조기 종료 시에도 판정 파일을 요구합니다. | 아니오 |
+| `failed (see logs)`, `cancelled`, `no verdict (unknown)` | 잡이 완료되지 못함. | 아니오 |
+| `failed: <상세>` | 리뷰어 페이로드에서 가져온 리뷰어 자신의 실패 상세. `failed: ` 접두사는 무조건 붙고 정상 사유 중에는 이 접두사로 시작하는 것이 없으므로, PR 내용을 바탕으로 LLM이 쓴 페이로드 텍스트가 정상 사유를 통째로 흉내 내 아래 게이트를 통과하는 일은 불가능합니다. | 아니오 |
+
+게이트 예시 — 정상 사유가 아닌 이유로 리뷰어가 빠졌을 때 머지를 막습니다:
+
+```yaml
+jobs:
+  review:
+    uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
+    secrets: inherit
+
+  gate:
+    needs: review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require full reviewer coverage
+        env:
+          ROSTER: ${{ needs.review.outputs.reviewer_roster }}
+          RESPONDED: ${{ needs.review.outputs.reviewers_responded_count }}
+          EXPECTED: ${{ needs.review.outputs.reviewers_expected_count }}
+        run: |
+          echo "$RESPONDED/$EXPECTED reviewers responded"
+          # 비교보다 먼저, 출력이 없으면 닫히는 쪽으로 실패시킵니다: 빈 문자열
+          # 둘은 서로 같으므로, 먼저 비교하는 게이트는 사라진 커버리지를 완전한
+          # 커버리지로 읽습니다. 이 블록 아래 설명을 참조하세요.
+          [ -n "$ROSTER" ] && [ -n "$EXPECTED" ] && [ -n "$RESPONDED" ] \
+            || { echo "::error::reviewer roster output is missing"; exit 1; }
+          [ "$RESPONDED" = "$EXPECTED" ] && exit 0
+          # 패턴 매칭이 아니라 문자열 전체 비교: 정상 사유에는 모두 괄호가
+          # 들어 있어 정규식으로 읽으면 그룹으로 해석됩니다.
+          echo "$ROSTER" | jq -e '
+            ["skipped (sequential early exit)",
+             "skipped (policy)"] as $benign
+            | all(.missing[]; . as $r | $benign | index($r) != null)
+          ' >/dev/null \
+            || { echo "::error::a reviewer is missing for a non-benign reason"; exit 1; }
+```
+
+**`reviewer_roster`는 신뢰할 수 없는 입력입니다. `env:`로 받아서 읽고, `run:` 본문에 `${{ ... }}`로 직접 끼워 넣지 마세요.** `failed: <상세>` 사유에는 LLM이 PR 내용을 보고 쓴 텍스트가 실리므로, PR을 열 수 있는 사람이면 누구나 그 값에 영향을 줄 수 있습니다. 위 예시는 출력을 `ROSTER`에 바인딩하고 `"$ROSTER"`로 인용합니다. 대신 `${{ needs.review.outputs.reviewer_roster }}`를 `run:` 본문에 끼워 넣으면 소비자 자신의 워크플로우에 표현식 인젝션 통로가 생깁니다 — 셸이 스크립트를 파싱하기도 전에 그 텍스트가 스크립트 안으로 치환되어 들어가므로, 뒤에서 아무리 인용해도 되돌릴 수 없습니다. 나머지 두 출력은 이 레포가 세는 정수이지 페이로드 텍스트가 아니라 같은 위험이 없지만, 위 예시는 그것들도 `env:`로 받습니다 — 비용이 들지 않고 세 출력에 같은 규칙 하나만 남기는 쪽이기 때문입니다.
+
+**초록색으로 끝난 런도 이 게이트에서 막힐 수 있으며, 0/3 라운드가 바로 그 경우입니다.** 리뷰어 전원이 `early-exit or no-output`을 보고하면 취합 단계는 여전히 approve 판정을 게시하고 런은 초록색으로 끝나지만(이 동작은 기존 그대로이며 여기서 바뀌지 않았습니다), 로스터에는 정상이 아닌 사유 세 개가 담기고 위 예시는 막습니다. 게이트를 느슨하게 할 일이 아니라 장애로 보고 확인해야 합니다(리뷰어 잡 로그와 프로바이더 자격증명부터): 이 상태는 자격증명 장애와 구분되지 않으므로, 해당 사유를 `$benign`에 넣는 것은 곧 장애 위에서 머지하는 것입니다.
+
+이 예시는 모호한 행을 엄격하게 읽어 맨 `skipped`에서 막습니다. 리뷰어를 의도적으로 제외하는 소비자(`REVIEW_MODE` 라우팅, 자체 `if:`로 잡을 차단하는 경우)는 `$benign`에 `"skipped"`를 추가하되, 그 순간부터 실행되지 않은 잡과 구분할 수 없게 된다는 점을 받아들여야 합니다.
+
+세 출력 모두 초록색으로 끝나는 모든 경로에서 나오며, 정책 스킵도 포함입니다 — 그 경우 `reviewers_responded_count`는 빈 문자열이 아니라 명시적인 `0`입니다. 초록색 경로 중 하나는 예외이고, 위 예시의 빈 값 가드는 그것 때문에 있습니다: `$GITHUB_OUTPUT`이 설정되지 않았거나 쓸 수 없을 때 취합 단계는 `::warning::`만 남기고 라운드를 실패시키는 대신 판정 게시로 넘어가므로, 세 출력이 모두 없는 채로 초록색으로 끝난 런이 게이트에 닿을 수 있습니다. 없는 출력은 `0`이 아니라 빈 문자열로 읽히고, 빈 값은 커버리지를 모른다는 뜻이지 완전하다는 뜻이 결코 아닙니다 — 가드가 비교 뒤가 아니라 앞에 오는 이유입니다.
+
+리뷰어에 닿기 전에 빨간색으로 끝나는 경로(head가 밀려난 경우, prepare 실패, `PR_SIZE_LIMIT` 초과)는 의도적으로 아무것도 내보내지 않습니다: 돌지도 않은 라운드의 로스터는 아무도 측정하지 않은 커버리지 수치를 그 PR에 대해 주장하는 셈이기 때문입니다. 이 경로들은 게이트가 따로 처리할 필요가 없습니다: 해당 런은 빨간색이라 `needs:` 게이트가 아예 실행되지 않습니다.
+
 ## `vars.*`를 통한 런타임 구성
 
 코드 변경 없이 동작을 조정합니다. 레포 또는 조직의 `Settings -> Secrets and variables -> Actions -> Variables`에서 설정하세요.

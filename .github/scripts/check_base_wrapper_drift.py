@@ -44,6 +44,25 @@ surrounding YAML is shaped:
    a wrapper-only `vars.*` is not a swallowed base feature and is left as an
    informational note, not a failure.
 
+3. `on.workflow_call.outputs` key set per corresponding workflow file. A
+   reusable workflow's outputs are its machine-readable contract with a
+   caller -- a merge gate reads them -- and they are neither an env key nor
+   a `vars.*` token, so axes 1 and 2 are blind to one. AT-2511 added
+   `reviewer_roster` / `reviewers_expected_count` /
+   `reviewers_responded_count` to base and the wrapper could have gone on
+   lacking them indefinitely with this check green: the same silent gap
+   AT-2120 was, one contract surface over.
+
+   Like axis 1 this is a correspondence, not a flat set diff, because
+   base's four workflows do not map one-to-one onto wrapper's single file:
+   `base-ai-review-prepare.yml` and `base-ai-review-single.yml` declare
+   outputs only to hand values to the next *job*, and the single-job
+   wrapper has no inter-job hop to declare them on. Those are structural
+   exceptions stated once, rather than one per output name. The union of
+   the mapped wrapper files' outputs must cover the base file's, the same
+   direction and for the same reason as axis 1: a wrapper-only output is
+   not a swallowed base feature.
+
 Rejected alternatives:
 
 * Line-level or normalised-text diff of the two files. Rejected for the
@@ -53,6 +72,11 @@ Rejected alternatives:
   splits one base step into three reviewer-specific ones and may legitimately
   carry a key in only the step that needs it; requiring every wrapper step to
   carry every base key would flag that split as drift.
+* A flat base-vs-wrapper union diff of output names, mirroring axis 2.
+  Rejected: it would need one exception entry per output name that never
+  reaches wrapper -- ten today, nine of them repeating the one fact that
+  prepare's and single's outputs are inter-job plumbing the single-job
+  wrapper has no place for. The correspondence states that fact once.
 * Exact env-key set equality. Rejected: wrapper-only keys (for example
   `CODEX_AUTH_OUTCOME` in its verdict-synthesis step) are scaffolding that
   the single-job shape needs and base does not; only the base-has/wrapper-
@@ -70,10 +94,12 @@ are a separate channel from `env:` and are left for a later axis.
 Escape hatches, both requiring a stated reason:
 
 * Structural: a base step with no wrapper counterpart is listed in the
-  correspondence with an empty `wrapper_steps` and a non-empty `reason`.
-* Per key / per variable: an env key, or a `vars.*` name, that deliberately
-  never reaches wrapper is listed in the exceptions file with a non-empty
-  `reason`.
+  correspondence with an empty `wrapper_steps` and a non-empty `reason`;
+  a base *file* whose whole `workflow_call` output surface has none is
+  listed the same way under `outputs:`, with an empty `wrapper_files`.
+* Per key / per variable: an env key, a `vars.*` name, or a
+  `workflow_call` output name that deliberately never reaches wrapper is
+  listed in the exceptions file with a non-empty `reason`.
 
 An entry with a blank reason is malformed and fails the check on its own,
 the same way an unexplained gap does -- a documented exception that excuses
@@ -96,8 +122,9 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from re import compile as re_compile
 from typing import Any
@@ -148,12 +175,35 @@ class StepCorrespondence:
 
 
 @dataclass(frozen=True)
+class OutputCorrespondence:
+    """Which wrapper file(s) carry a base file's ``workflow_call`` outputs.
+
+    The axis-3 analogue of ``StepCorrespondence``: ``wrapper_files`` empty
+    with a ``reason`` is the structural escape hatch for a base file whose
+    whole output surface is inter-job plumbing the wrapper has no place for.
+    """
+
+    base_file: str
+    wrapper_files: tuple[str, ...]
+    reason: str = ""
+
+    @property
+    def label(self) -> str:
+        return self.base_file
+
+    @property
+    def has_no_counterpart(self) -> bool:
+        return not self.wrapper_files
+
+
+@dataclass(frozen=True)
 class DriftConfig:
     """The correspondence file: which files to read and how their steps map."""
 
     base_files: tuple[str, ...]
     wrapper_files: tuple[str, ...]
     steps: tuple[StepCorrespondence, ...]
+    outputs: tuple[OutputCorrespondence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -161,15 +211,17 @@ class Exceptions:
     """The exceptions file, with every reason already validated non-empty.
 
     ``vars`` maps a ``vars.*`` name to its reason. ``env`` maps
-    ``(base_file, base_step)`` to ``{env key: reason}``.
+    ``(base_file, base_step)`` to ``{env key: reason}``. ``outputs`` maps
+    ``base_file`` to ``{workflow_call output name: reason}``.
     """
 
     vars: dict[str, str]
     env: dict[tuple[str, str], dict[str, str]]
+    outputs: dict[str, dict[str, str]] = dataclass_field(default_factory=dict)
 
     @classmethod
     def empty(cls) -> Exceptions:
-        return cls(vars={}, env={})
+        return cls(vars={}, env={}, outputs={})
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -231,6 +283,36 @@ def steps_with_env(doc: dict[str, Any]) -> list[str | None]:
     cannot be mapped by name, so the completeness check reports it.
     """
     return [step.get("name") for step in _iter_steps(doc) if _env_keys(step)]
+
+
+def workflow_call_outputs(doc: dict[Any, Any]) -> set[str]:
+    """Key names declared under ``on.workflow_call.outputs``.
+
+    Annotated ``dict[Any, Any]`` rather than ``dict[str, Any]`` because the
+    key this reads is genuinely not a string; see below.
+
+    ``on:`` is a YAML 1.1 boolean, so ``yaml.safe_load`` gives the trigger
+    block the key ``True``, not the string ``"on"``. Both spellings are
+    read: a file quoted as ``"on":`` parses to the string, and reading only
+    one of them would silently report every workflow as declaring nothing,
+    which on this axis looks exactly like a pass.
+
+    A workflow that is not callable, or that declares no outputs, has an
+    empty set -- there is no contract to port.
+    """
+    trigger: Any = None
+    for key in (True, "on"):
+        candidate = doc.get(key)
+        if isinstance(candidate, dict):
+            trigger = candidate
+            break
+    if trigger is None:
+        return set()
+    call = trigger.get("workflow_call")
+    if not isinstance(call, dict):
+        return set()
+    outputs = call.get("outputs")
+    return set(outputs.keys()) if isinstance(outputs, dict) else set()
 
 
 def extract_vars_consumed(node: Any) -> set[str]:
@@ -302,7 +384,41 @@ def load_correspondence(path: Path) -> DriftConfig:
         base_files=tuple(str(name) for name in doc.get("base_files") or []),
         wrapper_files=tuple(str(name) for name in doc.get("wrapper_files") or []),
         steps=tuple(steps),
+        outputs=_load_output_correspondence(doc),
     )
+
+
+def _load_output_correspondence(doc: dict[str, Any]) -> tuple[OutputCorrespondence, ...]:
+    """Parse the ``outputs:`` section, with axis 1's reason rules.
+
+    A file with no wrapper counterpart needs a reason; one that maps
+    wrapper files must not carry a reason, because there is nothing for it
+    to excuse.
+    """
+    entries: list[OutputCorrespondence] = []
+    for index, raw in enumerate(doc.get("outputs") or []):
+        if not isinstance(raw, dict):
+            raise MalformedConfigError(f"outputs correspondence entry {index} is not a mapping")
+        if not str(raw.get("base_file") or "").strip():
+            raise MalformedConfigError(
+                f"outputs correspondence entry {index} is missing 'base_file'"
+            )
+        entry = OutputCorrespondence(
+            base_file=str(raw["base_file"]),
+            wrapper_files=tuple(str(name) for name in raw.get("wrapper_files") or []),
+            reason=_reason(raw),
+        )
+        if entry.has_no_counterpart and not entry.reason:
+            raise MalformedConfigError(
+                f"outputs correspondence {entry.label} has no wrapper_files and no reason"
+            )
+        if not entry.has_no_counterpart and entry.reason:
+            raise MalformedConfigError(
+                f"outputs correspondence {entry.label} maps wrapper files and also carries "
+                "a reason; a reason is only for a file with no counterpart"
+            )
+        entries.append(entry)
+    return tuple(entries)
 
 
 def load_exceptions(path: Path) -> Exceptions:
@@ -331,7 +447,36 @@ def load_exceptions(path: Path) -> Exceptions:
                     raise MalformedConfigError(f"env {base_file}:{base_step!r} {key} has no reason")
                 reasons[str(key)] = reason
             env_exceptions[(str(base_file), str(base_step))] = reasons
-    return Exceptions(vars=vars_exceptions, env=env_exceptions)
+    output_exceptions: dict[str, dict[str, str]] = {}
+    for base_file, by_key in (doc.get("outputs") or {}).items():
+        reasons = {}
+        for key, entry in (by_key or {}).items():
+            reason = _reason(entry)
+            if not reason:
+                raise MalformedConfigError(f"outputs {base_file} {key} has no reason")
+            reasons[str(key)] = reason
+        output_exceptions[str(base_file)] = reasons
+    return Exceptions(vars=vars_exceptions, env=env_exceptions, outputs=output_exceptions)
+
+
+def _base_docs(
+    base_dir: Path,
+    config: DriftConfig,
+    extra: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    """Parse every base workflow an axis compares, keyed by file name.
+
+    Seeded from ``config.base_files`` -- the completeness sweep each axis
+    runs needs all of them -- and extended with any file a correspondence
+    entry names that the config does not list, so a stale or narrower
+    ``base_files`` cannot make an entry unreadable. Shared because both
+    axes need exactly this set and had written it out separately.
+    """
+    docs = {name: _load_yaml(base_dir / name) for name in config.base_files}
+    for name in extra:
+        if name not in docs:
+            docs[name] = _load_yaml(base_dir / name)
+    return docs
 
 
 def check_env_keys(
@@ -347,10 +492,7 @@ def check_env_keys(
     """
     findings: list[str] = []
     notes: list[str] = []
-    base_docs = {name: _load_yaml(base_dir / name) for name in config.base_files}
-    for entry in config.steps:
-        if entry.base_file not in base_docs:
-            base_docs[entry.base_file] = _load_yaml(base_dir / entry.base_file)
+    base_docs = _base_docs(base_dir, config, (e.base_file for e in config.steps))
 
     mapped = {entry.key for entry in config.steps}
     for base_file in config.base_files:
@@ -387,6 +529,56 @@ def check_env_keys(
                 findings.append(
                     f"env drift: base step {entry.label} sets {key!r}, which none of "
                     f"wrapper's {list(entry.wrapper_steps)} ({entry.wrapper_file}) set"
+                )
+    return findings, notes
+
+
+def check_workflow_outputs(
+    base_dir: Path,
+    wrapper_dir: Path,
+    config: DriftConfig,
+    exceptions: Exceptions,
+) -> tuple[list[str], list[str]]:
+    """Returns (findings, acknowledged-exception notes) for axis 3.
+
+    Completeness is enforced the way axis 1 enforces it: a base file that
+    declares ``workflow_call`` outputs and has no correspondence entry is a
+    finding, so a newly callable base workflow cannot be invisible here in
+    the same way a new output name used to be.
+    """
+    findings: list[str] = []
+    notes: list[str] = []
+    base_docs = _base_docs(base_dir, config, (e.base_file for e in config.outputs))
+
+    mapped = {entry.base_file for entry in config.outputs}
+    for base_file in config.base_files:
+        if workflow_call_outputs(base_docs[base_file]) and base_file not in mapped:
+            findings.append(
+                f"unmapped base outputs: {base_file} declares on.workflow_call.outputs "
+                "but has no entry under the correspondence's 'outputs' (map it to wrapper "
+                "file(s), or declare it as having no counterpart with a reason)"
+            )
+
+    wrapper_docs: dict[str, dict[str, Any]] = {}
+    for entry in config.outputs:
+        base_keys = workflow_call_outputs(base_docs[entry.base_file])
+        if entry.has_no_counterpart:
+            notes.append(f"  outputs {entry.label} has no wrapper counterpart: {entry.reason}")
+            continue
+        wrapper_union: set[str] = set()
+        for name in entry.wrapper_files:
+            if name not in wrapper_docs:
+                wrapper_docs[name] = _load_yaml(wrapper_dir / name)
+            wrapper_union |= workflow_call_outputs(wrapper_docs[name])
+        allowed = exceptions.outputs.get(entry.base_file, {})
+        for key in sorted(base_keys - wrapper_union):
+            if key in allowed:
+                notes.append(f"  outputs {entry.label} key {key}: {allowed[key]}")
+            else:
+                findings.append(
+                    f"outputs drift: base {entry.label} declares workflow_call output "
+                    f"{key!r}, which none of wrapper's {list(entry.wrapper_files)} declare "
+                    "(a caller's gate reads nothing on the wrapper path)"
                 )
     return findings, notes
 
@@ -433,6 +625,9 @@ def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions
         vars_findings, vars_notes, vars_info = check_vars_consumed(
             base_dir, wrapper_dir, config, exceptions
         )
+        output_findings, output_notes = check_workflow_outputs(
+            base_dir, wrapper_dir, config, exceptions
+        )
     except StepNotFoundError as exc:
         print(
             f"correspondence config names a step that does not exist: {exc}\n"
@@ -459,13 +654,16 @@ def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions
         )
         return 1
 
-    findings = env_findings + vars_findings
+    findings = env_findings + vars_findings + output_findings
     if env_notes:
         print("acknowledged env exceptions:")
         print("\n".join(env_notes))
     if vars_notes:
         print("acknowledged vars exceptions:")
         print("\n".join(vars_notes))
+    if output_notes:
+        print("acknowledged workflow_call output exceptions:")
+        print("\n".join(output_notes))
     if vars_info:
         print("informational (wrapper-only vars.*, not checked):")
         print("\n".join(vars_info))

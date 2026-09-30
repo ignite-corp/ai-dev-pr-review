@@ -28,6 +28,19 @@ on:
         required: false
       REVIEWER_APP_PRIVATE_KEY:
         required: false
+    # The aggregate declares these too, but this is the workflow consumers
+    # call -- so without this second hop the roster reaches the orchestrator
+    # and stops, one level short of the merge gate it exists for (AT-2511).
+    outputs:
+      reviewer_roster:
+        description: "JSON {expected, responded, missing{name: reason}} for this round; see README 'Output contract reference' for which missing reasons are benign"
+        value: ${{ jobs.aggregate.outputs.reviewer_roster }}
+      reviewers_expected_count:
+        description: "How many reviewers were configured for this round"
+        value: ${{ jobs.aggregate.outputs.reviewers_expected_count }}
+      reviewers_responded_count:
+        description: "How many of them produced a usable verdict. A benign round can report fewer than expected, so a gate must read reviewer_roster.missing rather than compare the counts alone"
+        value: ${{ jobs.aggregate.outputs.reviewers_responded_count }}
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}

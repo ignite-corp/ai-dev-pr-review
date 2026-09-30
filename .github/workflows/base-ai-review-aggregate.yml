@@ -71,6 +71,20 @@ on:
       REVIEWER_APP_PRIVATE_KEY:
         required: false
         description: "Private key of the reviewer GitHub App (enables real APPROVED reviews; optional)"
+    # A merge gate sees only this workflow's conclusion, and that is green
+    # whether every reviewer produced a verdict or one of three did. The
+    # roster carries that fact out in a form a gate can read; it changes no
+    # conclusion and no exit status (AT-2511).
+    outputs:
+      reviewer_roster:
+        description: "JSON {expected, responded, missing{name: reason}} for this round; see README 'Output contract reference' for which missing reasons are benign"
+        value: ${{ jobs.aggregate.outputs.reviewer_roster }}
+      reviewers_expected_count:
+        description: "How many reviewers were configured for this round"
+        value: ${{ jobs.aggregate.outputs.reviewers_expected_count }}
+      reviewers_responded_count:
+        description: "How many of them produced a usable verdict. A benign round can report fewer than expected, so a gate must read reviewer_roster.missing rather than compare the counts alone"
+        value: ${{ jobs.aggregate.outputs.reviewers_responded_count }}
 
 permissions:
   contents: read
@@ -80,6 +94,10 @@ jobs:
   aggregate:
     name: Aggregate & Verdict
     runs-on: ubuntu-latest
+    outputs:
+      reviewer_roster: ${{ steps.aggregate.outputs.reviewer_roster }}
+      reviewers_expected_count: ${{ steps.aggregate.outputs.reviewers_expected_count }}
+      reviewers_responded_count: ${{ steps.aggregate.outputs.reviewers_responded_count }}
     steps:
       # Consumer-repo checkout (kept so per-repo overrides can hook in later).
       - name: Checkout caller repo (PR head)
@@ -177,6 +195,7 @@ jobs:
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
       - name: Aggregate and post verdict
+        id: aggregate
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEWER_TOKEN: ${{ steps.reviewer_token.outputs.token }}

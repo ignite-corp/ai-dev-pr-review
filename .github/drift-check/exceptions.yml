@@ -1,7 +1,11 @@
 # Per-key and per-variable escape hatch for check_base_wrapper_drift.py
 # (AT-2122). Every entry needs a non-empty `reason`; a blank one fails the
-# check. Structural exceptions (a whole base step with no wrapper counterpart)
-# live in correspondence.yml instead.
+# check. Structural exceptions (a whole base step with no wrapper counterpart,
+# or a whole base file whose workflow_call outputs have none) live in
+# correspondence.yml instead.
+#
+# Three sections, one per axis: `vars`, `env` (keyed by base file then base
+# step) and `outputs` (keyed by base file, then workflow_call output name).
 #
 # Two kinds of reason appear here and must stay distinguishable:
 #   - by design: the single-job wrapper legitimately never needs the value;

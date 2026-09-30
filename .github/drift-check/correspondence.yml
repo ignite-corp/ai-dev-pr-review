@@ -185,3 +185,32 @@ steps:
     base_step: Aggregate and post verdict
     wrapper_file: wrapper.yml
     wrapper_steps: [Aggregate and post verdict]
+
+# ---- axis 3: `on.workflow_call.outputs` per base file (AT-2511) ----
+#
+# A reusable workflow's outputs are what a caller's merge gate reads, and
+# they are neither an env key nor a `vars.*`, so the two axes above cannot
+# see one go unported. Every base file that declares them must appear here:
+# mapped to the wrapper file(s) whose own `workflow_call` outputs must cover
+# them, or declared with an empty `wrapper_files` and a reason.
+outputs:
+  - base_file: base-ai-review-orchestrator.yml
+    wrapper_files: [wrapper.yml]
+  - base_file: base-ai-review-aggregate.yml
+    wrapper_files: [wrapper.yml]
+  - base_file: base-ai-review-prepare.yml
+    wrapper_files: []
+    reason: >-
+      Inter-job plumbing, not a consumer contract. Base splits the pipeline
+      across jobs, so prepare must declare head_sha / skip / the size and
+      policy values as workflow_call outputs for the orchestrator to read in
+      `needs.prepare.outputs`. The wrapper runs the whole pipeline in one
+      job and passes the same values as step outputs, so it has no
+      reusable-workflow surface to declare them on.
+  - base_file: base-ai-review-single.yml
+    wrapper_files: []
+    reason: >-
+      Same as prepare.yml: `early_exit` exists so the orchestrator can gate
+      the next reviewer job on it in sequential mode. The wrapper's reviewers
+      are consecutive steps in one job and read each other's step outputs
+      directly ('Read Claude early_exit' / 'Read Codex early_exit').
