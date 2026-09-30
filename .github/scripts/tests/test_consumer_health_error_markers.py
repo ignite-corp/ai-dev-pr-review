@@ -160,6 +160,11 @@ class TestPilotScanErrorMarkers:
             "action_invocation_failed",
             "cli_invocation_failed",
             "output_unparseable",
+            # Codex, when promote_legacy_verdict.sh is not in the pinned
+            # checkout: the run cannot clear the verdict names the PR can
+            # commit, so it skips the review rather than read one of them
+            # as its own result (AT-2424).
+            "provenance_unavailable",
         }
 
     @pytest.mark.parametrize("kind", _all_kinds())
