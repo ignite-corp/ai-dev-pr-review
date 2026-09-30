@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 REVIEWER_NAMES: tuple[str, ...] = ("claude", "codex", "gemini")
 GH_TIMEOUT_SEC = 60
@@ -68,6 +71,95 @@ SEVERITY_ICONS: dict[str, str] = {
     "minor": "-",
     "suggestion": "?",
 }
+
+# The payload-shape pair, and the gate built from them, live beside
+# SEVERITY_ICONS because that is what they read. The shape is still
+# aggregate_reviews.py's contract; this module is only the neutral place
+# both sides of it can reach. They were in local_reviewer_support until
+# AT-2510: that put the Actions-path aggregate on an import of the LOCAL
+# driver's support module, and when that module gained a PyYAML
+# dependency every consumer's aggregate job died at import (v1.11.0).
+_SEVERITY_ALIASES: dict[str, str] = {
+    "high": "major",
+    "medium": "minor",
+    "low": "suggestion",
+    "info": "suggestion",
+    "warning": "minor",
+    "note": "suggestion",
+    "error": "major",
+}
+
+
+def normalize_severity(data: Any) -> None:
+    """Map reviewer severity spellings onto the canonical set, in place.
+
+    Unknown values are left alone so ``is_valid_review`` rejects the
+    payload rather than this silently inventing a severity for it.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+        return
+    for issue in data["issues"]:
+        if not isinstance(issue, dict):
+            continue
+        sev = issue.get("severity")
+        if not isinstance(sev, str):
+            continue
+        lowered = sev.lower()
+        if lowered in SEVERITY_ICONS:
+            issue["severity"] = lowered
+        elif lowered in _SEVERITY_ALIASES:
+            issue["severity"] = _SEVERITY_ALIASES[lowered]
+        else:
+            logger.warning("Unknown severity %r, leaving as-is", sev)
+
+
+def is_valid_review(data: Any) -> bool:
+    """Check that a review payload has the required shape."""
+    if not isinstance(data, dict):
+        return False
+    if not isinstance(data.get("summary"), str):
+        return False
+    if not isinstance(data.get("early_exit"), bool):
+        return False
+    if not isinstance(data.get("issues"), list):
+        return False
+    for issue in data["issues"]:
+        if not isinstance(issue, dict):
+            return False
+        if issue.get("severity") not in SEVERITY_ICONS:
+            return False
+        if not isinstance(issue.get("description"), str):
+            return False
+        for key in ("file", "line", "suggestion"):
+            if key not in issue:
+                return False
+        if issue["file"] is not None and not isinstance(issue["file"], str):
+            return False
+        if issue["line"] is not None and not isinstance(issue["line"], int):
+            return False
+        if issue["suggestion"] is not None and not isinstance(issue["suggestion"], str):
+            return False
+    return True
+
+
+def usable_verdict(payload: Any) -> bool:
+    """Would aggregate_reviews.load_reviews read this payload as a verdict?
+
+    THE AGGREGATE'S OWN SEQUENCE, not a second opinion about it: normalize
+    the severities, then apply the shape test, because that is the order
+    load_reviews uses and a shim answering only the second half would
+    refuse a payload the aggregate accepts -- an "output_unparseable" for a
+    review whose only fault was spelling `High`.
+
+    Both local reviewer shims gate their direct-write path on this one
+    call, and `isinstance(payload, dict)` -- the gate it replaced --
+    accepted any JSON object at all, so a CLI that half-wrote its verdict
+    file suppressed the log-extraction fallback that would have recovered
+    the real one and the aggregate then saw a malformed review.
+    """
+    normalize_severity(payload)
+    return is_valid_review(payload)
+
 
 # Stand-in for a backtick in a displayed path: U+02CB MODIFIER LETTER GRAVE
 # ACCENT looks like one but is not one to markdown, so the code span around
