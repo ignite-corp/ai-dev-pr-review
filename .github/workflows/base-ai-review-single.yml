@@ -505,6 +505,69 @@ jobs:
             } >> "$COMBINED"
           fi
           cat "${RUNNER_TEMP}/review_prompt.md" >> "$COMBINED"
+          # Only a verdict file THIS run produced may stand as the verdict
+          # (AT-2424). The caller repo is checked out at the workspace root,
+          # so review-codex.json and the legacy names alike are paths the PR
+          # under review can commit; left in place they are taken for this
+          # run's answer, which lets a PR ship its own approving verdict.
+          # Clearing all three immediately before the CLI makes existence
+          # itself the proof of provenance; the script says why no timestamp
+          # test can stand in for that under workspace-write.
+          #
+          # Guarded on the file being in the pinned checkout, the same way
+          # the AT-1606 post-step and prepare.yml's extract_pr_diff.sh are:
+          # scripts come from the release tag while this YAML can come from
+          # a PR (self-review.yml), so a script added in that PR is not
+          # there yet. Consumers pin YAML and scripts to one tag -- the
+          # `ref:` of the script checkout lives in this same file -- so the
+          # script is always present for them and this branch is reached
+          # only by self-review on ai-dev-pr-review, between a PR adding a
+          # script and the release that ships it.
+          #
+          # It FAILS CLOSED by skipping the review, not by running it
+          # without the clear. Skipping only costs this repo's own PRs
+          # their Codex reviewer until the next release; proceeding would
+          # cost the verdict its meaning, because the direct-write branch
+          # below needs no script and would read a review-codex.json the
+          # PR committed as this run's result.
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          if [ ! -f "$PROMOTE" ]; then
+            echo "::error::promote_legacy_verdict.sh is not in the pinned" \
+              "checkout; skipping the Codex review, because the provenance" \
+              "clear it performs is what stops a verdict file committed by" \
+              "the PR from being read as this run's verdict (AT-2424)"
+            # The verdict says the reviewer could not run: status failed is
+            # the infrastructure class, never a model-emitted value
+            # (AT-1799), so the aggregate reports a missing reviewer rather
+            # than an approving one. rm -rf first because that path is one
+            # the PR can have committed as a directory, which would fail
+            # the redirect and take the step down.
+            rm -rf review-codex.json
+            jq -n '{
+              summary: ("Codex review skipped: promote_legacy_verdict.sh is not"
+                        + " in the pinned checkout, so verdict files committed"
+                        + " by the PR cannot be cleared"),
+              status: "failed",
+              early_exit: false,
+              issues: [],
+              error: "provenance_unavailable",
+              error_detail: "promote_legacy_verdict.sh missing from the pinned checkout"
+            }' > review-codex.json
+            # Marked on this path too: what the net reads the marker for
+            # is "has this step taken responsibility for the verdict
+            # file", and writing the verdict above is one of the two ways
+            # it does. Without the mark here the net would read this
+            # branch as a step that never ran and clear the verdict it
+            # just wrote.
+            : > "${RUNNER_TEMP}/codex-start"
+            exit 0
+          fi
+          bash "$PROMOTE" clear review-codex.json
+          # The other way, and the question the net asks: this step has
+          # taken responsibility for review-codex.json -- here by clearing
+          # it, so anything found at that name afterwards was written by
+          # this run. Marked only after the clear actually happened.
+          : > "${RUNNER_TEMP}/codex-start"
           # `codex exec` 0.147.0 rejects `--full-auto` (removed upstream);
           # `--sandbox workspace-write` alone preserves the prior behavior.
           codex exec \
@@ -523,20 +586,30 @@ jobs:
             | tail -n 1 \
             | cut -c1-200 \
             || true)
+          # Promote a legacy-named verdict HERE, ahead of the fallbacks
+          # below (AT-2424). The base prompt may still instruct the model to
+          # write the older names, and every fallback path writes an error
+          # verdict to review-codex.json -- which then made the 'Normalize
+          # review file name' step find the canonical file present and skip
+          # the promotion whole, so the verdict the model really wrote was
+          # discarded and the aggregate reported that Codex produced no
+          # verdict at all.
+          # A verdict the model wrote outranks one we synthesized for it.
+          # Unguarded: the branch above exits when the script is missing,
+          # so everything from here on can count on it.
+          bash "$PROMOTE" promote review-codex.json
           if [ -s review-codex.json ]; then
-            # Fail-closed: a direct write is only trusted if it parses as
-            # JSON. Malformed model output becomes an honest failed verdict
-            # instead of crashing downstream jq consumers.
-            if jq empty review-codex.json 2>/dev/null; then
+            # Fail-closed: a direct write is trusted only if the shared
+            # stamper can read it back as a verdict. That is the same
+            # filter and the same shape test a promoted legacy verdict
+            # gets -- the inline copy that used to live here had already
+            # drifted from it, back-filling no early_exit, so a direct
+            # write in the legacy schema reached the aggregate as nothing
+            # (AT-2424). It also no longer dies on a parseable non-object:
+            # `[]` made the inline jq error out, which under the runner's
+            # bash -e took the step down instead of producing a verdict.
+            if bash "$PROMOTE" stamp review-codex.json; then
               echo "::notice::Codex verdict file written directly"
-              # Direct writes skip the extract path, so mirror
-              # review_status.stamp_model_status here: keep a model-emitted
-              # ok/early_exit, otherwise re-derive from the early_exit flag
-              # ("failed" is reserved for infrastructure paths).
-              jq 'if (.status == "ok" or .status == "early_exit") then .
-                  else (.status = (if .early_exit == true then "early_exit" else "ok" end)) end' \
-                review-codex.json > review-codex.json.tmp \
-                && mv review-codex.json.tmp review-codex.json
             else
               echo "::warning::Codex wrote malformed verdict JSON -- replacing with error verdict"
               jq -n --arg detail "$LOG_TAIL" '{
@@ -607,26 +680,50 @@ jobs:
           fi
 
       # --- Common: Normalize review file name ---
+      # The net for a run step that never reached the promotion it now does
+      # itself -- cancelled, or killed by its timeout-minutes. When that step
+      # ran to the end this is a no-op, because the canonical file is already
+      # there. Same script, so the candidate list, the stamping and the
+      # default-deny cannot differ between the two (AT-2424).
       - name: Normalize review file name
         if: inputs.reviewer == 'codex' && always()
         env:
           REVIEWER: ${{ inputs.reviewer }}
         run: |
-          EXPECTED="review-${REVIEWER}.json"
-          if [ ! -f "$EXPECTED" ]; then
-            # Base prompt may instruct writing to verdict-openai.json (old name)
-            for CANDIDATE in verdict-openai.json verdict-codex.json; do
-              if [ -f "$CANDIDATE" ]; then
-                # Add early_exit if missing (legacy schema compat)
-                if ! jq -e '.early_exit' "$CANDIDATE" > /dev/null 2>&1; then
-                  jq '. + {early_exit: false}' "$CANDIDATE" > "$EXPECTED"
-                else
-                  cp "$CANDIDATE" "$EXPECTED"
-                fi
-                echo "Normalized $CANDIDATE -> $EXPECTED"
-                break
-              fi
-            done
+          # The marker says the run step took responsibility for the
+          # verdict file: it cleared the name and ran the CLI, or it wrote
+          # an infrastructure verdict there itself. Either way what is at
+          # that name is this run's and the net leaves it alone, promoting
+          # a legacy name onto it only when the script is here to do it.
+          #
+          # No marker means the CLI never started -- an earlier step in
+          # this job failed -- so nothing on disk is ours, including a
+          # review-${REVIEWER}.json the PR committed, which 'Verify Codex
+          # verdict file' would otherwise report as a verdict present.
+          # That path clears, and it clears WITHOUT the script too: the
+          # run step fails closed when the script is missing, and the net
+          # answering the same question the opposite way is how a
+          # PR-committed verdict survived on the one path where no
+          # infrastructure verdict exists to displace it either.
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          if [ -f "${RUNNER_TEMP}/codex-start" ]; then
+            if [ -f "$PROMOTE" ]; then
+              # --target-is-ours: the run step already adjudicated that
+              # file, by stamping the CLI's write or by writing an
+              # infrastructure verdict of its own. Without the flag the
+              # promotion re-derives its status, which turned our own
+              # "failed" into "ok" and re-admitted a reviewer that never
+              # ran. The flag rather than a look at the payload, because
+              # a model can write any payload it likes (AT-1799).
+              bash "$PROMOTE" promote --target-is-ours "review-${REVIEWER}.json"
+            fi
+          elif [ -f "$PROMOTE" ]; then
+            bash "$PROMOTE" clear "review-${REVIEWER}.json"
+          else
+            # Only the canonical name, because that is the one this step
+            # owns and the only one any later step reads; the legacy names
+            # are inert without a promotion to carry them.
+            rm -rf "review-${REVIEWER}.json"
           fi
 
       - name: Verify Codex verdict file
@@ -635,9 +732,12 @@ jobs:
           EXIT_CODE: ${{ steps.codex_run.outputs.exit_code }}
         run: |
           set -euo pipefail
-          # Normalize step above already promotes verdict-codex.json /
-          # verdict-openai.json into review-codex.json, so checking the
-          # canonical file alone is sufficient here.
+          # Both steps above promote verdict-codex.json / verdict-openai.json
+          # into review-codex.json -- 'Run Codex review' before it writes any
+          # error verdict of its own, 'Normalize review file name' when that
+          # step never got there -- so checking the canonical file alone is
+          # sufficient here (AT-2424: it was not, while the only promotion
+          # ran after the error verdict and was skipped by it).
           if [ -s "review-codex.json" ]; then
             echo "::notice::Codex verdict file present"
           else

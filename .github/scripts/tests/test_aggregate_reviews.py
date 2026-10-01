@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 import yaml
 
+from review_status import stamp_model_status
 from aggregate_reviews import (
     _get_available,
     _has_full_reviewer_coverage,
@@ -1320,13 +1323,13 @@ _ERROR_VERDICT_STEP = "Emit Claude error verdict (no verdict file)"
 requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
 
 
-def _error_verdict_step_script() -> str:
-    """Return the run: body of the claude error-verdict step."""
+def _step_script(name: str) -> str:
+    """Return the run: body of a named step of the single-reviewer workflow."""
     workflow = yaml.safe_load(_SINGLE_WORKFLOW.read_text(encoding="utf-8"))
     for step in workflow["jobs"]["review"]["steps"]:
-        if step.get("name") == _ERROR_VERDICT_STEP:
+        if step.get("name") == name:
             return str(step["run"])
-    raise AssertionError(f"step not found: {_ERROR_VERDICT_STEP}")
+    raise AssertionError(f"step not found: {name}")
 
 
 @requires_jq
@@ -1341,7 +1344,7 @@ class TestClaudeErrorVerdictStep:
     @staticmethod
     def _run(workdir: Path, exec_file: str, outcome: str = "success") -> None:
         result = subprocess.run(
-            ["bash", "-c", _error_verdict_step_script()],
+            ["bash", "-c", _step_script(_ERROR_VERDICT_STEP)],
             cwd=workdir,
             env={
                 "PATH": os.environ["PATH"],
@@ -1390,6 +1393,944 @@ class TestClaudeErrorVerdictStep:
         assert reviews["claude"] is not None
         assert "claude" not in available
         assert set(available) == {"codex", "gemini"}
+
+
+_CODEX_RUN_STEP = "Run Codex review"
+_NORMALIZE_STEP = "Normalize review file name"
+_PLANTED_SUMMARY = "No issues found."
+# What the runner gives a `run:` block on Linux when the step names no
+# shell of its own: bash -e. A step body that aborts mid-way therefore
+# aborts here too -- running it under a plain `bash -c` hid a step that
+# died at its first command and left no verdict file behind at all.
+_RUNNER_SHELL = ["bash", "-e", "-c"]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_PROMOTE_SCRIPT = Path(__file__).resolve().parents[1] / "promote_legacy_verdict.sh"
+
+requires_codex_step_tools = pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in ("jq", "python3")),
+    reason="jq or python3 not installed",
+)
+
+
+class _CodexStepHarness:
+    """Mechanics only: run the two codex steps the way the runner does.
+
+    No tests live here. The three classes below ask three different
+    questions of the same two step bodies -- which verdict wins, whose
+    file it is, and what the net does when the run step never finished --
+    and they share these helpers rather than three copies of a stub CLI.
+    """
+
+    @staticmethod
+    def _link_scripts(workdir: Path, scripts_root: Path | None = None) -> None:
+        """Both steps reach the promotion script through this checkout path.
+
+        `scripts_root` stands in for a consumer pinned to an older release
+        tag, whose checkout does not carry a script this YAML calls.
+        """
+        link = workdir / ".ai-dev-pr-review"
+        if not link.exists():
+            link.symlink_to(scripts_root or _REPO_ROOT)
+
+    @staticmethod
+    def _stub_codex(workdir: Path, script: str) -> Path:
+        """Install a `codex` on PATH that acts out one run of the CLI."""
+        bin_dir = workdir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        stub = bin_dir / "codex"
+        stub.write_text(f"#!/usr/bin/env bash\n{script}\n", encoding="utf-8")
+        stub.chmod(0o755)
+        return bin_dir
+
+    @classmethod
+    def _run_codex_step(
+        cls,
+        workdir: Path,
+        *,
+        writes: Sequence[tuple[str, str]] = (),
+        log: str = "codex: done",
+        exit_code: int = 0,
+        touches: str | None = None,
+        stalls: bool = False,
+        timeout: float = 60,
+        scripts_root: Path | None = None,
+        marks_run: str | None = None,
+    ) -> None:
+        """Run 'Run Codex review' with a CLI that acts out one run.
+
+        `touches` is a workspace write the model can be induced to make --
+        `codex exec --sandbox workspace-write` lets it write the tree it is
+        reviewing. `stalls` never returns, so the caller can kill the step
+        the way timeout-minutes does.
+        """
+        runner_temp = workdir / "runner-temp"
+        runner_temp.mkdir(exist_ok=True)
+        (runner_temp / "review_prompt.md").write_text("review this", encoding="utf-8")
+        cls._link_scripts(workdir, scripts_root)
+        body = ""
+        if marks_run is not None:
+            body += f"touch {marks_run}\n"
+        if touches is not None:
+            body += f"touch {touches}\n"
+        for name, text in writes:
+            body += f"cat > {name} <<'VERDICT'\n{text}\nVERDICT\n"
+        if stalls:
+            body += "sleep 5\n"
+        else:
+            body += f"printf '%s\\n' {json.dumps(log)}\nexit {exit_code}\n"
+        bin_dir = cls._stub_codex(workdir, body)
+        result = subprocess.run(
+            _RUNNER_SHELL + [_step_script(_CODEX_RUN_STEP)],
+            cwd=workdir,
+            env={
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_OUTPUT": str(workdir / "github-output"),
+                "CODEX_MODEL": "stub-model",
+                "THREAD_COUNT": "0",
+                "EXISTING_COMMENTS": "",
+            },
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @classmethod
+    def _run_codex_step_cancelled(cls, workdir: Path) -> None:
+        """Kill the step mid-CLI, the way timeout-minutes does.
+
+        What the net then inherits is the real state of that path: the
+        candidates cleared and the marker written, but no error verdict,
+        because the step never reached the code that writes one.
+        """
+        with pytest.raises(subprocess.TimeoutExpired):
+            cls._run_codex_step(workdir, stalls=True, timeout=2)
+
+    @staticmethod
+    def _plant(path: Path) -> None:
+        """Write a verdict file as a PR that committed one leaves it.
+
+        Nothing is back-dated. The guarantee is that the run clears these
+        names before the CLI starts, so how old the file is never enters
+        into it -- and a test that depended on its age would be testing a
+        clock this code no longer reads.
+        """
+        path.write_text(
+            json.dumps(
+                {
+                    "summary": _PLANTED_SUMMARY,
+                    "status": "ok",
+                    "early_exit": False,
+                    "issues": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _mark(workdir: Path) -> None:
+        """Stand in for the marker 'Run Codex review' writes before the CLI."""
+        runner_temp = workdir / "runner-temp"
+        runner_temp.mkdir(exist_ok=True)
+        (runner_temp / "codex-start").write_text("", encoding="utf-8")
+
+    @classmethod
+    def _run_normalize_step(
+        cls, workdir: Path, scripts_root: Path | None = None
+    ) -> None:
+        """Run 'Normalize review file name' over the workdir as it stands."""
+        runner_temp = workdir / "runner-temp"
+        runner_temp.mkdir(exist_ok=True)
+        cls._link_scripts(workdir, scripts_root)
+        result = subprocess.run(
+            _RUNNER_SHELL + [_step_script(_NORMALIZE_STEP)],
+            cwd=workdir,
+            env={
+                "PATH": os.environ["PATH"],
+                "RUNNER_TEMP": str(runner_temp),
+                "REVIEWER": "codex",
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @staticmethod
+    def _verdict(workdir: Path) -> dict[str, Any]:
+        return dict(json.loads((workdir / "review-codex.json").read_text()))
+
+    @staticmethod
+    def _aggregate_sees(
+        workdir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """What load_reviews / _get_available make of the workdir's files."""
+        for name in ("claude", "gemini"):
+            (workdir / f"review-{name}.json").write_text(
+                json.dumps(_make_named_review(name, []))
+            )
+        monkeypatch.chdir(workdir)
+        reviews = load_reviews()
+        return dict(reviews), dict(_get_available(reviews))
+
+    @staticmethod
+    def _old_pin(tmp_path: Path) -> Path:
+        """A pinned checkout from before the promotion script existed."""
+        root = tmp_path / "old-pin"
+        (root / ".github" / "scripts").mkdir(parents=True)
+        return root
+
+
+@requires_codex_step_tools
+class TestCodexLegacyVerdictPromotion(_CodexStepHarness):
+    """Which verdict wins, and what may never win (AT-2424).
+
+    The base prompt may still instruct the model to write the older name
+    verdict-openai.json, so promotion to review-codex.json exists. It used
+    to run only after 'Run Codex review' had already written an error
+    verdict to review-codex.json on every one of its failure paths: the
+    canonical file was therefore present, the promotion was skipped whole,
+    and the model's real verdict was discarded while the aggregate
+    reported that codex had produced nothing.
+
+    Precedence is one question asked once: a target is this run's answer
+    if STAMPING it yields a verdict, the same test a candidate gets.
+    Asking it of the raw file instead held the target to a stricter
+    standard -- the legacy schema carries no early_exit -- and a
+    legacy-named file then overwrote a canonical one written in it.
+
+    These run the steps' own shell bodies against a stub CLI and follow
+    what they wrote into the aggregate's loader, the seam a discarded
+    verdict never reached.
+    """
+
+    def test_a_legacy_named_verdict_survives_the_unparseable_error_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The reproduction: the model wrote its verdict under the old name
+        # and printed nothing parseable, so the step's own extraction
+        # fallback synthesized "no parseable verdict JSON in output".
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "verdict-openai.json",
+                    json.dumps(
+                        {
+                            "summary": "Codex reviewed the diff",
+                            "status": "ok",
+                            "early_exit": False,
+                            "issues": [_make_issue(severity="major")],
+                        }
+                    ),
+                )
+            ],
+        )
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] == "Codex reviewed the diff"
+        assert "error" not in verdict
+        reviews, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" in available
+        assert available["codex"]["issues"] == reviews["codex"]["issues"]
+
+    def test_a_legacy_named_verdict_survives_the_cli_failure_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same masking through the other failure path: a non-zero exit
+        # after the model had already written its verdict.
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "verdict-codex.json",
+                    json.dumps(
+                        {
+                            "summary": "Codex reviewed the diff",
+                            "status": "ok",
+                            "early_exit": False,
+                            "issues": [],
+                        }
+                    ),
+                )
+            ],
+            exit_code=3,
+        )
+        assert self._verdict(tmp_path)["summary"] == "Codex reviewed the diff"
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" in available
+
+    def test_a_promoted_legacy_verdict_carries_a_status_the_aggregate_accepts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The legacy schema has neither early_exit nor status, and the
+        # aggregate fails closed on a missing status (AT-1954). Promotion
+        # that leaves both absent hands it a verdict it must discard, which
+        # is the same loss by a later route.
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "verdict-openai.json",
+                    json.dumps({"summary": "Codex reviewed the diff", "issues": []}),
+                )
+            ],
+        )
+        verdict = self._verdict(tmp_path)
+        assert verdict["early_exit"] is False
+        assert verdict["status"] == "ok"
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" in available
+
+    def test_a_direct_write_in_the_legacy_schema_reaches_the_aggregate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The workflow's own inline stamping was a second copy of the rule
+        # and had drifted: it added a status but never back-filled
+        # early_exit, so a direct write in the legacy schema failed
+        # is_valid_review and the aggregate rendered `Codex -- [ ] N/A`
+        # for a review that had been produced.
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "review-codex.json",
+                    json.dumps({"summary": "direct write", "issues": []}),
+                )
+            ],
+        )
+        verdict = self._verdict(tmp_path)
+        assert verdict["early_exit"] is False
+        assert verdict["status"] == "ok"
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" in available
+
+    def test_a_verdict_written_to_the_canonical_name_outranks_a_legacy_one(
+        self, tmp_path: Path
+    ) -> None:
+        # The canonical file is written in the LEGACY SCHEMA, with no
+        # status and no early_exit, because that is the case that tells a
+        # fixed precedence rule from a broken one. The earlier version of
+        # this test wrote a full-schema canonical, which passes either
+        # way: the target was being held to the raw shape test while
+        # candidates were held to the stamped one, so exactly the payload
+        # the stamping exists for lost to a legacy name.
+        #
+        # Both files are written BY THE RUN, the only way this case can
+        # arise now that the clear empties the tree first -- and the only
+        # way the test means anything at all. Writing the legacy file
+        # after the step returned left it absent while promote ran.
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "review-codex.json",
+                    json.dumps({"summary": "this run", "issues": []}),
+                ),
+                (
+                    "verdict-openai.json",
+                    json.dumps(
+                        {
+                            "summary": "the legacy name",
+                            "status": "ok",
+                            "early_exit": False,
+                            "issues": [],
+                        }
+                    ),
+                ),
+            ],
+        )
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] == "this run"
+        # And it went through the same stamping a promoted candidate gets,
+        # which is what makes the two comparable in the first place.
+        assert verdict["early_exit"] is False
+        assert verdict["status"] == "ok"
+
+    def test_a_truncated_canonical_file_does_not_outrank_a_legacy_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        # The early return asked only whether the target was non-empty, so
+        # a half-written canonical file beat a complete legacy one and the
+        # run ended on an error verdict with the real review on disk beside
+        # it -- this ticket's own loss mode, by a shorter route.
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                ("review-codex.json", '{"summ'),
+                (
+                    "verdict-openai.json",
+                    json.dumps({"summary": "the real verdict", "issues": []}),
+                ),
+            ],
+        )
+        assert self._verdict(tmp_path)["summary"] == "the real verdict"
+
+    def test_an_unreadable_candidate_does_not_block_the_next_one(
+        self, tmp_path: Path
+    ) -> None:
+        # The copy of the loop that redirected jq straight onto the target
+        # truncated it on a candidate jq could not read and then stopped
+        # looking, so a real verdict under the second name was lost. One
+        # script, one temp-file write, one answer.
+        self._mark(tmp_path)
+        (tmp_path / "verdict-openai.json").write_text("not json at all")
+        (tmp_path / "verdict-codex.json").write_text(
+            json.dumps({"summary": "the real verdict", "issues": []})
+        )
+        self._run_normalize_step(tmp_path)
+        assert self._verdict(tmp_path)["summary"] == "the real verdict"
+
+    @pytest.mark.parametrize(
+        "junk", ["not json at all", "[]", '"a string"', "null", '{"foo": 1}']
+    )
+    def test_a_malformed_legacy_verdict_leaves_an_honest_error_verdict(
+        self, tmp_path: Path, junk: str
+    ) -> None:
+        # Default-deny: promotion may not put something the aggregate
+        # cannot read into the canonical file, and the error verdict it
+        # would displace is the truthful answer here, log tail and all.
+        # `null` and the partial object are the ones the stamping does NOT
+        # reject -- both come out of it as objects -- so the shape test
+        # after it is what denies them.
+        self._run_codex_step(tmp_path, writes=[("verdict-openai.json", junk)])
+        verdict = self._verdict(tmp_path)
+        assert verdict["status"] == "failed"
+        assert verdict["error"] == "output_unparseable"
+
+    @pytest.mark.parametrize("payload", ["[]", "null", '"a string"'])
+    def test_a_parseable_non_object_direct_write_leaves_an_error_verdict(
+        self, tmp_path: Path, payload: str
+    ) -> None:
+        # The inline filter indexed these and errored, and the `&&` made
+        # that the step's exit status: under the runner's bash -e a model
+        # writing `[]` killed the step before any fallback ran. The shared
+        # stamper reports "not a verdict" and the caller writes its own.
+        self._run_codex_step(tmp_path, writes=[("review-codex.json", payload)])
+        verdict = self._verdict(tmp_path)
+        assert verdict["status"] == "failed"
+        assert verdict["error"] == "output_unparseable"
+
+    def test_unreadable_candidates_leave_no_truncated_target_behind(
+        self, tmp_path: Path
+    ) -> None:
+        # Default-deny leaves the caller its own error verdict to write,
+        # not a zero-byte file that 'Verify Codex verdict file' would read
+        # as no verdict at all while the log says a promotion happened.
+        self._mark(tmp_path)
+        (tmp_path / "verdict-openai.json").write_text("not json at all")
+        (tmp_path / "verdict-codex.json").write_text("[]")
+        self._run_normalize_step(tmp_path)
+        assert not (tmp_path / "review-codex.json").exists()
+        assert not (tmp_path / "review-codex.json.tmp").exists()
+
+
+@requires_codex_step_tools
+class TestCodexVerdictProvenance(_CodexStepHarness):
+    """Whose file is this? (AT-2424)
+
+    The caller repo is checked out at the workspace root, so every name
+    involved -- review-codex.json as much as the legacy ones, and the
+    temp paths beside them -- is a path the PR under review can commit,
+    as a file, a directory or a symlink. The run step CLEARS them
+    immediately before the CLI, so afterwards existence is itself the
+    proof that this run wrote the file; no timestamp is compared, because
+    the CLI runs with --sandbox workspace-write and a model can be
+    induced to touch a file it did not create.
+
+    When the script that performs the clear is not in the pinned
+    checkout, the step skips the review rather than running it without
+    provenance, and these follow that verdict into the aggregate too.
+    """
+
+    def test_a_verdict_file_the_pr_checked_out_is_not_promoted(
+        self, tmp_path: Path
+    ) -> None:
+        # The working tree is the PR head. A verdict-openai.json committed
+        # by the PR is there before the reviewer starts, and promoting it
+        # would let the PR under review write its own reviewer verdict on
+        # every path where the CLI fails.
+        self._plant(tmp_path / "verdict-openai.json")
+        self._plant(tmp_path / "verdict-codex.json")
+        self._run_codex_step(tmp_path)
+        verdict = self._verdict(tmp_path)
+        assert verdict["status"] == "failed"
+        assert verdict["summary"] != _PLANTED_SUMMARY
+        # Cleared, not merely passed over: nothing downstream can read them
+        # back, and no later step has to ask again where they came from.
+        assert not (tmp_path / "verdict-openai.json").exists()
+        assert not (tmp_path / "verdict-codex.json").exists()
+
+    def test_a_canonical_verdict_file_the_pr_checked_out_is_cleared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The legacy names were cleared while review-codex.json was not,
+        # and the run step's direct-write branch takes whatever is there:
+        # a PR could ship its own approving verdict under the canonical
+        # name on EVERY path, not only the failing ones. The argument for
+        # clearing the legacy names applies to this one verbatim.
+        self._plant(tmp_path / "review-codex.json")
+        self._run_codex_step(tmp_path)
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] != _PLANTED_SUMMARY
+        assert verdict["status"] == "failed"
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" not in available
+
+    def test_touching_a_checked_out_verdict_file_does_not_promote_it(
+        self, tmp_path: Path
+    ) -> None:
+        # The CLI runs with --sandbox workspace-write, so a model induced
+        # by the PR can touch a file it did not create. Provenance that
+        # rested on "newer than the start of the run" was therefore
+        # answerable by the attacker it existed to stop; the file being
+        # gone is not.
+        self._plant(tmp_path / "verdict-openai.json")
+        self._run_codex_step(tmp_path, touches="verdict-openai.json")
+        assert self._verdict(tmp_path)["summary"] != _PLANTED_SUMMARY
+
+    def test_a_symlink_at_the_temp_path_is_not_written_through(
+        self, tmp_path: Path
+    ) -> None:
+        # Every temp path the step writes used to be "<target>.tmp" -- a
+        # path in the PR's own checkout. Committed as a symlink it turned
+        # a verdict write into a write to whatever it named. Both writers
+        # are exercised here: the promotion, and the direct-write stamping
+        # that runs on the file it promotes.
+        victim = tmp_path / "victim.txt"
+        victim.write_text("ORIGINAL", encoding="utf-8")
+        (tmp_path / "review-codex.json.tmp").symlink_to(victim)
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "verdict-openai.json",
+                    json.dumps({"summary": "the real verdict", "issues": []}),
+                )
+            ],
+        )
+        assert victim.read_text(encoding="utf-8") == "ORIGINAL"
+        assert self._verdict(tmp_path)["summary"] == "the real verdict"
+
+    def test_a_directory_at_the_temp_path_does_not_kill_the_step(
+        self, tmp_path: Path
+    ) -> None:
+        # The same PR-controlled path, committed as a directory: the
+        # redirect fails, and under the runner's bash -e the step died
+        # before any fallback could write a verdict. Same denial class as
+        # a directory at a candidate name, one path over.
+        (tmp_path / "review-codex.json.tmp").mkdir()
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "verdict-openai.json",
+                    json.dumps({"summary": "the real verdict", "issues": []}),
+                )
+            ],
+        )
+        assert self._verdict(tmp_path)["summary"] == "the real verdict"
+
+    def test_a_directory_at_a_candidate_name_does_not_kill_the_step(
+        self, tmp_path: Path
+    ) -> None:
+        # What the PR commits under these names is the PR's choice, and a
+        # directory is one of them. `rm -f` fails on a directory, the
+        # script runs under set -e and the step under the runner's bash -e,
+        # so a plain -f would have turned "commit a directory" into "no
+        # codex review, ever" -- a denial the PR under review controls.
+        (tmp_path / "verdict-openai.json").mkdir()
+        self._run_codex_step(tmp_path)
+        assert self._verdict(tmp_path)["status"] == "failed"
+        assert not (tmp_path / "verdict-openai.json").exists()
+
+    def test_a_directory_at_the_target_is_replaced_not_moved_into(
+        self, tmp_path: Path
+    ) -> None:
+        # `mv` moves its source INSIDE a directory sitting at the
+        # destination and succeeds, so the promotion notice named a
+        # promotion that had not happened and the verdict ended up at
+        # review-codex.json/promote-verdict.XXXXXX. The clear defends
+        # every other write in this script against a non-regular file;
+        # this one did not.
+        (tmp_path / "review-codex.json").mkdir()
+        (tmp_path / "verdict-openai.json").write_text(
+            json.dumps({"summary": "the real verdict", "issues": []})
+        )
+        self._mark(tmp_path)
+        self._run_normalize_step(tmp_path)
+        assert (tmp_path / "review-codex.json").is_file()
+        assert self._verdict(tmp_path)["summary"] == "the real verdict"
+
+    def test_a_checkout_without_the_script_skips_the_review(
+        self, tmp_path: Path
+    ) -> None:
+        # The scripts come from the pinned release tag while this YAML can
+        # come from a PR, so a script added in that PR is not in the
+        # checkout yet. Running anyway was the wrong half of the choice:
+        # promotion was skipped, but the clear is what stops a PR-supplied
+        # verdict and the direct-write branch needs no script at all. The
+        # review is skipped instead -- the CLI is never even started.
+        ran = tmp_path / "the-cli-ran"
+        self._run_codex_step(
+            tmp_path, scripts_root=self._old_pin(tmp_path), marks_run=str(ran)
+        )
+        assert not ran.exists()
+        verdict = self._verdict(tmp_path)
+        assert verdict["status"] == "failed"
+        assert verdict["error"] == "provenance_unavailable"
+        assert "skipped" in verdict["summary"]
+
+    def test_a_checkout_without_the_script_takes_no_file_the_pr_committed(
+        self, tmp_path: Path
+    ) -> None:
+        # Both names, because the hole was that the guard covered only the
+        # legacy ones: with no clear, a review-codex.json the PR committed
+        # was read by the direct-write branch as this run's own verdict,
+        # on every path rather than only the failing ones.
+        self._plant(tmp_path / "verdict-openai.json")
+        self._plant(tmp_path / "review-codex.json")
+        self._run_codex_step(tmp_path, scripts_root=self._old_pin(tmp_path))
+        self._run_normalize_step(tmp_path)
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] != _PLANTED_SUMMARY
+        assert verdict["error"] == "provenance_unavailable"
+
+    def test_the_skipped_review_is_reported_as_a_reviewer_that_did_not_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A skip that the aggregate renders as a silent absence would trade
+        # one unnoticed failure for another, so this follows it into the
+        # real renderer rather than stopping at the file.
+        self._run_codex_step(tmp_path, scripts_root=self._old_pin(tmp_path))
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" not in available
+        summary = format_summary(load_reviews(), "comment", "reason", {})
+        assert "### Codex -- [ ] not run (provenance_unavailable)" in summary
+
+
+@requires_codex_step_tools
+class TestCodexNormalizeNet(_CodexStepHarness):
+    """The net for a run step that never reached its own promotion.
+
+    'Normalize review file name' runs with always(), for a 'Run Codex
+    review' that was cancelled or killed by its timeout-minutes. The
+    marker says the run step took responsibility for the verdict file --
+    by clearing the name, or by writing an infrastructure verdict there
+    itself -- so without one nothing on disk is this run's and the net
+    clears rather than promotes, with or without the script.
+    """
+
+    def test_the_normalize_step_promotes_over_an_empty_canonical_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The net for a run step that was cancelled or timed out before it
+        # could promote anything: a zero-byte file is "nothing written"
+        # here too, and testing existence alone let a truncated file mask a
+        # good legacy verdict. Followed all the way to the aggregate,
+        # because a promotion the aggregate then discards saves nothing --
+        # the legacy schema carries no status, and the aggregate fails
+        # closed on a missing one (AT-1954).
+        self._mark(tmp_path)
+        (tmp_path / "review-codex.json").write_text("")
+        (tmp_path / "verdict-openai.json").write_text(
+            json.dumps({"summary": "Codex reviewed the diff", "issues": []})
+        )
+        self._run_normalize_step(tmp_path)
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] == "Codex reviewed the diff"
+        assert verdict["early_exit"] is False
+        assert verdict["status"] == "ok"
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" in available
+
+    # BOTH steps, in the order and the configuration an ordinary Codex
+    # failure takes in production: the script present, the run step
+    # finishing with an error verdict of its own, then the net. Every
+    # other test that chains the real steps either uses an older pin or
+    # kills the step mid-CLI, and that gap is what let the status flip
+    # through ten green checks. Parametrized over the two ways the run
+    # step arrives at an error verdict, because the net must leave both.
+    @pytest.mark.parametrize(
+        ("step_kwargs", "error_kind"),
+        [
+            ({"log": "boom", "exit_code": 3}, "cli_invocation_failed"),
+            ({"writes": [("review-codex.json", "[]")]}, "output_unparseable"),
+        ],
+        ids=["cli-exited-nonzero", "cli-wrote-a-non-verdict"],
+    )
+    def test_the_net_leaves_the_verdict_the_run_step_wrote_alone(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        step_kwargs: dict[str, Any],
+        error_kind: str,
+    ) -> None:
+        # Half of the pair. The run step writes status "failed" when the
+        # reviewer could not run; the net then promoted over that file and
+        # the stamping re-derived the status to "ok", re-admitting a
+        # reviewer that never ran into the aggregate's coverage count.
+        # Our own verdict is not model output and is not re-judged.
+        self._run_codex_step(tmp_path, **step_kwargs)
+        assert self._verdict(tmp_path)["status"] == "failed"
+        self._run_normalize_step(tmp_path)
+        verdict = self._verdict(tmp_path)
+        assert verdict["status"] == "failed"
+        assert verdict["error"] == error_kind
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" not in available
+
+    def test_a_model_emitted_failed_status_in_a_direct_write_is_re_derived(
+        self, tmp_path: Path
+    ) -> None:
+        # The other half, and the reason the test above cannot be had by
+        # reading the payload: "failed" with an error field is a shape a
+        # MODEL can emit, and AT-1799 reserves that status for
+        # infrastructure. The caller declares whose file it is; a model
+        # cannot select infrastructure treatment for itself by choosing
+        # what to write.
+        self._run_codex_step(
+            tmp_path,
+            writes=[
+                (
+                    "review-codex.json",
+                    json.dumps(
+                        {
+                            "summary": "I call this an infrastructure failure",
+                            "status": "failed",
+                            "early_exit": False,
+                            "issues": [],
+                            "error": "cli_invocation_failed",
+                        }
+                    ),
+                )
+            ],
+        )
+        assert self._verdict(tmp_path)["status"] == "ok"
+
+    def test_the_net_stamps_a_verdict_the_run_step_never_reached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The fall-through in --target-is-ours mode. A run step killed
+        # between the CLI's write and its own promotion leaves raw model
+        # output at the canonical name -- not yet a verdict, because the
+        # legacy schema has no early_exit -- and model semantics are right
+        # for exactly that. An infrastructure verdict never reaches this
+        # path: every one the workflow writes is already shape-valid.
+        self._mark(tmp_path)
+        (tmp_path / "review-codex.json").write_text(
+            json.dumps({"summary": "killed before stamping", "issues": []})
+        )
+        self._run_normalize_step(tmp_path)
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] == "killed before stamping"
+        assert verdict["status"] == "ok"
+        assert verdict["early_exit"] is False
+        _, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" in available
+
+    def test_the_net_does_not_trust_a_model_emitted_failed_status(
+        self, tmp_path: Path
+    ) -> None:
+        # "failed" is reserved for infrastructure paths and is never
+        # trusted from model output (AT-1799). The run step's own direct
+        # write re-derives it; a promotion that kept it would make the two
+        # paths disagree about the same file.
+        self._mark(tmp_path)
+        (tmp_path / "verdict-openai.json").write_text(
+            json.dumps(
+                {
+                    "summary": "Codex reviewed the diff",
+                    "status": "failed",
+                    "early_exit": False,
+                    "issues": [],
+                }
+            )
+        )
+        self._run_normalize_step(tmp_path)
+        assert self._verdict(tmp_path)["status"] == "ok"
+
+    def test_a_cancelled_run_leaves_the_net_nothing_the_pr_checked_out(
+        self, tmp_path: Path
+    ) -> None:
+        # The net's provenance is the run step's clear, so this walks the
+        # real sequence rather than asserting it: the PR's file is on disk,
+        # the step is killed mid-CLI exactly as timeout-minutes kills it,
+        # and the net runs over what that leaves.
+        self._plant(tmp_path / "verdict-openai.json")
+        self._run_codex_step_cancelled(tmp_path)
+        assert (tmp_path / "runner-temp" / "codex-start").exists()
+        assert not (tmp_path / "review-codex.json").exists()
+        self._run_normalize_step(tmp_path)
+        assert not (tmp_path / "review-codex.json").exists()
+
+    def test_the_net_clears_without_the_script_when_the_cli_never_started(
+        self, tmp_path: Path
+    ) -> None:
+        # The two steps answered the same question opposite ways: the run
+        # step fails closed when the script is missing, the net did
+        # nothing at all. That is the one path where no infrastructure
+        # verdict exists to displace the PR's file either, because the run
+        # step never got far enough to write one -- so 'Verify Codex
+        # verdict file' would have reported it as a verdict present.
+        self._plant(tmp_path / "review-codex.json")
+        self._run_normalize_step(tmp_path, scripts_root=self._old_pin(tmp_path))
+        assert not (tmp_path / "review-codex.json").exists()
+
+    def test_the_normalize_step_promotes_nothing_when_the_cli_never_started(
+        self, tmp_path: Path
+    ) -> None:
+        # No marker means the CLI never ran, so nothing was cleared and
+        # whatever is on disk is the PR's -- including a canonical file,
+        # which 'Verify Codex verdict file' would otherwise report as a
+        # verdict present. The net clears instead of promoting, so that
+        # step fails honestly.
+        self._plant(tmp_path / "verdict-openai.json")
+        self._plant(tmp_path / "review-codex.json")
+        self._run_normalize_step(tmp_path)
+        assert not (tmp_path / "review-codex.json").exists()
+        assert not (tmp_path / "verdict-openai.json").exists()
+
+
+@requires_codex_step_tools
+class TestPromotionScriptAgreesWithItsCallers:
+    """The script's contracts, checked rather than asserted.
+
+    None of these is visible in a diff: that its jq stamping does what
+    review_status.stamp_model_status does, that the two steps calling it
+    name the same file -- their fail-closed property is that neither
+    promotes when the other cannot -- and that it touches only the plain
+    file name it was handed.
+    """
+
+    # The cases that separate the candidate rules: a status the model may
+    # emit is kept (including "ok" beside early_exit true, which the
+    # Python keeps too), "failed" is never trusted from model output, an
+    # unknown status is re-derived, and a missing early_exit defaults.
+    PAYLOADS = [
+        {"summary": "s", "issues": [], "early_exit": False},
+        {"summary": "s", "issues": [], "early_exit": True},
+        {"summary": "s", "issues": [], "status": "ok", "early_exit": True},
+        {"summary": "s", "issues": [], "status": "early_exit", "early_exit": False},
+        {"summary": "s", "issues": [], "status": "failed", "early_exit": False},
+        {"summary": "s", "issues": [], "status": "failed", "early_exit": True},
+        {"summary": "s", "issues": [], "status": "banana", "early_exit": False},
+        {"summary": "s", "issues": []},
+    ]
+
+    @pytest.mark.parametrize("payload", PAYLOADS, ids=range(len(PAYLOADS)))
+    def test_the_scripts_stamping_matches_stamp_model_status(
+        self, tmp_path: Path, payload: dict[str, Any]
+    ) -> None:
+        (tmp_path / "verdict-openai.json").write_text(json.dumps(payload))
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), "promote", "review-codex.json"],
+            cwd=tmp_path,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        promoted = json.loads((tmp_path / "review-codex.json").read_text())
+
+        expected = dict(payload)
+        expected.setdefault("early_exit", False)
+        stamp_model_status(expected)
+
+        assert promoted["status"] == expected["status"]
+        assert promoted["early_exit"] == expected["early_exit"]
+
+    def test_the_run_step_keeps_no_copy_of_the_status_rule(self) -> None:
+        # The inline direct-write filter was the third copy of the AT-1799
+        # rule and had already diverged from the other two. The step now
+        # calls the script for that too, so the rule is written once.
+        body = _step_script(_CODEX_RUN_STEP)
+        assert ".status = (" not in body
+        assert '.status == "ok"' not in body
+        assert "stamp review-codex.json" in body
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_status"),
+        [
+            (["promote"], "ok"),
+            (["promote", "--target-is-ours"], "failed"),
+        ],
+        ids=["model-output-is-re-derived", "our-verdict-is-preserved"],
+    )
+    def test_whose_target_it_is_comes_from_the_caller(
+        self, tmp_path: Path, argv: list[str], expected_status: str
+    ) -> None:
+        """The two modes, asked of one identical file.
+
+        Measured at the script rather than through the step, because the
+        step's later `stamp` call re-derives the status anyway and so
+        hides which mode `promote` used -- the first guard-strip of this
+        distinction passed for exactly that reason. A verdict that is
+        shape-valid and says "failed" is the one payload where the modes
+        must disagree, and it is a payload a model can write, which is
+        why the answer cannot be read off the file.
+        """
+        payload = {
+            "summary": "failed, by whoever wrote this",
+            "status": "failed",
+            "early_exit": False,
+            "issues": [],
+            "error": "cli_invocation_failed",
+        }
+        (tmp_path / "review-codex.json").write_text(json.dumps(payload))
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), *argv, "review-codex.json"],
+            cwd=tmp_path,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        written = json.loads((tmp_path / "review-codex.json").read_text())
+        assert written["status"] == expected_status
+
+    @pytest.mark.parametrize("mode", ["clear", "promote", "stamp"])
+    @pytest.mark.parametrize(
+        "target", ["../outside.txt", "/etc/passwd", "sub/dir.json", "", ".."]
+    )
+    def test_the_script_takes_only_a_plain_file_name(
+        self, tmp_path: Path, mode: str, target: str
+    ) -> None:
+        # Measured before the guard existed: `clear ../outside.txt`
+        # deleted a file outside the working directory. Both call sites
+        # pass literals today, and this script exists precisely to be the
+        # one place that rm -rf happens, so the one place should not
+        # accept an argument it cannot bound.
+        outside = tmp_path / "outside.txt"
+        outside.write_text("SHOULD SURVIVE", encoding="utf-8")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), mode, target],
+            cwd=workdir,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 2, result.stdout
+        assert "refusing to operate" in result.stderr
+        assert outside.read_text(encoding="utf-8") == "SHOULD SURVIVE"
+
+    def test_both_steps_name_the_same_promotion_script(self) -> None:
+        paths = {
+            match
+            for step in (_CODEX_RUN_STEP, _NORMALIZE_STEP)
+            for match in re.findall(r'PROMOTE="([^"]+)"', _step_script(step))
+        }
+        assert len(paths) == 1, paths
+        # And it is a real file, not a path that merely agrees with itself:
+        # the guard around every call treats "not there" as "do nothing",
+        # so a typo would disable the promotion in silence on both sides.
+        named = paths.pop().replace(".ai-dev-pr-review/", "", 1)
+        assert (_REPO_ROOT / named).is_file()
 
 
 _ORCHESTRATOR_WORKFLOW = (

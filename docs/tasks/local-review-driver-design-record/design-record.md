@@ -510,7 +510,7 @@ AFTER   3초 뒤: CLAUDE.md exists = False
 | `BOT_LOGIN` 기본값이 **인증된 `gh` 로그인**(`github-actions[bot]` 아님) | 로컬에서 그 작성자는 운영자이고, 워크플로 기본값이면 **실행마다 판정 코멘트가 쌓인다**(AT-2208) | 논증됨 |
 | 인라인 코멘트를 **리뷰어 전원 종료 후 직렬 게시** | 그래야 각 리뷰어가 앞 리뷰어가 단 것에 대고 중복을 거른다. Actions 에서는 셋이 경쟁해 아무도 서로를 못 본다 | 논증됨 |
 | **리뷰어 종료 코드가 집계에 닿는다** | Actions 는 `continue-on-error` 로 그것을 잃어, 자격 장애가 성공으로 보고되고 집계는 "early-exit or no-output"이라 말한다(AT-1837) | 논증됨 |
-| 레거시 판정 이름 승격이 **워크플로보다 먼저** | 워크플로의 `Normalize review file name` 이 run 단계가 오류 판정을 쓴 **뒤에** 돌아 진짜 판정을 가린다 | 논증됨(§3 의 알려진 간극) |
+| ~~레거시 판정 이름 승격이 **워크플로보다 먼저**~~ **해소됨** | 워크플로의 `Normalize review file name` 이 run 단계가 오류 판정을 쓴 **뒤에** 돌아 진짜 판정을 가렸다 — AT-2424 로 워크플로도 같은 순서가 됐다(`Run Codex review` 가 대체 경로들보다 **먼저** 승격한다) | 논증됨(§3 의 알려진 간극, 이후 닫힘) |
 | 크기 스킵 코멘트에 마커를 단다 | 마커 없는 코멘트는 접기 패스(`REVIEW_MARKER in node["body"]`, `aggregate_reviews.py:1100`)에 안 보여 **재실행마다 쌓인다** | 측정됨(접기 기전 확인) |
 
 `ALLOW_AUTO_APPROVE` 는 **꺼진 채로 고정**되고, 운영자가 `true` 로 export 해도 테스트가 그것을 붙든다
@@ -828,6 +828,10 @@ AFTER   3초 뒤: CLAUDE.md exists = False
   들어왔고 그때 닫혔다. 티켓 생성 시 `base-ai-review-single.yml` 을 직접 확인했으며 기전이 이 기록과
   같다: `Normalize` 의 가드가 `if [ ! -f "$EXPECTED" ]` 인데 `Run Codex review` 가 실패 경로에서 이미
   오류 판정을 `review-codex.json` 에 써 놓아 **승격이 통째로 건너뛰어진다.**
+  **이 절의 서술은 그대로 두되, 워크플로 쪽은 AT-2424 에서 고쳐졌다** — 승격이 `Run Codex review` 안,
+  어떤 오류 판정보다 **앞으로** 옮겨졌고(로컬 드라이버와 같은 순서), 재현 테스트가
+  `test_aggregate_reviews.py::TestCodexLegacyVerdictPromotion` 에 붙었다. 발견 당시 고치지 않았다는
+  이 절의 사실은 지우지 않는다.
   [#170 T23](https://github.com/ignite-corp/ai-dev-pr-review/pull/170#discussion_r4002071271) /
   [답글](https://github.com/ignite-corp/ai-dev-pr-review/pull/170#discussion_r4042179274)
 - **`base-ai-review-single.yml` 이 프롬프트를 같은 방식으로 넘기고 같은 `MAX_ARG_STRLEN` 상한을 갖는다.**
