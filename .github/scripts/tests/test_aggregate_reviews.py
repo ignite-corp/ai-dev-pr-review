@@ -1398,6 +1398,10 @@ class TestClaudeErrorVerdictStep:
 _CODEX_RUN_STEP = "Run Codex review"
 _NORMALIZE_STEP = "Normalize review file name"
 _PLANTED_SUMMARY = "No issues found."
+_VERDICT_JSON = '{"summary": "real", "early_exit": false, "issues": []}'
+# One file, two JSON documents: the shape `jq -e` answered "true" for,
+# because its exit status comes from the last value it printed.
+_MULTI_DOCUMENT = '{"note": "chatter"}\n' + _VERDICT_JSON
 # What the runner gives a `run:` block on Linux when the step names no
 # shell of its own: bash -e. A step body that aborts mid-way therefore
 # aborts here too -- running it under a plain `bash -c` hid a step that
@@ -1405,6 +1409,67 @@ _PLANTED_SUMMARY = "No issues found."
 _RUNNER_SHELL = ["bash", "-e", "-c"]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _PROMOTE_SCRIPT = Path(__file__).resolve().parents[1] / "promote_legacy_verdict.sh"
+
+
+def _logical_lines(text: str) -> list[tuple[int, str]]:
+    """Code only: comments dropped, `\\`-continued lines joined.
+
+    Each entry is tagged with the physical line it started on. Comments
+    go first because a backslash at the end of one does not continue it
+    in bash, and joining first let `rm -rf -- "$x"  # note \\` swallow
+    the whole of the next line.
+    """
+    joined: list[tuple[int, str]] = []
+    buffer = ""
+    start = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        if start is None:
+            start = number
+        # A `#` only starts a comment at the beginning of a word, so a
+        # quoted hash or a `${name#./}` expansion does not blank the
+        # rest of the line.
+        code = re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+        if code.endswith("\\"):
+            buffer += code[:-1] + " "
+            continue
+        joined.append((start, buffer + code))
+        buffer, start = "", None
+    if buffer:
+        joined.append((start or 1, buffer))
+    return joined
+
+
+def _unguarded_destructive_commands(text: str) -> list[str]:
+    """Every `rm`/`mv` in `text` whose own arguments lack `--`.
+
+    One command per shell segment: each match's arguments stop at the
+    next separator, so a marker belonging to a neighbour cannot vouch
+    for a command that has none. The shapes this must catch are the
+    parametrized cases of TestTheDestructiveCommandScan.
+
+    KNOWN LIMITS. It cannot see a command reached through `eval`,
+    through a variable (`$CMD -rf "$x"`), or through another program
+    (`find ... -exec rm`, `xargs rm`), and it does not parse here-doc
+    bodies. It has no real quoting model, which costs it both ways: a
+    `;` or `|` inside a string ends a segment early, which is noisy,
+    and a whitespace-preceded `#` inside a string blanks the rest of
+    the line, which is silent -- `echo "a # b"; rm -rf "$x"` reports no
+    offender. Counting quote depth closes that shape and not the next,
+    so it is left as a limit rather than chased.
+
+    None of these appears in the script today, and what this guards is
+    itself a backstop: require_verdict_name is the loud early failure,
+    and every verdict path routes through it before any destructive
+    call.
+    """
+    offenders: list[str] = []
+    for number, code in _logical_lines(text):
+        for match in re.finditer(r"(?:^|[;&|(`{]|\s)(rm|mv)\s+([^;&|]*)", code):
+            command, arguments = match.group(1), match.group(2)
+            if not re.search(r"(^|\s)--(\s|$)", arguments):
+                offenders.append(f"{number}: {command} {arguments.strip()}")
+    return offenders
+
 
 requires_codex_step_tools = pytest.mark.skipif(
     any(shutil.which(tool) is None for tool in ("jq", "python3")),
@@ -1782,7 +1847,32 @@ class TestCodexLegacyVerdictPromotion(_CodexStepHarness):
         assert self._verdict(tmp_path)["summary"] == "the real verdict"
 
     @pytest.mark.parametrize(
-        "junk", ["not json at all", "[]", '"a string"', "null", '{"foo": 1}']
+        "junk",
+        [
+            "not json at all",
+            "[]",
+            '"a string"',
+            "null",
+            '{"foo": 1}',
+            # Two documents in one file. The shape test used to be `jq -e`,
+            # which takes its exit status from the LAST value, so a stray
+            # object followed by a real verdict answered "true" -- and the
+            # stamping emits one object per input document, so what got
+            # installed was a file no json.load can read.
+            _MULTI_DOCUMENT,
+            _VERDICT_JSON + "\n" + _VERDICT_JSON,
+            _VERDICT_JSON + "\nnot json",
+        ],
+        ids=[
+            "unparseable",
+            "array",
+            "string",
+            "null",
+            "partial-object",
+            "stray-object-then-verdict",
+            "verdict-twice",
+            "verdict-then-garbage",
+        ],
     )
     def test_a_malformed_legacy_verdict_leaves_an_honest_error_verdict(
         self, tmp_path: Path, junk: str
@@ -1798,8 +1888,34 @@ class TestCodexLegacyVerdictPromotion(_CodexStepHarness):
         assert verdict["status"] == "failed"
         assert verdict["error"] == "output_unparseable"
 
-    @pytest.mark.parametrize("payload", ["[]", "null", '"a string"'])
-    def test_a_parseable_non_object_direct_write_leaves_an_error_verdict(
+    def test_whatever_is_installed_as_the_verdict_is_one_json_document(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The property the shape test exists to guarantee, asked of the
+        # file rather than of its last value: the aggregate reads these
+        # with json.load, which raises on the second document. A
+        # multi-document promotion therefore cost the review entirely --
+        # and silently, because it displaced the honest error verdict and
+        # its log tail on the way.
+        self._run_codex_step(
+            tmp_path, writes=[("verdict-openai.json", _MULTI_DOCUMENT)]
+        )
+        body = (tmp_path / "review-codex.json").read_text(encoding="utf-8")
+        # Raises "Extra data" on a multi-document file, which is the
+        # assertion: the aggregate reads these the same way.
+        verdict = json.loads(body)
+        assert verdict["error"] == "output_unparseable"
+        assert verdict["error_detail"], "the diagnostic must survive"
+        reviews, available = self._aggregate_sees(tmp_path, monkeypatch)
+        assert "codex" not in available
+        assert reviews["codex"] is not None, "readable, and honestly failed"
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["[]", "null", '"a string"', _MULTI_DOCUMENT],
+        ids=["array", "null", "string", "multi-document"],
+    )
+    def test_a_direct_write_that_is_not_one_json_object_leaves_an_error_verdict(
         self, tmp_path: Path, payload: str
     ) -> None:
         # The inline filter indexed these and errored, and the `&&` made
@@ -2293,7 +2409,21 @@ class TestPromotionScriptAgreesWithItsCallers:
 
     @pytest.mark.parametrize("mode", ["clear", "promote", "stamp"])
     @pytest.mark.parametrize(
-        "target", ["../outside.txt", "/etc/passwd", "sub/dir.json", "", ".."]
+        "target",
+        [
+            "../outside.txt",
+            "/etc/passwd",
+            "sub/dir.json",
+            "",
+            "..",
+            # Refused rather than merely marked: the `--` on every rm and
+            # mv settles those two, but `clear -rf` would still sweep the
+            # legacy candidates and leave the TARGET standing, which is a
+            # PR-committed review-codex.json read as this run's verdict.
+            # jq reads a dash-leading name as an option besides.
+            "-rf",
+            "--help",
+        ],
     )
     def test_the_script_takes_only_a_plain_file_name(
         self, tmp_path: Path, mode: str, target: str
@@ -2338,6 +2468,107 @@ _ORCHESTRATOR_WORKFLOW = (
     / "workflows"
     / "base-ai-review-orchestrator.yml"
 )
+
+
+class TestTheDestructiveCommandScan:
+    """The `--` convention across the script, and the scan that checks it.
+
+    UNGATED, deliberately. These read the script source and run
+    regexes: no subprocess, no jq, no python3 beyond this interpreter.
+    Gating them on jq would let the one test enforcing the marker
+    across the whole script stop running on a machine that lacks it.
+
+    The parametrized cases are the shapes the scan must catch and the
+    ones it must not flag; each was measured against the scan rather
+    than assumed.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'rm -rf "$name"',
+            'mv "$tmp" "$target"',
+            'rm -f -- "$tmp" && rm -rf "$dir"',
+            'rm -rf "$name" || echo -- skipped',
+            'if [ -e "$x" ]; then rm -rf "$x"; fi',
+            'out=$(rm -rf "$x")',
+            'out=`rm -rf "$x"`',
+            'echo "#"; rm -rf "$x"',
+            '[ "$x" = "#" ] && rm -rf "$x"',
+            'rm -rf \\\n    "$name"',
+            'rm -rf -- "$x"  # note \\\n    rm -rf "$y"',
+        ],
+        ids=[
+            "bare-rm",
+            "bare-mv",
+            "second-command-on-the-line",
+            "marker-belongs-to-a-neighbour",
+            "after-then",
+            "inside-a-substitution",
+            "inside-a-backtick-substitution",
+            "after-a-quoted-hash",
+            "after-a-quoted-hash-in-a-test",
+            "split-over-a-line-continuation",
+            "after-a-comment-ending-in-a-backslash",
+        ],
+    )
+    def test_the_scan_catches_an_unguarded_command(self, line: str) -> None:
+        assert _unguarded_destructive_commands(line)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'rm -rf -- "$name"',
+            'mv -- "$tmp" "$target"',
+            'rm -f -- "$tmp" && rm -rf -- "$dir"',
+            '# rm -rf "$name"',
+            'confirm "$name"',
+            'rm -rf -- "$name"  # rm -rf without a marker, in prose',
+            'rm -rf -- "${name#./}"',
+            'rm -rf -- \\\n    "$name"',
+        ],
+        ids=[
+            "guarded-rm",
+            "guarded-mv",
+            "both-guarded",
+            "a-comment",
+            "a-word-ending-in-rm",
+            "prose-after-the-code",
+            "a-hash-inside-an-expansion",
+            "guarded-over-a-line-continuation",
+        ],
+    )
+    def test_the_scan_does_not_cry_wolf(self, line: str) -> None:
+        assert not _unguarded_destructive_commands(line)
+
+    def test_every_destructive_command_ends_its_options(self) -> None:
+        """Every `rm` and `mv` in the script takes `--` before its operands.
+
+        What `--` buys is narrow and worth stating exactly: a name
+        beginning with a dash is read as an operand rather than an
+        option. It bounds nothing else -- `rm -rf -- ../outside.txt`
+        still deletes outside the working directory -- so against
+        traversal and absolute paths require_verdict_name is the ONLY
+        defence, and this marker is no reason to relax it.
+
+        Asserted against the SOURCE, because no input reaches these
+        invocations with a dash-leading operand while that validation
+        stands in front of them. A behavioural test would pass because
+        of the guard it is not testing; this one fails when a marker is
+        dropped from an invocation the scan can see -- and what the scan
+        can see is itself tested, in the two cases above.
+
+        jq is deliberately excluded. It only reads, it exits non-zero on
+        a name it parses as an option, and a failed read is already a
+        refusal -- whereas `--` support is jq-version-dependent, so
+        adding it would trade a safe failure for a portability risk.
+        """
+        offenders = _unguarded_destructive_commands(
+            _PROMOTE_SCRIPT.read_text(encoding="utf-8")
+        )
+        assert not offenders, "missing an end-of-options marker: " + "; ".join(
+            offenders
+        )
 
 
 class TestSizeSkipVerdict:
