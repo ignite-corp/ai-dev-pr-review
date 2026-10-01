@@ -58,24 +58,21 @@ usage() {
 # able to take an argument it cannot bound. Measured before it was added:
 # `clear ../outside.txt` deleted a file outside the working directory.
 #
-# This is the loud, early failure. For a LEADING-DASH name it is not the
-# only defence: every rm and mv below passes `--`, so such a name
-# reaching them is treated as an operand rather than as an option. For
-# `../` and absolute paths this check IS the only defence -- `--` stops
-# option interpretation and bounds nothing, so `rm -rf -- ../outside.txt`
-# still deletes what the measurement above records. Do not relax this on
-# the strength of the markers.
-#
-# jq is left without one deliberately: it only reads, it fails on a name
-# it parses as an option, and a failed read is already a refusal.
+# For a LEADING-DASH name this is not the only defence: every rm and mv
+# below passes `--`, so such a name reaches them as an operand. `--`
+# stops option interpretation and bounds nothing else, so for `../` and
+# absolute paths this check is the only defence: `rm -rf -- ../outside.txt`
+# still deletes outside the working directory. The `--` markers are not
+# grounds to relax this check. jq takes no marker -- it only reads, it
+# exits non-zero on a name it parses as an option, and `--` support is
+# jq-version-dependent, so adding one would trade a safe failure for a
+# portability risk.
 require_verdict_name() {
   case ${1:-} in
-    # A dash-leading name is refused here, not merely marked. The
-    # markers settle rm and mv; what they do not settle is that `clear
-    # -rf` would sweep the two legacy candidates and leave the TARGET
-    # standing -- a review-codex.json the PR committed, read as this
-    # run's verdict, which is the loss the header describes. jq reads
-    # one as an option besides.
+    # A dash-leading name is refused rather than left to the `--`
+    # markers: those settle rm and mv, but `clear -rf` would still
+    # sweep the legacy candidates and leave the TARGET standing -- a
+    # review-codex.json the PR committed, read as this run's verdict.
     "" | -* | */* | .*)
       echo "::error::refusing to operate on '${1:-}':" \
         "expected a plain file name in the working directory" >&2
@@ -102,12 +99,18 @@ IS_VERDICT='
 
 # SLURPED, so the shape is asked of the FILE and not of its last JSON
 # value: `jq -e` takes its exit status from the last value it printed, so
-# a stray object followed by a real verdict passed, STAMP emitted one
-# stamped object per input document, and the file installed as the
-# verdict held two -- which the aggregate's json.load cannot read.
-# `length == 1` makes single-document part of the shape. Every writer
-# here emits exactly one, so nothing legitimate is refused: jq -n in the
-# workflow, json.dump/json.dumps in the extractors and the shims.
+# a stray object followed by a real verdict answers true -- and STAMP
+# emits one stamped object per input document, so the file installed as
+# the verdict then holds two. The aggregate reads it with json.load,
+# which refuses a second document, so `length == 1` is part of the
+# shape. A two-document INPUT can only come from a write this pipeline
+# does not constrain -- the model's own, or a file the PR committed
+# that reached 'Normalize review file name' (base-ai-review-single.yml)
+# before `clear` ran; STAMP only carries the count through, never
+# raises it. Ours all emit exactly one: jq -n in the workflow,
+# json.dump and json.dumps in the extractors and the shims. So nothing
+# legitimate is refused, and a writer added later has that roster to
+# join.
 is_verdict() {
   jq -se "length == 1 and (.[0] | ($IS_VERDICT))" "$1" > /dev/null 2>&1
 }

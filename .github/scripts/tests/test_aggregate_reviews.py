@@ -1442,25 +1442,41 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
 def _unguarded_destructive_commands(text: str) -> list[str]:
     """Every `rm`/`mv` in `text` whose own arguments lack `--`.
 
-    One command per shell segment: each match's arguments stop at the
-    next separator, so a marker belonging to a neighbour cannot vouch
-    for a command that has none. The shapes this must catch are the
-    parametrized cases of TestTheDestructiveCommandScan.
+    Arguments stop at the next shell separator, so a marker belonging
+    to a neighbour cannot vouch for a command that has none. The
+    shapes it is known to handle -- caught and not-flagged alike --
+    are the parametrized cases of TestTheDestructiveCommandScan; the
+    KNOWN LIMITS below are the shapes outside that catalogue.
 
-    KNOWN LIMITS. It cannot see a command reached through `eval`,
-    through a variable (`$CMD -rf "$x"`), or through another program
-    (`find ... -exec rm`, `xargs rm`), and it does not parse here-doc
-    bodies. It has no real quoting model, which costs it both ways: a
-    `;` or `|` inside a string ends a segment early, which is noisy,
-    and a whitespace-preceded `#` inside a string blanks the rest of
-    the line, which is silent -- `echo "a # b"; rm -rf "$x"` reports no
-    offender. Counting quote depth closes that shape and not the next,
-    so it is left as a limit rather than chased.
+    KNOWN LIMITS. Each below was established by running the scan, and
+    they are sorted by the direction they fail in. The list is not
+    exhaustive, and absence from it is not a clearance: run an
+    uncatalogued shape against the scan rather than assuming the scan
+    handles it.
 
-    None of these appears in the script today, and what this guards is
-    itself a backstop: require_verdict_name is the loud early failure,
-    and every verdict path routes through it before any destructive
-    call.
+    SILENT -- a real call goes unreported: one reached through `eval`
+    or a variable (`$CMD -rf "$x"`), and one standing after a
+    whitespace-preceded `#` in a string, which blanks the rest of the
+    line (`echo "a # b"; rm -rf "$x"` yields nothing). Tolerated rather
+    than chased: the scan is a backstop, and require_verdict_name
+    refuses a bad name before any destructive call runs.
+
+    NOISY -- the suite goes red with no unguarded call in the script.
+    Two shapes come from having no quoting model: a `;` or `|` inside
+    an operand ends the argument capture before the marker, so a
+    guarded `rm -rf "a;b" -- "$x"` is reported; and a
+    whitespace-preceded `rm `/`mv ` in a string reads as a command, so
+    `echo "will rm -rf the file"` is too. A third has a separate cause
+    -- _logical_lines does not track here-docs, so a body line reaches
+    the scan as ordinary code and `rm -rf x` inside one is reported.
+    Recognise these as scan artefacts, not a missing marker. Whether
+    any is present is not a question the reader has to take on trust:
+    test_every_destructive_command_ends_its_options scans the whole
+    script and reports every offender, so a green suite means none of
+    the three is in it, and a red one names the line. On the string
+    shape, the `::notice::`/`::error::` prefix is not what keeps the
+    suite green: it helps only directly before the word, so
+    `echo "::notice::could not rm -rf $x"` would still be reported.
     """
     offenders: list[str] = []
     for number, code in _logical_lines(text):
@@ -2475,12 +2491,14 @@ class TestTheDestructiveCommandScan:
 
     UNGATED, deliberately. These read the script source and run
     regexes: no subprocess, no jq, no python3 beyond this interpreter.
-    Gating them on jq would let the one test enforcing the marker
-    across the whole script stop running on a machine that lacks it.
+    A jq skip-if here would stop the marker being enforced across the
+    whole script on a machine that lacks jq, and say only "skipped".
 
-    The parametrized cases are the shapes the scan must catch and the
-    ones it must not flag; each was measured against the scan rather
-    than assumed.
+    The parametrized cases below are the catalogue the helper's
+    docstring points here for: the shapes the scan must catch, and the
+    ones it must not flag. They run on every suite execution, so a
+    shape listed here is one the scan is known to handle and not one it
+    is merely meant to.
     """
 
     @pytest.mark.parametrize(
@@ -2544,24 +2562,11 @@ class TestTheDestructiveCommandScan:
     def test_every_destructive_command_ends_its_options(self) -> None:
         """Every `rm` and `mv` in the script takes `--` before its operands.
 
-        What `--` buys is narrow and worth stating exactly: a name
-        beginning with a dash is read as an operand rather than an
-        option. It bounds nothing else -- `rm -rf -- ../outside.txt`
-        still deletes outside the working directory -- so against
-        traversal and absolute paths require_verdict_name is the ONLY
-        defence, and this marker is no reason to relax it.
-
-        Asserted against the SOURCE, because no input reaches these
-        invocations with a dash-leading operand while that validation
-        stands in front of them. A behavioural test would pass because
-        of the guard it is not testing; this one fails when a marker is
-        dropped from an invocation the scan can see -- and what the scan
-        can see is itself tested, in the two cases above.
-
-        jq is deliberately excluded. It only reads, it exits non-zero on
-        a name it parses as an option, and a failed read is already a
-        refusal -- whereas `--` support is jq-version-dependent, so
-        adding it would trade a safe failure for a portability risk.
+        Asserted against the SOURCE: require_verdict_name rejects a
+        dash-leading name before any of these run, so a behavioural
+        test would pass whether or not the marker were present. This
+        one fails when a marker is dropped from an invocation the scan
+        can see. jq is excluded -- see the script for why.
         """
         offenders = _unguarded_destructive_commands(
             _PROMOTE_SCRIPT.read_text(encoding="utf-8")
