@@ -16,7 +16,8 @@ name: spike-cross-repo-probe
 # This workflow WRITES NOTHING to the target repository. No comments, no
 # reviews, no labels, no commits: every request below is a GET, and the
 # write-capability probe reads the App installation's permission set instead
-# of testing it by posting. Results go to the job summary.
+# of testing it by posting. Results go to the job summary and, so that a
+# run can be read without a browser, to the step log as well.
 #
 # This repo is PUBLIC, so these logs are public, and the reviewer App can read
 # every private repository in ignite-corp and ignite-pilot-org. An
@@ -57,6 +58,163 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # The helpers, written once. A `run:` block is its own shell, so a
+      # function defined in one is gone by the next, and before this step the
+      # file carried two of them pasted into every block that used them --
+      # emit() into all seven, api_message() into three -- kept in step by
+      # hand. $RUNNER_TEMP outlives the step that writes it, so one file
+      # sourced everywhere replaces both sets of clones.
+      #
+      # This step stays FIRST and has no `continue-on-error`. Nothing in the
+      # workflow schema enforces that, so the dependency is not left implicit:
+      # the path is published once, in $PROBE_LIB, and every consumer checks
+      # the source and says what is wrong. `bash -e` is NOT what makes that
+      # loud -- the blocks set `-uo pipefail` without `-e`, and the `-e` they
+      # run under comes from the Actions default shell, outside this file.
+      - name: Write the shared probe helpers
+        run: |
+          set -uo pipefail
+          # The one place this path is spelled. Published through $GITHUB_ENV
+          # so every later block takes it from the step that created the file
+          # and cannot drift from it. A job-level `env:` cannot hold it: the
+          # `runner` context is not available there (actionlint rejects it),
+          # and a literal $RUNNER_TEMP in an `env:` value is never expanded.
+          #
+          # Each consumer carries a `# shellcheck source=/dev/null` pragma:
+          # the file is not in the tree, so SC1090 cannot follow it, and the
+          # pragma declares that rather than suppressing it wholesale.
+          #
+          # Each consumer expands it as `${PROBE_LIB:-}`, never `$PROBE_LIB`.
+          # A bare expansion of an unset variable aborts the shell under
+          # `set -u` BEFORE the `||` can run, so the branch could never report
+          # the one case -- this step not having run -- that its message
+          # names. The default keeps the branch reachable and the message
+          # prints `${PROBE_LIB:-<unset>}`, which separates never-published
+          # from published-but-gone. What the default gives up is `set -u`
+          # catching a MISSPELLED variable by name: that now expands to empty
+          # and lands in the same branch, still failing the step loudly, but
+          # printing the published path rather than the typo.
+          PROBE_LIB="$RUNNER_TEMP/probe_lib.sh"
+          echo "PROBE_LIB=$PROBE_LIB" >> "$GITHUB_ENV"
+          # The write is made idempotent before the file is made read-only:
+          # on a runner that reuses $RUNNER_TEMP, `cat >` over a leftover 0444
+          # file is EACCES. Removing it needs write on the DIRECTORY, not on
+          # the file, so this succeeds where the overwrite would not.
+          rm -f "$PROBE_LIB"
+          cat > "$PROBE_LIB" <<'LIB'
+          # Results go to stdout as well as to the job summary. The summary
+          # renders only in a browser -- check-run output.summary is null for
+          # this workflow and `gh run view --log` carried none of it -- so the
+          # answer this spike exists to give could not be read
+          # programmatically at all (AT-2520).
+          #
+          # The sed is a guard, not decoration. The runner PARSES stdout for
+          # workflow commands and the summary file has no such power, so
+          # putting API-derived text on stdout is a NEW surface and not a
+          # strictly safer one.
+          #
+          # BOTH of the runner's command forms are defanged, and on
+          # everything emit is handed rather than on api_message output
+          # alone. That distinction is the point: some of what reaches emit
+          # never passes that sanitiser -- the installation account, type,
+          # repository_selection and permission set printed by Probe 1b.
+          # Their value spaces are what make them safe to print, and that is
+          # a fact about GitHub's API, not a property of emit. A guard in
+          # emit may not borrow it.
+          #
+          # `::` is the current form. ActionCommand.TryParseV2 reads
+          #   message = message.TrimStart();
+          #   if (!message.StartsWith(_commandKey)) return false;
+          # with `_commandKey = "::"`, so leading whitespace does not keep a
+          # line from being parsed.
+          #
+          # The leading class is a deliberate SUPERSET of what the runner
+          # trims, not a transcription of it. Parameterless TrimStart()
+          # removes every char.IsWhiteSpace: U+0085, U+00A0, U+1680,
+          # U+2000-U+200A, U+2028, U+2029, U+202F, U+205F and U+3000 on top
+          # of the ASCII six. The obvious POSIX classes do not reach those.
+          # Measured against all of them on GNU sed 4.9 with glibc:
+          # `[[:space:]]` misses U+0085, U+00A0, U+2007 and U+202F, and
+          # `[^[:graph:]]` still misses U+00A0, U+2007 and U+202F, because
+          # glibc classifies the non-breaking spaces as graph. Spelling the
+          # characters out is not open to us either -- this file is
+          # ASCII-only by test. `[^[:alnum:]:]` sidesteps the classification
+          # question instead: no whitespace character is alphanumeric, in
+          # any locale, so the class contains every one of them by
+          # construction. It also takes leading punctuation, which the
+          # runner would NOT trim -- the safe direction, since the worst
+          # case is a `:_:` on a line the runner was going to ignore, and no
+          # line this workflow emits has that shape. Excluding `:` is what
+          # stops the run before the pair being matched. The capture puts
+          # the prefix back, so the summary renders as before.
+          #
+          # `##[` is the older form, and a laxer parser: TryParse does
+          # `message.IndexOf(Prefix)` with `Prefix = "##["` and no index-0
+          # requirement, so it matches ANYWHERE in a line, then wants a `]`
+          # and a name in registeredCommands. Hence the second expression is
+          # global and unanchored. Nothing this workflow emits contains
+          # `##[` -- its markdown headings are `## ` -- so nothing renders
+          # differently.
+          #
+          # Neither shape is reachable today: api_message maps newline, CR
+          # and every byte outside its whitelist to `?`, and all five of its
+          # call sites prefix the text. But `:` is inside that whitelist, and
+          # both of those are properties of the CALLERS, which an edit can
+          # drop without noticing. Do not remove this as redundant.
+          #
+          # Two ways `{ ...; } | emit` differs from the
+          # `{ ...; } >> "$GITHUB_STEP_SUMMARY"` it replaced. Both are
+          # harmless as the callers stand; both are worth knowing before
+          # writing a new one.
+          #   - Exit status. Under pipefail the pipeline reports the LAST
+          #     stage to exit non-zero, so when the block AND the write both
+          #     fail it is the write's status that surfaces and not the
+          #     block's. A failing block on its own still fails the step --
+          #     all any caller relies on -- and an unwritable summary file
+          #     still fails it too. Measured against the redirect over both
+          #     axes: the same status in every reachable case, but the
+          #     redirect fails BEFORE the block runs, where the pipeline runs
+          #     the block and puts its output on stdout regardless. Adding
+          #     the sed ahead of tee changes none of this -- measured
+          #     identical to the bare `| tee` form in all four cases.
+          #   - Scope. The group runs in a SUBSHELL; under the redirect it ran
+          #     in the current shell. No caller assigns a variable or calls
+          #     `exit` inside an emitted group. One that did would lose the
+          #     assignment, or exit the subshell only.
+          emit() { sed -E -e 's/^([^[:alnum:]:]*)::/\1:_:/' -e 's/##\[/##_[/g' | tee -a "$GITHUB_STEP_SUMMARY"; }
+
+          # API text reaches a PUBLIC summary inside an inline-code span, so
+          # it gets the same treatment the gate's reject() gives a failed
+          # input: bound the length with substring expansion FIRST, then
+          # whitelist. A backtick plus newline would otherwise close the span
+          # and inject chosen markdown. Truncating with `head -c` instead
+          # would SIGPIPE its producer, which pipefail turns into a dead
+          # branch -- so the jq fallback reads the whole body and the bound
+          # is applied after.
+          api_message() {
+            # How much of a response body may be quoted. CHARACTERS, not
+            # bytes: the whitelist below runs per byte, so one multibyte
+            # character inside the bound can leave as several `?`.
+            local max_chars=200
+            local raw
+            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
+              || raw=$(cat "$1")
+            [ -n "$raw" ] || raw='(empty response body)'
+            printf '%s' "${raw:0:max_chars}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
+          }
+          LIB
+          # $RUNNER_TEMP also holds the target's diff and PR JSON, which this
+          # workflow treats as untrusted, and this change is what first makes
+          # a file in there executable code -- seven later steps source it.
+          #
+          # The mode is defense in depth and NOT a tamper guarantee. It costs
+          # an accidental `>` an EACCES, and that is all: unlink permission
+          # comes from the DIRECTORY, not the file, so anything running as the
+          # same user can remove this and put another in its place -- which is
+          # exactly what the `rm -f` two lines above does on purpose. Do not
+          # read it as a reason to trust whatever else shares this directory.
+          chmod 0444 "$PROBE_LIB"
+
       # Gate. Shape first, then the allowlist, both comparing the WHOLE
       # string: `printf | grep -Eq '^...$'` matches per line, so a multi-line
       # dispatch input passes on its first line and the remainder reaches
@@ -69,6 +227,8 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -uo pipefail
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
 
           # The only targets this spike may point the reviewer App at.
           ALLOWED_TARGETS=(
@@ -101,7 +261,7 @@ jobs:
               for t in "${ALLOWED_TARGETS[@]}"; do
                 echo "- \`${t}\`"
               done
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | emit
             echo "::error::$1"
             exit 1
           }
@@ -156,7 +316,7 @@ jobs:
             echo "Target: \`${TARGET_REPO}\` PR #${PR_NUMBER} -- allowlisted,"
             echo "read-only, nothing written."
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | emit
 
       # Probe 1. Can the reviewer App mint an installation token scoped to the
       # TARGET's owner? A failure here is a result, not a crash -- "App not
@@ -188,6 +348,8 @@ jobs:
           TARGET_REPO: ${{ steps.target.outputs.repo }}
         run: |
           set -uo pipefail
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
           if [ -z "${APP_ID:-}" ] || [ -z "${APP_PRIVATE_KEY:-}" ]; then
             echo "REVIEWER_APP_ID / REVIEWER_APP_PRIVATE_KEY not reachable from this repo"
             # `unanswered`, not an unset value: nothing was asked here, so
@@ -200,7 +362,7 @@ jobs:
               echo "installed=unanswered"
             } >> "$GITHUB_OUTPUT"
             echo "- **Probe 1b**: App credentials not reachable from this repo." \
-              >> "$GITHUB_STEP_SUMMARY"
+              | emit
             exit 0
           fi
 
@@ -215,22 +377,6 @@ jobs:
           # would otherwise outlive the one step that reads it. The JWT
           # reaches curl on stdin (-H @-), never in argv.
           b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
-          # API text reaches a PUBLIC summary inside an inline-code span, so
-          # it gets the same treatment the gate's reject() gives a failed
-          # input: bound the length with substring expansion FIRST, then
-          # whitelist. A backtick plus newline would otherwise close the span
-          # and inject chosen markdown. Truncating with `head -c` instead
-          # would SIGPIPE its producer, which pipefail turns into a dead
-          # branch -- so the jq fallback reads the whole body and the bound
-          # is applied after. Repeated in Probes 2 and 5 as well: each
-          # `run:` block is its own shell, so this is the only reuse there is.
-          api_message() {
-            local raw
-            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
-              || raw=$(cat "$1")
-            [ -n "$raw" ] || raw='(empty response body)'
-            printf '%s' "${raw:0:200}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
-          }
           key_file="$RUNNER_TEMP/app-key.pem"
           body="$RUNNER_TEMP/installation.json"
           trap 'rm -f "$key_file" "$body"' EXIT
@@ -252,7 +398,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             echo "- **Probe 1b**: App JWT could not be signed -- the private" \
               "key is unusable, so reachability is unanswered (not \`no\`)." \
-              >> "$GITHUB_STEP_SUMMARY"
+              | emit
             exit 0
           fi
           jwt="${header}.${payload}.${signature}"
@@ -282,7 +428,7 @@ jobs:
               echo "- **Probe 1b**: installation found on \`${account}\` (${account_type}),"
               echo "  repository_selection \`${selection}\`."
               echo "  - permissions: \`${perms}\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | emit
           elif [ "$code" = "404" ]; then
             # The ONLY code that means "no installation". GitHub returns it
             # both when the App is absent from the account and when the
@@ -294,7 +440,7 @@ jobs:
             {
               echo "- **Probe 1b**: no installation reachable -- HTTP 404."
               echo "  - API message: \`$(api_message "$body")\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | emit
           else
             # Every OTHER non-200 -- a 401 from a rejected JWT (clock skew,
             # wrong App id), a 403, a GitHub 5xx, and the `000` of a request
@@ -309,7 +455,7 @@ jobs:
               echo "- **Probe 1b**: reachability NOT established -- HTTP ${code}."
               echo "    Not a \`no\`: only HTTP 404 means no installation."
               echo "  - API message: \`$(api_message "$body")\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | emit
           fi
 
       # Probe 2. Can the App token read the PR at all? The HTTP code is the
@@ -325,21 +471,11 @@ jobs:
           PR_NUMBER: ${{ steps.target.outputs.pr }}
         run: |
           set -uo pipefail
-          # Probe 1b's sanitiser, repeated because each `run:` block is its
-          # own shell: bound the length with substring expansion first, then
-          # whitelist, so a backtick plus newline in a response body cannot
-          # close the inline-code span below and inject markdown into this
-          # public summary.
-          api_message() {
-            local raw
-            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
-              || raw=$(cat "$1")
-            [ -n "$raw" ] || raw='(empty response body)'
-            printf '%s' "${raw:0:200}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
-          }
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
           if [ -z "${APP_TOKEN:-}" ]; then
             echo "http=skipped" >> "$GITHUB_OUTPUT"
-            echo "- **Probe 2**: skipped, Probe 1 returned no token." >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Probe 2**: skipped, Probe 1 returned no token." | emit
             exit 0
           fi
           body="$RUNNER_TEMP/pr.json"
@@ -359,20 +495,20 @@ jobs:
           case "$code" in
             200)
               echo "- **Probe 2**: PR readable: yes (HTTP 200). No PR metadata printed." \
-                >> "$GITHUB_STEP_SUMMARY"
+                | emit
               ;;
             404)
               {
                 echo "- **Probe 2**: PR NOT readable -- HTTP 404."
                 echo "  - API message: \`$(api_message "$body")\`"
-              } >> "$GITHUB_STEP_SUMMARY"
+              } | emit
               ;;
             *)
               {
                 echo "- **Probe 2**: readability NOT established -- HTTP ${code}."
                 echo "    Not a \`no\`: only HTTP 404 means the PR is not readable."
                 echo "  - API message: \`$(api_message "$body")\`"
-              } >> "$GITHUB_STEP_SUMMARY"
+              } | emit
               ;;
           esac
 
@@ -389,9 +525,11 @@ jobs:
           PR_NUMBER: ${{ steps.target.outputs.pr }}
         run: |
           set -uo pipefail
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
           if [ -z "${APP_TOKEN:-}" ]; then
             echo "http=skipped" >> "$GITHUB_OUTPUT"
-            echo "- **Probe 3**: skipped, Probe 1 returned no token." >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Probe 3**: skipped, Probe 1 returned no token." | emit
             exit 0
           fi
           body="$RUNNER_TEMP/pr.diff"
@@ -415,17 +553,17 @@ jobs:
               # promises this public summary will not print.
               bytes=$(wc -c < "$body")
               echo "- **Probe 3**: diff readable -- ${bytes} bytes." \
-                >> "$GITHUB_STEP_SUMMARY"
+                | emit
               ;;
             404)
               echo "- **Probe 3**: diff NOT readable -- HTTP 404." \
-                >> "$GITHUB_STEP_SUMMARY"
+                | emit
               ;;
             *)
               {
                 echo "- **Probe 3**: diff readability NOT established -- HTTP ${code}."
                 echo "    Not a \`no\`: only HTTP 404 means the diff is not readable."
-              } >> "$GITHUB_STEP_SUMMARY"
+              } | emit
               ;;
           esac
 
@@ -460,6 +598,8 @@ jobs:
           ISSUES_PERM: ${{ steps.installation.outputs.issues }}
         run: |
           set -uo pipefail
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
           # One constant for the fetch size and for the guard that reads it:
           # they must agree, or a partial read becomes a confident
           # "target NOT among them".
@@ -563,7 +703,7 @@ jobs:
             echo "  from the installation scope and permission set, never tested by posting."
             echo "  - ${install_line}"
             echo "  - ${scope_line}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | emit
 
       # Probe 5. The fallback: does the default GITHUB_TOKEN reach across
       # repositories? It should not. Record what actually happens rather than
@@ -582,18 +722,8 @@ jobs:
           PR_NUMBER: ${{ steps.target.outputs.pr }}
         run: |
           set -uo pipefail
-          # Probe 1b's sanitiser, repeated because each `run:` block is its
-          # own shell: bound the length with substring expansion first, then
-          # whitelist, so a backtick plus newline in a response body cannot
-          # close the inline-code span below and inject markdown into this
-          # public summary.
-          api_message() {
-            local raw
-            raw=$(jq -r '.message // "(no message field)"' "$1" 2>/dev/null) \
-              || raw=$(cat "$1")
-            [ -n "$raw" ] || raw='(empty response body)'
-            printf '%s' "${raw:0:200}" | tr -c 'A-Za-z0-9 _.,:;/()-' '?'
-          }
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
           body="$RUNNER_TEMP/pr-default.json"
           trap 'rm -f "$body"' EXIT
           code=$(printf 'Authorization: Bearer %s\nAccept: application/vnd.github+json\n' \
@@ -604,7 +734,7 @@ jobs:
           echo "http=${code}" >> "$GITHUB_OUTPUT"
           if [ "$code" = "200" ]; then
             echo "- **Probe 5**: the default GITHUB_TOKEN DID read the target PR (HTTP 200)." \
-              >> "$GITHUB_STEP_SUMMARY"
+              | emit
           else
             # Parsed here, not before the status check: on the success path
             # the body is a possibly-private target's full PR JSON, and
@@ -614,7 +744,7 @@ jobs:
               echo "  - API message: \`$(api_message "$body")\`"
               echo "  - caveat: this run grants \`contents: read\` only, so a non-200"
               echo "    here is not by itself evidence of a cross-repo boundary."
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | emit
           fi
 
       # Skipped when the gate rejected the target: no probe ran, so there is
@@ -632,6 +762,8 @@ jobs:
           DEFAULT_HTTP: ${{ steps.default_token.outputs.http }}
         run: |
           set -uo pipefail
+          # shellcheck source=/dev/null
+          . "${PROBE_LIB:-}" || { echo "::error::probe helpers not loaded (PROBE_LIB=${PROBE_LIB:-<unset>}); the 'Write the shared probe helpers' step must run first"; exit 1; }
           {
             echo
             echo "### Verdict"
@@ -647,4 +779,4 @@ jobs:
             echo "| checkout permission | App installation | contents=${CONTENTS_PERM:-?} |"
             echo
             echo "Nothing was written to the target repository."
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | emit
