@@ -57,9 +57,26 @@ usage() {
 # owner of that operation, so the one place it is performed should not be
 # able to take an argument it cannot bound. Measured before it was added:
 # `clear ../outside.txt` deleted a file outside the working directory.
+#
+# This is the loud, early failure. For a LEADING-DASH name it is not the
+# only defence: every rm and mv below passes `--`, so such a name
+# reaching them is treated as an operand rather than as an option. For
+# `../` and absolute paths this check IS the only defence -- `--` stops
+# option interpretation and bounds nothing, so `rm -rf -- ../outside.txt`
+# still deletes what the measurement above records. Do not relax this on
+# the strength of the markers.
+#
+# jq is left without one deliberately: it only reads, it fails on a name
+# it parses as an option, and a failed read is already a refusal.
 require_verdict_name() {
   case ${1:-} in
-    "" | */* | .*)
+    # A dash-leading name is refused here, not merely marked. The
+    # markers settle rm and mv; what they do not settle is that `clear
+    # -rf` would sweep the two legacy candidates and leave the TARGET
+    # standing -- a review-codex.json the PR committed, read as this
+    # run's verdict, which is the loss the header describes. jq reads
+    # one as an option besides.
+    "" | -* | */* | .*)
       echo "::error::refusing to operate on '${1:-}':" \
         "expected a plain file name in the working directory" >&2
       exit 2
@@ -83,8 +100,16 @@ IS_VERDICT='
   and (.issues | type) == "array"
 '
 
+# SLURPED, so the shape is asked of the FILE and not of its last JSON
+# value: `jq -e` takes its exit status from the last value it printed, so
+# a stray object followed by a real verdict passed, STAMP emitted one
+# stamped object per input document, and the file installed as the
+# verdict held two -- which the aggregate's json.load cannot read.
+# `length == 1` makes single-document part of the shape. Every writer
+# here emits exactly one, so nothing legitimate is refused: jq -n in the
+# workflow, json.dump/json.dumps in the extractors and the shims.
 is_verdict() {
-  jq -e "$IS_VERDICT" "$1" > /dev/null 2>&1
+  jq -se "length == 1 and (.[0] | ($IS_VERDICT))" "$1" > /dev/null 2>&1
 }
 
 # Back-fill early_exit and stamp status the way review_status.stamp_model_status
@@ -119,7 +144,7 @@ clear_files() {
       echo "::notice::Removed $name, which the PR checked out;" \
         "only a verdict this run writes can stand"
     fi
-    rm -rf "$name"
+    rm -rf -- "$name"
   done
 }
 
@@ -135,7 +160,7 @@ drop_if_not_regular() {
   local path=$1
   if { [ -e "$path" ] || [ -L "$path" ]; } && [ ! -f "$path" ]; then
     echo "::notice::Removed $path, which is not a regular file"
-    rm -rf "$path"
+    rm -rf -- "$path"
   fi
 }
 
@@ -158,10 +183,10 @@ stamp() {
     return 1
   fi
   if jq "$STAMP" "$target" > "$tmp" 2>/dev/null && is_verdict "$tmp"; then
-    mv "$tmp" "$target"
+    mv -- "$tmp" "$target"
     return 0
   fi
-  rm -f "$tmp"
+  rm -f -- "$tmp"
   return 1
 }
 
@@ -213,11 +238,11 @@ promote() {
     if jq "$STAMP" "$candidate" > "$tmp" 2>/dev/null && is_verdict "$tmp"; then
       # Renames over the target, so a symlink sitting there is replaced
       # rather than written through.
-      mv "$tmp" "$target"
+      mv -- "$tmp" "$target"
       echo "::notice::Promoted $candidate -> $target"
       return 0
     fi
-    rm -f "$tmp"
+    rm -f -- "$tmp"
   done
   return 0
 }
