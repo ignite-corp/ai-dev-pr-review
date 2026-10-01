@@ -162,16 +162,22 @@ class TestSequentialGatesAreSymmetric:
             )
             assert clause in condition, reviewer
 
-    def test_credential_outage_caveat_is_documented_at_the_guard(self) -> None:
-        """A dead-on-credentials reviewer reports success with no artifact.
+    def test_no_artifact_caveat_is_documented_at_the_guard(self) -> None:
+        """A reviewer step that dies can still leave the job green with no artifact.
 
-        Run 33650133793 measured it. The comment exists so nobody reads the
-        failure clause as protection against that family; deleting it is
-        what this test refuses.
+        The comment exists so nobody reads the failure clause as protection
+        against that; deleting it is what this test refuses. The first two
+        assertions pin the framing and survive any repair of the gap. The
+        third pins the current mechanism on purpose -- close that gap so an
+        outage reaches this guard as `failure` instead, and the caveat and
+        this assertion change together.
         """
         text = _ORCHESTRATOR.read_text(encoding="utf-8")
-        assert "33650133793" in text
+        assert "nobody reads it as protection" in text
         assert "no verdict artifact" in text
+        # The reason, not just the framing: an outage reaches this guard as
+        # `success`, so the failure clause never sees it.
+        assert "outage does not arrive here as `failure`" in text
 
 
 class TestCodexGate:
