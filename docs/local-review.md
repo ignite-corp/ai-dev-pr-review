@@ -5,6 +5,14 @@ account whose Actions billing is blocked never starts a runner, so the
 workflows cannot review it at all. `review_pr_local.py` runs the same
 scripts, in the same order, with the same environment, on your machine.
 
+**That billing premise no longer holds**: one such account has since run
+full reviews on Actions. That evidence is attributed rather than
+re-verified, and
+[`docs/tasks/AT-2564/design-record.md`](tasks/AT-2564/design-record.md)
+says so where it records it. Read section 1 of that record for why this
+driver is still worth running, section 3 for its boundary with the
+Actions path, and section 5 for the cross-repo half.
+
 Why the design is what it is -- including the defects that shaped it, and
 the one end-to-end run that is the only measurement of this pipeline off
 Actions -- is recorded once in
