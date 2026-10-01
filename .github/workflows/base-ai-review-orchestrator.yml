@@ -143,14 +143,12 @@ jobs:
   #     following the wrapper's shape (docs/pilot-usage.md, Architecture).
   #
   # What this tolerance does NOT cover, so nobody reads it as protection
-  # against a credential outage: a reviewer whose CLI/action dies on a
-  # missing or bad credential takes the soft-fail path inside
-  # base-ai-review-single.yml (the review step is continue-on-error) and
-  # the job reports `success` with no verdict artifact -- run 33650133793
-  # measured `review-claude-s: success`, no artifact, with no credentials.
-  # `result == 'failure'` never fires in that family; the chain continues
-  # because the job succeeded, and the outage surfaces only in the
-  # aggregate's per-reviewer result, not in this guard.
+  # against a reviewer outage: the reviewer step is continue-on-error, so
+  # a job can conclude `success` having uploaded no verdict artifact. An
+  # outage does not arrive here as `failure`, and a `failure` is tolerated
+  # anyway, so no decision here turns on one. It surfaces in the
+  # aggregate's per-reviewer roster instead; the note above 'Run Claude
+  # review' in base-ai-review-single.yml has the per-reviewer mechanisms.
   review-codex-s:
     if: >-
       ${{ !cancelled() &&

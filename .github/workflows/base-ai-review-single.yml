@@ -244,6 +244,17 @@ jobs:
             echo "CLAUDE_PROMPT_EOF"
           } >> "$GITHUB_ENV"
 
+      # continue-on-error here and on the gemini/codex reviewer steps
+      # means a reviewer's own death does not fail the job at that step.
+      # It is not what keeps the chain alive: the orchestrator's
+      # sequential clauses tolerate a failed upstream job (AT-2125). The
+      # cost is that the step's outcome does not reach the conclusion, so
+      # the failure has to be recorded by the reviewer path itself --
+      # claude's always() step emits an error verdict, codex's fails the
+      # job, and gemini does neither, so a killed gemini step leaves no
+      # trace (AT-2539). What that costs the chaining guard is written
+      # where the guard is: base-ai-review-orchestrator.yml, the note
+      # above review-codex-s.
       - name: Run Claude review
         if: inputs.reviewer == 'claude'
         id: claude-review
@@ -389,6 +400,8 @@ jobs:
         if: inputs.reviewer == 'gemini'
         run: pip install -r .ai-dev-pr-review/.github/scripts/requirements.txt
 
+      # Why continue-on-error and its cost: the note above 'Run Claude
+      # review'. This is the path with no always() net of its own.
       - name: Run Gemini review
         if: inputs.reviewer == 'gemini'
         continue-on-error: true
@@ -449,6 +462,8 @@ jobs:
           # PRs in the caller repo cannot mutate it.
           cp .ai-dev-pr-review/.github/scripts/review_prompt.md "${RUNNER_TEMP}/review_prompt.md"
 
+      # Why continue-on-error and its cost: the note above 'Run Claude
+      # review'.
       - name: Run Codex review
         if: inputs.reviewer == 'codex'
         id: codex_run

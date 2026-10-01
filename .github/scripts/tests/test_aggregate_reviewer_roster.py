@@ -548,12 +548,13 @@ class TestNoArtifactRoundIsNotBenign:
     that it meant a trivial diff. It does not mean that, and the aggregate
     cannot tell what it means:
 
-    * base-ai-review-orchestrator.yml documents the same signature as a
-      credential outage -- the review step in base-ai-review-single.yml is
-      continue-on-error, so a reviewer whose CLI or action dies on a
-      missing or bad credential reports `success` with no verdict artifact
-      (measured there: run 33650133793, `review-claude-s: success`, no
-      artifact, no credentials).
+    * The reviewer step in base-ai-review-single.yml is continue-on-error,
+      so a step's own death does not fail the job. What turns that into a
+      signal is an always() step that records the failure: claude's emits
+      an error verdict, codex's fails the job, and gemini has neither --
+      so a killed gemini step leaves the job green with nothing uploaded.
+      The chaining-guard caveat in base-ai-review-orchestrator.yml says
+      the same from the guard's side.
     * There is no trivial-diff round behind it either. Every "nothing to
       review" state is settled before a reviewer runs: an empty diff fails
       prepare (extract_pr_diff.sh, AT-2201), a size skip exits 1, and an

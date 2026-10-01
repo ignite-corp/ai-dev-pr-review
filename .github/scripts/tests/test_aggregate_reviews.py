@@ -277,8 +277,9 @@ class TestMajorConsensusOverlap:
         assert verdict == "request_changes"
 
 
-class TestAllEarlyExitBenign:
-    """all-success + 0-available -> approve benign; 1-failure + 0-available -> comment."""
+class TestAllAbsentIsIndeterminate:
+    """all-success + 0-available -> approve, cause indeterminate;
+    1-failure + 0-available -> comment."""
 
     def _empty_reviews(self) -> dict[str, dict[str, Any] | None]:
         return {name: None for name in REVIEWER_NAMES}
@@ -306,8 +307,11 @@ class TestAllEarlyExitBenign:
         assert verdict == "comment"
         assert reason == _ALL_FAILED_REASON
 
-    def test_missing_env_var_not_benign(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Empty/missing env var means unknown conclusion -> not benign.
+    def test_missing_env_var_disqualifies_indeterminate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Empty/missing env var means unknown conclusion -> the
+        # indeterminate path must not fire.
         for name in REVIEWER_NAMES:
             monkeypatch.delenv(f"REVIEWER_RESULT_{name.upper()}", raising=False)
         verdict, _, _ = apply_verdict_rules(self._empty_reviews())
@@ -396,7 +400,7 @@ class TestErrorPayloadExclusion:
         }
         assert "codex" in _get_available(reviews)
 
-    def test_all_error_payloads_yield_comment_not_benign_approve(
+    def test_all_error_payloads_yield_comment_not_approve(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Jobs conclude "success" (continue-on-error) but every reviewer wrote
@@ -428,7 +432,7 @@ class TestMainAllErrorPayloadsFail:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All job conclusions "success" (reviewer steps are continue-on-error),
-        # but error payloads exist -> no benign bypass, CI must fail.
+        # but error payloads exist -> no bypass, CI must fail.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         monkeypatch.setenv("PR_NUMBER", "42")
@@ -449,13 +453,14 @@ class TestMainAllErrorPayloadsFail:
         assert posted_verdict == "comment"
 
 
-class TestMainAllEarlyExitBenign:
+class TestMainAllAbsentExitsZero:
     """main() must not exit non-zero when all reviewer jobs succeeded.
 
-    Regression guard for R4: benign early-exit must post approve and exit 0.
+    Regression guard for R4: the indeterminate 0-response path posts
+    approve and exits 0.
     """
 
-    def test_main_all_early_exit_does_not_exit_nonzero(
+    def test_main_all_absent_does_not_exit_nonzero(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All REVIEWER_RESULT_* = "success", no review files -> the
@@ -633,10 +638,10 @@ class TestApproveQuorumGate:
         commands = self._run(monkeypatch, "request_changes", approve_quorum=False)
         assert any("review" in cmd and "--request-changes" in cmd for cmd in commands)
 
-    def test_main_benign_skip_withholds_formal_approval(
+    def test_main_zero_responses_withholds_formal_approval(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Benign skip: verdict "approve" with 0 available payloads -> main()
+        # Verdict "approve" with 0 available payloads -> main()
         # must request the comment downgrade (approve_quorum=False).
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
@@ -952,7 +957,7 @@ class TestUnknownStatusFailClosed:
         assert _normalize_status("codex", review) == "failed"
         assert review["status"] == "failed"
 
-    def test_unknown_status_disqualifies_benign_skip(
+    def test_unknown_status_disqualifies_indeterminate(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All jobs "success" but one artifact carries an unknown status:
@@ -1005,7 +1010,7 @@ class TestMissingStatusFailClosed:
         assert _normalize_status("codex", review) == "failed"
         assert not _has_early_exit({"codex": review})
 
-    def test_missing_status_disqualifies_benign_skip(
+    def test_missing_status_disqualifies_indeterminate(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All jobs "success" but one artifact omits status: the payload
@@ -1130,7 +1135,7 @@ class TestClaudeInfrastructureFailure:
     A dependabot-triggered run had claude-code-action reject the actor
     ("Workflow initiated by non-human actor"), so no artifact was produced.
     The aggregate then saw an ABSENT reviewer, which only lowers the count,
-    and blamed a benign "early-exit or no-output" -- the AT-1792 shape.
+    and blamed it on "early-exit or no-output" -- the AT-1792 shape.
     """
 
     @staticmethod
@@ -1151,9 +1156,10 @@ class TestClaudeInfrastructureFailure:
         reviews["claude"] = self._claude_failed()
         return reviews
 
-    def test_absent_artifact_is_reported_as_benign_no_output(self) -> None:
-        # Baseline the pre-fix shape: an absent payload is indistinguishable
-        # from a benign skip, which is why the emitter must not leave one.
+    def test_absent_artifact_is_reported_as_early_exit_or_no_output(self) -> None:
+        # Baseline the pre-fix shape: an absent payload gets the roster
+        # reason its job conclusion yields, so nothing on the summary says
+        # an outage happened -- which is why the emitter must not leave one.
         reviews: dict[str, dict[str, Any] | None] = {
             name: _make_named_review(name, []) for name in REVIEWER_NAMES
         }
@@ -1239,7 +1245,7 @@ class TestClaudeInfrastructureFailure:
             main()
         assert excinfo.value.code == 1
 
-    def test_failed_payload_disqualifies_benign_skip(
+    def test_failed_payload_disqualifies_indeterminate(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Claude's error verdict is an artifact: all-jobs-success must not
