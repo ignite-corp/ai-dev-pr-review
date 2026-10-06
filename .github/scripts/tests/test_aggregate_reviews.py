@@ -2996,7 +2996,7 @@ _AGGREGATE_WORKFLOW = (
 )
 
 
-def _workflow(path: Path) -> dict[str, Any]:
+def _workflow(path: Path) -> dict[str | bool, Any]:
     return dict(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 

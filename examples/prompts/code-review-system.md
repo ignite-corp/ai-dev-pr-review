@@ -71,7 +71,7 @@ ruff 0.11.0+ normalizes the parenthesized form to the PEP 758 unparenthesized fo
 - **Naming conventions**: No Manager, Handler, Helper, Utils, Processor, or standalone Service suffixes. Prefer Gateway, Agent, Repository, Resolver. Per the Review Disposition, always provide a concrete alternative name.
 - **Type hints**: All public functions and methods must have complete type annotations (pyright strict).
 - **Magic numbers**: Extract constants. No inline numeric or string literals in business logic.
-- **Function size**: Flag functions exceeding 80 lines (enforced by ruff PLR0915). Flag classes exceeding 500 lines.
+- **Function size**: Flag functions exceeding 50 statements (ruff PLR0915) or 80 lines. Flag classes exceeding 500 lines. PLR0915 is not in ruff's default rule set: the consumer enables it (`extend-select = ["PLR0915"]`, `max-statements = 50`) or the citation measures nothing.
 - **Duplicate code**: Identify copy-paste patterns that should be abstracted.
 - **Dead code**: Flag unused imports, variables, or unreachable branches introduced by this PR.
 

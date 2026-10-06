@@ -798,7 +798,7 @@ ORCHESTRATOR = WORKFLOW.parent / "base-ai-review-orchestrator.yml"
 AGGREGATE = WORKFLOW.parent / "base-ai-review-aggregate.yml"
 
 
-def _workflow(path: Path) -> dict[str, Any]:
+def _workflow(path: Path) -> dict[str | bool, Any]:
     # `on:` is YAML 1.1, so PyYAML gives the key as the boolean True. Reading
     # wf["on"] is the KeyError, not the fix.
     return yaml.safe_load(path.read_text(encoding="utf-8"))

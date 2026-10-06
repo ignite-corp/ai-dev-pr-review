@@ -12,7 +12,8 @@
 - [ ] No forbidden naming suffixes (Manager, Handler, Helper, Utils, Processor, standalone Service)
 - [ ] All public functions have type annotations
 - [ ] No magic numbers or strings in business logic
-- [ ] No functions exceeding 80 lines (ruff PLR0915)
+- [ ] No functions exceeding 50 statements (ruff PLR0915) or 80 lines
+  - PLR0915 is not in ruff's default rule set: the consumer enables it (`extend-select = ["PLR0915"]`, `max-statements = 50`) or the citation measures nothing.
 - [ ] No classes exceeding 500 lines
 - [ ] No copy-paste duplication introduced
 - [ ] Unused imports or variables removed

@@ -16,7 +16,27 @@ jobs:
         with:
           python-version-file: .github/scripts/.python-version
       - run: pip install -r .github/scripts/requirements.txt
-      - run: pip install pytest
-      - run: pytest .github/scripts/tests/ -v
-        env:
-          PYTHONPATH: .github/scripts
+      - run: pip install -r .github/scripts/requirements-dev.txt
+      # No PYTHONPATH here on purpose: pyproject.toml carries the path setup,
+      # so this is the same bare command a person runs (AT-2508).
+      - run: pytest -v
+      - run: ruff check .github/scripts
+      # pyright's default exclude skips dot-directories and reports "0 errors"
+      # over zero files; pyproject.toml overrides it, and the script refuses a
+      # run that analyzed a different set than the config selects, the empty
+      # set included. A script, not inline Python, so pytest/ruff/pyright see
+      # it (AT-2418).
+      - name: pyright (must analyze every file)
+        run: |
+          set +e
+          pyright --outputjson > pyright.json
+          status=$?
+          set -e
+          # 0 is clean and 1 is errors; anything else is pyright refusing to
+          # run, and its reason is on stderr above, not in the JSON file.
+          if [ "$status" -gt 1 ]; then
+            echo "pyright exited $status: it did not run -- see its own message above (AT-2418)"
+            exit "$status"
+          fi
+          python3 .github/scripts/check_pyright_coverage.py pyright.json
+          exit "$status"
