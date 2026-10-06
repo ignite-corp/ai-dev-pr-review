@@ -17,10 +17,13 @@
 **두 번째 종류의 자료가 하나 더 있습니다.** 폐기 전에 드라이버를 **실제로 한 번 돌렸고**(PR 170 에 대고,
 판정까지 게시됨), 그 실행이 §1~§4 와 성질이 달라 **§5 로 따로 섰습니다.** 열한 라운드가 코드를 읽어
 찾은 것과, 코드가 돌 때 실제로 일어난 것은 **겹치지 않았습니다** — 그 사실이 §6 의 무게를 바꿉니다.
-§5 의 숫자는 요약을 옮긴 것이 아니라 원자료에서 **다시 측정**한 것이고, **재현 가능한 근거는
-`evidence/` 에 함께 커밋했습니다** — 드라이버 출력 전문, 세 리뷰어의 판정과 로그, 실행 스크립트,
-파생값을 전부 다시 계산하는 `evidence/scripts/measure.py`, 그리고 부피 때문에 넣지 않은 큰 파일들의
-크기·sha256 표(`evidence/MANIFEST.md`). 본문이 `/tmp/lens-harvest/` 를 가리키는 자리는 **휘발성
+The §5 figures were measured from original material rather than copied from a summary.
+`evidence/` retains the driver output, reviewer verdicts and logs, and historical invocation scripts.
+`evidence/MANIFEST.md` identifies the retained inputs and manual checks, and records sizes and hashes
+for omitted files. Prompt composition, the `EXISTING_COMMENTS=` size, and `232` cannot be re-derived
+from the retained files: their original run-directory inputs disappeared with `/tmp`; only recorded
+values and hashes remain. Historical build checks additionally require the commits identified in
+that MANIFEST to remain retrievable. 본문이 `/tmp/lens-harvest/` 를 가리키는 자리는 **휘발성
 원본**을 뜻하며 참조가 아닙니다 — 그 경로는 재부팅에 사라집니다.
 
 리뷰어 지적은 영어이므로 **영어 그대로 인용**합니다. 증거에는 **측정됨**(누군가 실제로 돌려 출력을
@@ -1104,10 +1107,26 @@ d0b8ea5  [#170, 이전]    1167: create_review_worktree -> 1168: clean_artifacts
 아래 숫자는 전부 원자료에서 **직접 다시 측정**했다. 원자료는 실행 당시 `/tmp/lens-harvest/` 에
 있었고 — **휘발성이다. 재부팅에 사라진다** — 그래서 이 절이 기대는 부분을 `evidence/` 에
 **함께 커밋했다**: 드라이버 출력 전문 · 세 판정 파일과 리뷰어 로그 · 실행 스크립트 ·
-계측 오류의 대조 실험 · 파생값을 다시 계산하는 `evidence/scripts/measure.py`.
+계측 오류의 대조 실험.
 커밋하지 않은 큰 파일(`pr.diff` 257 KB · `codex-run.log` 540 KB 등)은
-`evidence/MANIFEST.md` 에 **크기와 sha256, 그리고 그것을 잰 명령**으로 남겼다.
-`measure.py` 는 인자 없이도 *발동한 가드 수*(경고 0 · 오류 1)를 커밋된 로그만으로 다시 낸다.
+`evidence/MANIFEST.md` 에 **크기와 sha256, 그리고 그것을 잰 명령**으로 남겼고, 파생값(발동한 가드 수 ·
+가드 개수 · 프롬프트 구성)은 **어느 원본에서 어떤 명령으로 냈는지**를 같은 파일에 적었다.
+초안이 그 자리에 두었던 재계산 스크립트 `measure.py` 는 AT-2425 로 **지웠다**. 결함의 범위는 재서
+적는다(2026-10-06 실측, 키 집합을 대조): 기록값 표 `EXPECTED` 의 16개 키 중 **11개는 문서화된 인자를 다
+주면 실제로 비교된다** — 어긋난 것은 선언됐으나 계산되지 않는 `guards_that_fired` · `max_arg_strlen` ·
+`wall_seconds` · `driver_sha256_pr17{0,2}_head_*` 다섯과, 계산되나 선언되지 않은 `warnings_emitted` ·
+`errors_emitted` · `serialises_reviewers` · `pytest_files` 넷이다.
+**An invocation using committed evidence alone, without recovering the historical build**, supplied only
+`--driver-output` — an option of the deleted script, not a command available today. It computed exactly
+the two undeclared keys, so it compared nothing and reported clean. Recovering the `e9592d8` files and
+supplying `--driver` and `--scripts-dir` does compare the build hash and three guard-count keys.
+Only the original run directory in `/tmp` disappeared, so the `--run-dir` inputs cannot be recovered.
+The fired-guard pair supports §5-1's "41개 중 1개" figure: the tool meant to prove §5 exhibited §4-A's shape.
+발동한 가드 수(경고 0 · 오류 1)는 `driver-output/run-outer.log` 과 `probe.log` 를 `::warning::` ·
+`::error::` 로 grep 하면 그대로 나온다 (`run.log` 는 `run-outer.log` 의 부분집합이므로 **더하지 않는다** —
+디렉터리를 통째로 훑는 것이 지운 `measure.py` 의 `glob("*.log")` 가 하던 일이고, `run.log` 에 마커가
+있었다면 한 번 발동한 경고를 둘로 셌을 것이다. 이 실행에서는 세 로그 모두 경고 0건이라 합계가 우연히 같았다;
+둘로 세는 것은 `run.log` 와 `run-outer.log` 에 경고 한 줄을 심어 넣은 대조 실행에서 확인했다 — PR #189).
 
 ### 5-0. 무엇을 돌렸는가, 그리고 이 절이 증명하지 못하는 것
 
@@ -1117,7 +1136,7 @@ d0b8ea5  [#170, 이전]    1167: create_review_worktree -> 1168: clean_artifacts
 | 결과 | 드라이버 종료 **0**, 벽시계 **399초**, 리뷰어 3/3 성공, 최종 판정 `approve` |
 | 실행 방식 | `REVIEW_MODE` 기본값 `parallel` — **셋이 동시에 돌았다**(아래 정정) |
 | 완료 순서 | gemini 21:31:33 · codex 21:35:46 · claude 21:37:17 — mtime 은 **시작이 아니라 완료** 순서 |
-| 비용(claude 만) | `total_cost_usd` **1.27419**, `duration_api_ms` 380661 |
+| 비용(claude 만) | `total_cost_usd` **1.27419**, `duration_api_ms` **378661**(초안은 380661 로 적었다 — `claude-run.log` 에는 그 수가 없다. `duration_ms` 는 380819. AT-2425 6항) |
 
 **먼저 이 절의 가장 중요한 단서.** 돌아간 드라이버는 **#172 의 head 와 바이트 동일**하다:
 
@@ -1133,7 +1152,9 @@ run 에 쓰인 review_pr_local.py   sha256 217da9413de294a523ef345f13d52c51c0c7d
 없는 판이다. **스택의 아래쪽 PR 이 실제로 무엇을 의미하는지가 실행으로 한 번 더 확인된 셈이다**(§4-C).
 
 **정정 — 초안은 이 실행이 §1-11 의 "한 번에 하나"를 확인했다고 적었다. 정반대다.**
-#173 리뷰어가 *"직렬이라면 claude 의 창은 ~120초인데 `duration_api_ms` 가 380.7초"* 라고 짚었고,
+#173 리뷰어가 *"직렬이라면 claude 의 창은 ~120초인데 `duration_api_ms` 가 380.7초"* 라고 짚었고
+(인용 그대로 — 리뷰어가 읽은 것은 초안의 380661 이다. 로그값은 `duration_api_ms` 378.7초 · `duration_ms` 380.8초이고
+어느 쪽이든 120초의 세 배라 논증은 같다. AT-2425 6항),
 확인해 보니 **불일치의 원인은 계측이 아니라 이 문서의 주장이었다.** 산술로 결판난다:
 
 ```
