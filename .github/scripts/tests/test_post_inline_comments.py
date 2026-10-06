@@ -475,9 +475,14 @@ class TestPostCutoffSummary:
         marker_line, rest = body.split("\n", 1)
         assert found.group(1) in marker_line
 
-        control = _cutoff_findings(real_run, function_file, marker_line + " (2 items)\n" + rest)
+        control = _cutoff_findings(
+            real_run, function_file, marker_line + " (2 items)\n" + rest
+        )
         assert control.returncode == 0, control.stdout + control.stderr
-        assert control.stdout.strip() == "(c) no round-cutoff or inline-fallback comment on this round's surface"
+        assert (
+            control.stdout.strip()
+            == "(c) no round-cutoff or inline-fallback comment on this round's surface"
+        )
 
     def test_existing_marker_skips_post(self, monkeypatch: Any) -> None:
         posted: list[list[str]] = []
@@ -486,7 +491,13 @@ class TestPostCutoffSummary:
             if cmd[:2] == ["gh", "api"]:
                 return SimpleNamespace(
                     returncode=0,
-                    stdout=json.dumps(["github-actions[bot]", "Bot", "<!-- round-cutoff-claude-r6 -->\n<!-- fold-count: 2 -->"]),
+                    stdout=json.dumps(
+                        [
+                            "github-actions[bot]",
+                            "Bot",
+                            "<!-- round-cutoff-claude-r6 -->\n<!-- fold-count: 2 -->",
+                        ]
+                    ),
                     stderr="",
                 )
             posted.append(cmd)
@@ -955,7 +966,9 @@ class TestFoldedFindingGate:
     def test_another_marker_does_not_answer_legacy_marker(
         self, folded: tuple[str, str], marker: str
     ) -> None:
-        legacy = folded[0].replace("inline-fallback-claude-r14", "inline-fallback-claude")
+        legacy = folded[0].replace(
+            "inline-fallback-claude-r14", "inline-fallback-claude"
+        )
         result = self.run_gate(legacy, marker + "\n> a.py:1\n> b.py:2\nFixed: both")
         assert result.returncode == 1, result.stdout + result.stderr
 
@@ -1117,7 +1130,11 @@ class TestFoldedFindingGate:
         body = folded[0]
         first, second = [line for line in body.splitlines() if line.startswith("- **")]
         assert first == second
-        one = "inline-fallback-claude-r14\n> " + first.rstrip() + "\nFixed: authentication"
+        one = (
+            "inline-fallback-claude-r14\n> "
+            + first.rstrip()
+            + "\nFixed: authentication"
+        )
         assert self.run_gate(body, one).returncode == 1
         result = self.run_gate(body, one + "\n> " + second.rstrip() + "\nFixed: socket")
         assert result.returncode == 0, result.stdout + result.stderr

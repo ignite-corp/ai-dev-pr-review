@@ -161,7 +161,11 @@ CALLER_SIDE_VALUE: dict[tuple[str, str, str], str] = {
     (PREPARE.name, "Checkout caller default prompts", "with:repository"): (
         "${{ github.repository }}"
     ),
-    (PREPARE.name, "Checkout caller default prompts", "with:token"): "${{ github.token }}",
+    (
+        PREPARE.name,
+        "Checkout caller default prompts",
+        "with:token",
+    ): "${{ github.token }}",
     (SINGLE.name, "Run Claude review", "with:claude_code_oauth_token"): (
         "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
     ),

@@ -17,6 +17,25 @@ pythonpath = [".github/scripts"]
 line-length = 88
 target-version = "py314"
 
+# Both entries are checkouts of a different commit of this same
+# repository, sitting untracked under the root and listed in no .gitignore:
+# .ai-dev-pr-review/ is where base-ai-review-prepare.yml, -single.yml and
+# -aggregate.yml check out the pinned release their steps run, and
+# .claude/worktrees/ is where Claude Code checks out other branches. A
+# `ruff format .` run where either is present would rewrite that other
+# commit's files, not this working tree's.
+#
+# These live here and not in a ruff.toml: a ruff.toml beside this file makes
+# ruff ignore [tool.ruff] entirely, which dropped PLR0915 below (AT-2508).
+# tests/test_ruff_format_scope.py holds each entry: dropping one turns it red.
+extend-exclude = [
+    ".ai-dev-pr-review/",
+    ".claude/worktrees/",
+]
+# Apply the exclusion even when the path is named on the command line, so a
+# contributor's direct `ruff format <that path>` does not rewrite it.
+force-exclude = true
+
 [tool.ruff.lint]
 # PLR0915 is the rule the review prompts cite for function size. Selected
 # here so this repository is held to the number it tells consumers; the

@@ -1230,7 +1230,11 @@ def _reviewers_posted_inline(
         if head_sha != post["posted_commit"]:
             continue
         envelope = inline_post_envelope(post["body"])
-        if envelope is None or envelope[1] != round_number or envelope[2] != run_identity:
+        if (
+            envelope is None
+            or envelope[1] != round_number
+            or envelope[2] != run_identity
+        ):
             continue
         match = _INLINE_POST_RE.match(envelope[3])
         if match and match.group("reviewer") == envelope[0]:
@@ -1290,9 +1294,7 @@ def _folded_findings(
     bot = INLINE_BOT_LOGIN
     round_number = fetch_round_count(repo, pr_number) + 1
     comments = [
-        c
-        for c in _fetch_fold_comments(repo, pr_number)
-        if trusted_post_author(c, bot)
+        c for c in _fetch_fold_comments(repo, pr_number) if trusted_post_author(c, bot)
     ]
     # Fetched only when a fold comment does not settle every reviewer: the
     # common round posts inline, and this is one more paginated read.
@@ -1312,7 +1314,9 @@ def _folded_findings(
         # unlocatable), which leaves nothing on the PR at all. A zero needs
         # the evidence; its absence is unknown, never a zero.
         if inline is None:
-            inline = _reviewers_posted_inline(repo, pr_number, head_sha, bot, round_number)
+            inline = _reviewers_posted_inline(
+                repo, pr_number, head_sha, bot, round_number
+            )
         folded[name] = 0 if name in inline else None
     return folded
 
@@ -1754,9 +1758,7 @@ def _is_prior_round(body: str | None) -> bool:
     return (body or "").lstrip("\r\n").startswith(REVIEW_MARKER)
 
 
-def _fold_prior_round_items(
-    pr_number: str, repo: str, *, head_sha: str
-) -> list[str]:
+def _fold_prior_round_items(pr_number: str, repo: str, *, head_sha: str) -> list[str]:
     """Minimize prior-round verdict comments and dismiss prior-round reviews.
 
     Runs right before the new verdict is posted, so a review of a superseded

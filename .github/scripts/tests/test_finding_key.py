@@ -146,7 +146,9 @@ def test_source_binding_and_each_item_remain_required(findings):
     assert (
         folded_tests.TestFoldedFindingGate.run_gate(bodies[0], quoted).returncode == 1
     )
-    reply = "Dispositions: inline-fallback-claude-r14\n> " + _format_issue_line(issues[0])
+    reply = "Dispositions: inline-fallback-claude-r14\n> " + _format_issue_line(
+        issues[0]
+    )
     result = folded_tests.TestFoldedFindingGate.run_gate(bodies[0], reply)
     assert result.returncode == 1
     missing = next(line for line in bodies[0].splitlines() if "retry budget" in line)
@@ -188,15 +190,21 @@ def test_early_matching_key_with_large_history_survives_pipefail(findings):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("shape,expected", [("posted", 0), ("plain", 0), ("malformed", 1)])
-def test_actual_thread_snapshot_keeps_posted_major_description_route(monkeypatch, shape, expected):
+@pytest.mark.parametrize(
+    "shape,expected", [("posted", 0), ("plain", 0), ("malformed", 1)]
+)
+def test_actual_thread_snapshot_keeps_posted_major_description_route(
+    monkeypatch, shape, expected
+):
     from github_pr_support import inline_post_marker
     from test_gate_headline_drill import SKILL
 
     description = "Validate credentials before forwarding"
     comments, _, _ = post_inline_comments.build_comments(
         [dict(severity="major", file="a.py", line=1, description=description)],
-        {"a.py": {1}}, [], "claude",
+        {"a.py": {1}},
+        [],
+        "claude",
     )
     captured = []
 
@@ -208,7 +216,9 @@ def test_actual_thread_snapshot_keeps_posted_major_description_route(monkeypatch
         scoped.setenv("INLINE_REVIEW_RUN_ID", "local-" + "a" * 32)
         scoped.setattr(post_inline_comments, "get_pr_head_sha", lambda *args: "a" * 40)
         scoped.setattr(subprocess, "run", transport)
-        post_inline_comments.post_findings("o/r", "7", "claude", comments, 14, None, True)
+        post_inline_comments.post_findings(
+            "o/r", "7", "claude", comments, 14, None, True
+        )
     body = captured[0]["body"]
     marker = inline_post_marker("claude", 14, "local-" + "a" * 32)
     assert body.startswith(marker + "\n")
@@ -216,17 +226,43 @@ def test_actual_thread_snapshot_keeps_posted_major_description_route(monkeypatch
         body = body.split("\n", 1)[1]
     elif shape == "malformed":
         body = body.replace(marker, marker + " suffix", 1)
-    snapshot = {"reviewThreads": {"nodes": [{
-        "path": "a.py", "line": 1, "originalLine": 1, "isResolved": True,
-        "comments": {"nodes": [{"body": body, "author": {"__typename": "Bot"}},
-                                {"body": "Fixed", "author": {"__typename": "User"}}]},
-    }]}}
+    snapshot = {
+        "reviewThreads": {
+            "nodes": [
+                {
+                    "path": "a.py",
+                    "line": 1,
+                    "originalLine": 1,
+                    "isResolved": True,
+                    "comments": {
+                        "nodes": [
+                            {"body": body, "author": {"__typename": "Bot"}},
+                            {"body": "Fixed", "author": {"__typename": "User"}},
+                        ]
+                    },
+                }
+            ]
+        }
+    }
     text = SKILL.read_text()
-    block = "thread_data=$(" + text.split("thread_data=$(", 1)[1].split("read -r thr_head", 1)[0]
+    block = (
+        "thread_data=$("
+        + text.split("thread_data=$(", 1)[1].split("read -r thr_head", 1)[0]
+    )
     result = subprocess.run(
-        ["bash", "-c", "set -euo pipefail\n" + gate_function("thread_answers")
-         + "\nsnap_json=$(cat)\n" + block
-         + '\nthread_answers "$thread_data" a.py 99 "$1"', "bash", description],
-        input=json.dumps(snapshot), text=True, capture_output=True,
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            + gate_function("thread_answers")
+            + "\nsnap_json=$(cat)\n"
+            + block
+            + '\nthread_answers "$thread_data" a.py 99 "$1"',
+            "bash",
+            description,
+        ],
+        input=json.dumps(snapshot),
+        text=True,
+        capture_output=True,
     )
     assert result.returncode == expected, result.stdout + result.stderr

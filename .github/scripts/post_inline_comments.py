@@ -481,9 +481,7 @@ def _post_folded_comment(
     this head's count.
     """
     bot = os.environ.get("BOT_LOGIN", "github-actions[bot]")
-    query = (
-        '.[] | [.user.login, .user.type, ((.body // "") | split("\\n")[0:2] | join("\\n"))] | @json'
-    )
+    query = '.[] | [.user.login, .user.type, ((.body // "") | split("\\n")[0:2] | join("\\n"))] | @json'
     try:
         check = subprocess.run(
             [
@@ -512,7 +510,9 @@ def _post_folded_comment(
             if (
                 not isinstance(login, str)
                 or not isinstance(envelope_body, str)
-                or not trusted_post_author({"login": login, "author_type": author_type}, bot)
+                or not trusted_post_author(
+                    {"login": login, "author_type": author_type}, bot
+                )
             ):
                 continue
             envelope = fold_envelope(envelope_body)

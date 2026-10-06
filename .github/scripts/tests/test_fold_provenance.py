@@ -309,8 +309,12 @@ def test_fold_dedup_timeout_retry_does_not_double_count_findings(
         _write_review(tmp_path, name, _TWO_MINORS if name == "claude" else [])
     for _ in range(2):
         _run_post(
-            monkeypatch, tmp_path, pr, "claude",
-            completed_rounds=_PAST_CUTOFF, dedup_timeout=True,
+            monkeypatch,
+            tmp_path,
+            pr,
+            "claude",
+            completed_rounds=_PAST_CUTOFF,
+            dedup_timeout=True,
         )
     assert len(pr.fold_comment_bodies()) == 2
     out, _ = _run_aggregate(monkeypatch, tmp_path, pr, completed_rounds=_PAST_CUTOFF)

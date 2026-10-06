@@ -56,7 +56,9 @@ def replace_file_text(path: str | os.PathLike[str], text: str) -> None:
     the two writers share one rule (AT-2941).
     """
     target = Path(path)
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f"{target.name}.", suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(
+        dir=target.parent, prefix=f"{target.name}.", suffix=".tmp"
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -72,6 +74,8 @@ def replace_file_text(path: str | os.PathLike[str], text: str) -> None:
         raise
 
 
-def write_verdict_json(path: str | os.PathLike[str], obj: Any, **dumps_kwargs: Any) -> None:
+def write_verdict_json(
+    path: str | os.PathLike[str], obj: Any, **dumps_kwargs: Any
+) -> None:
     """Serialize ``obj`` to JSON and install it at ``path`` link-safely."""
     replace_file_text(path, json.dumps(obj, **dumps_kwargs))

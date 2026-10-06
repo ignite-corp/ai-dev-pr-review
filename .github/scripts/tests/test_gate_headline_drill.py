@@ -106,7 +106,9 @@ def test_gate_functions_are_read_off_the_drill() -> None:
 def test_skill_defines_each_gate_function_once() -> None:
     """Every function the drill extracts is defined exactly once, in the shape it extracts."""
     text = SKILL.read_text(encoding="utf-8")
-    counts = {fn: len(re.findall(rf"^{fn}\(\) \{{$", text, re.M)) for fn in GATE_FUNCTIONS}
+    counts = {
+        fn: len(re.findall(rf"^{fn}\(\) \{{$", text, re.M)) for fn in GATE_FUNCTIONS
+    }
     assert counts == {fn: 1 for fn in GATE_FUNCTIONS}
 
 
@@ -134,8 +136,12 @@ def test_drill_passes_every_check() -> None:
         timeout=600,
     )
     tail = "\n".join(result.stdout.splitlines()[-40:])
-    assert result.returncode == 0, f"drill exited {result.returncode}\n{tail}\n{result.stderr}"
-    failures = [line for line in result.stdout.splitlines() if line.startswith("  FAIL")]
+    assert result.returncode == 0, (
+        f"drill exited {result.returncode}\n{tail}\n{result.stderr}"
+    )
+    failures = [
+        line for line in result.stdout.splitlines() if line.startswith("  FAIL")
+    ]
     assert not failures, "\n".join(failures)
     match = RESULT_LINE.search(result.stdout)
     assert match is not None, f"no RESULT line\n{tail}"

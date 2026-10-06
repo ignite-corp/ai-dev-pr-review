@@ -206,7 +206,9 @@ def _clears(step: dict[str, Any], reviewer: str) -> bool:
     text = _run_text(step, reviewer)
     target = re.escape(f"review-{reviewer}.json")
     clear = rf"""\bclear\b[^\n]*['"]?{target}['"]?"""
-    remove = rf"""\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\b[^\n]*{target}"""
+    remove = (
+        rf"""\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\b[^\n]*{target}"""
+    )
     return bool(re.search(clear, text) or re.search(remove, text))
 
 
@@ -256,7 +258,11 @@ def _assert_not_advisory(step: dict[str, Any], role: str) -> None:
 
 def _emit_steps(steps: list[dict[str, Any]], reviewer: str) -> list[int]:
     prefix = f"Emit {reviewer.capitalize()} error verdict"
-    return [i for i, step in enumerate(steps) if str(step.get("name", "")).startswith(prefix)]
+    return [
+        i
+        for i, step in enumerate(steps)
+        if str(step.get("name", "")).startswith(prefix)
+    ]
 
 
 def _verify_steps(steps: list[dict[str, Any]], reviewer: str) -> list[int]:
@@ -271,7 +277,11 @@ def _verify_steps(steps: list[dict[str, Any]], reviewer: str) -> list[int]:
     allowed, the way `_emit_steps` and `_log_fallback_steps` are.
     """
     prefix = f"Verify {reviewer.capitalize()} verdict file"
-    return [i for i, step in enumerate(steps) if str(step.get("name", "")).startswith(prefix)]
+    return [
+        i
+        for i, step in enumerate(steps)
+        if str(step.get("name", "")).startswith(prefix)
+    ]
 
 
 def _log_fallback_steps(steps: list[dict[str, Any]], reviewer: str) -> list[int]:
@@ -283,7 +293,11 @@ def _log_fallback_steps(steps: list[dict[str, Any]], reviewer: str) -> list[int]
     the three do not have.
     """
     prefix = f"Extract {reviewer.capitalize()} review from execution log"
-    return [i for i, step in enumerate(steps) if str(step.get("name", "")).startswith(prefix)]
+    return [
+        i
+        for i, step in enumerate(steps)
+        if str(step.get("name", "")).startswith(prefix)
+    ]
 
 
 def test_every_recorded_absence_is_still_an_absence() -> None:
@@ -300,7 +314,7 @@ def test_every_recorded_absence_is_still_an_absence() -> None:
     live = {r: _emit_steps(steps, r) for r in NO_ERROR_VERDICT_STEP}
     assert not any(live.values()), (
         "NO_ERROR_VERDICT_STEP records an absence that is no longer one -- delete "
-        f"the entry now that the step exists: {({r: i for r, i in live.items() if i})}"
+        f"the entry now that the step exists: { ({r: i for r, i in live.items() if i}) }"
     )
     # Positive control: every key coming back empty is also what a lookup
     # that can find nothing at all would produce, which would make the
@@ -315,14 +329,20 @@ def test_parser_finds_the_codex_provenance_steps() -> None:
     """Positive control: codex already has all three parts on this tree."""
     steps = _single_steps()
     run_index = _index(steps, _run_step_name("codex"))
-    assert _clears(steps[run_index], "codex"), "parser does not see the codex pre-run clear"
+    assert _clears(steps[run_index], "codex"), (
+        "parser does not see the codex pre-run clear"
+    )
     assert _writes_marker(steps[run_index], "codex"), "parser does not see codex-start"
 
     net_index = _index(steps, "Normalize review file name")
     assert net_index > run_index
     assert _is_always(steps[net_index])
-    assert _clears(steps[net_index], "codex"), "parser does not see the codex net's clear"
-    assert _reads_marker(steps[net_index], "codex"), "parser does not see the net's marker read"
+    assert _clears(steps[net_index], "codex"), (
+        "parser does not see the codex net's clear"
+    )
+    assert _reads_marker(steps[net_index], "codex"), (
+        "parser does not see the net's marker read"
+    )
     # And the negative half of the same control: the net only reads the
     # marker, so a `_writes_marker` that answers True here is matching
     # something other than the redirect and cannot separate the two roles.
@@ -559,7 +579,9 @@ def test_aggregate_clears_every_verdict_file_before_the_first_download() -> None
     steps = _aggregate_steps()
     checkout = _index(steps, "Checkout caller repo (PR head)")
     downloads = [
-        i for i, step in enumerate(steps) if "download-artifact" in str(step.get("uses", ""))
+        i
+        for i, step in enumerate(steps)
+        if "download-artifact" in str(step.get("uses", ""))
     ]
     assert downloads, "positive control: the aggregate downloads no artifacts at all"
 
@@ -643,12 +665,15 @@ def _run_net_body(
     if promote is not None:
         # The scripts copy under RUNNER_TEMP, which is what the net runs
         # (AT-2941), not the workspace checkout.
-        script = runner_temp / "ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+        script = (
+            runner_temp / "ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+        )
         script.parent.mkdir(parents=True)
         script.write_text(promote, encoding="utf-8")
         script.chmod(0o755)
     (tmp_path / f"review-{reviewer}.json").write_text(
-        '{"summary":"the PR wrote this","status":"approved","issues":[]}', encoding="utf-8"
+        '{"summary":"the PR wrote this","status":"approved","issues":[]}',
+        encoding="utf-8",
     )
     return subprocess.run(
         _RUNNER_BASH + [str(step["run"])],
@@ -769,7 +794,9 @@ def _run_aggregate_clear(
     steps = _aggregate_steps()
     step = steps[_index(steps, _AGGREGATE_CLEAR)]
     if promote is not None:
-        script = tmp_path / ".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+        script = (
+            tmp_path / ".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+        )
         script.parent.mkdir(parents=True)
         script.write_text(promote, encoding="utf-8")
         script.chmod(0o755)
@@ -915,8 +942,7 @@ def test_the_harness_runs_bodies_the_way_the_runner_does(tmp_path: Path) -> None
         check=False,
     )
     assert result.returncode != 0 and not (tmp_path / "reached").exists(), (
-        "the harness ran past a failing command, which the runner's bash -e "
-        "would not"
+        "the harness ran past a failing command, which the runner's bash -e would not"
     )
 
 

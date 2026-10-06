@@ -41,7 +41,10 @@ def test_actual_transports_bind_type_and_exact_local_operator(
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
     monkeypatch.setattr(aggregate, "INLINE_BOT_LOGIN", expected_login)
     monkeypatch.setattr(aggregate, "fetch_round_count", lambda *args: 0)
-    inline = inline_post_marker("claude", 1, inline_run_identity()) + "\n- **minor** (claude): finding"
+    inline = (
+        inline_post_marker("claude", 1, inline_run_identity())
+        + "\n- **minor** (claude): finding"
+    )
     fold = "<!-- round-cutoff-claude-r1 -->\n" + fold_count_line(2, _HEAD)
 
     posted = []
@@ -56,19 +59,49 @@ def test_actual_transports_bind_type_and_exact_local_operator(
             if "__typename" in query:
                 author["__typename"] = kind
             nodes = [{"author": author, "body": fold}] if surface == "fold" else []
-            payload = {"data": {"repository": {"pullRequest": {"comments": {
-                "nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}
-            }}}}}
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "comments": {
+                                "nodes": nodes,
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
-        rows = [{"user": {"login": login, "type": kind}, "commit_id": _HEAD,
-                 "original_commit_id": _HEAD, "body": fold if surface == "writer" else inline}] if surface in {"inline", "writer"} else []
-        return _REAL_RUN(["jq", "-r", cmd[cmd.index("--jq") + 1]],
-                         input=json.dumps(rows), text=True, capture_output=True, env=os.environ)
+        rows = (
+            [
+                {
+                    "user": {"login": login, "type": kind},
+                    "commit_id": _HEAD,
+                    "original_commit_id": _HEAD,
+                    "body": fold if surface == "writer" else inline,
+                }
+            ]
+            if surface in {"inline", "writer"}
+            else []
+        )
+        return _REAL_RUN(
+            ["jq", "-r", cmd[cmd.index("--jq") + 1]],
+            input=json.dumps(rows),
+            text=True,
+            capture_output=True,
+            env=os.environ,
+        )
 
     monkeypatch.setattr(subprocess, "run", transport)
     if surface == "writer":
-        posting.post_cutoff_summary("o/r", "7", "claude", 1,
-                                    [{"path": "a.py", "line": 1, "body": "finding"}], _HEAD)
+        posting.post_cutoff_summary(
+            "o/r",
+            "7",
+            "claude",
+            1,
+            [{"path": "a.py", "line": 1, "body": "finding"}],
+            _HEAD,
+        )
         assert len(posted) == (0 if accepted else 1)
         return
     result = aggregate._folded_findings({"claude": {"issues": [{}]}}, "o/r", "7", _HEAD)

@@ -179,9 +179,13 @@ def identifier_counts(text: str) -> Counter[str]:
     return counts
 
 
-def shape_diff(english: list[tuple[int, str]], korean: list[tuple[int, str]]) -> list[str]:
+def shape_diff(
+    english: list[tuple[int, str]], korean: list[tuple[int, str]]
+) -> list[str]:
     """Human-readable report of where the two heading sequences diverge."""
-    matcher = SequenceMatcher(a=[level for level, _ in english], b=[level for level, _ in korean])
+    matcher = SequenceMatcher(
+        a=[level for level, _ in english], b=[level for level, _ in korean]
+    )
     report: list[str] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
@@ -197,7 +201,9 @@ def presence_diff(english: Counter[str], korean: Counter[str]) -> list[str]:
     report: list[str] = []
     for name in sorted(set(english) | set(korean)):
         if bool(english[name]) != bool(korean[name]):
-            report.append(f"  {name}: README.md x{english[name]}, README.ko.md x{korean[name]}")
+            report.append(
+                f"  {name}: README.md x{english[name]}, README.ko.md x{korean[name]}"
+            )
     return report
 
 
@@ -224,11 +230,15 @@ def test_ignore_markers_carry_a_reason() -> None:
 
 def test_section_shape_matches() -> None:
     diff = shape_diff(headings(_read(ENGLISH)), headings(_read(KOREAN)))
-    assert not diff, "README.md and README.ko.md have different sections:\n" + "\n".join(diff)
+    assert not diff, (
+        "README.md and README.ko.md have different sections:\n" + "\n".join(diff)
+    )
 
 
 def test_untranslatable_identifiers_appear_in_both() -> None:
-    diff = presence_diff(identifier_counts(_read(ENGLISH)), identifier_counts(_read(KOREAN)))
+    diff = presence_diff(
+        identifier_counts(_read(ENGLISH)), identifier_counts(_read(KOREAN))
+    )
     assert not diff, (
         "identifiers documented on one side only:\n"
         + "\n".join(diff)
@@ -302,7 +312,9 @@ def test_heading_inside_a_code_fence_is_not_a_section() -> None:
 def test_marked_section_is_excluded_from_both_checks() -> None:
     en_only = (
         _EN
-        + "\n" + _marker("English-only appendix, no Korean equivalent planned") + "\n"
+        + "\n"
+        + _marker("English-only appendix, no Korean equivalent planned")
+        + "\n"
         + "## Appendix\n\nSee `internal_only_flag` and `notes.md`.\n"
     )
     assert shape_diff(headings(en_only), headings(_KO)) == []
@@ -312,7 +324,9 @@ def test_marked_section_is_excluded_from_both_checks() -> None:
 def test_marked_section_ends_at_the_next_sibling_heading() -> None:
     en_only = (
         _EN
-        + "\n" + _marker("English-only appendix") + "\n"
+        + "\n"
+        + _marker("English-only appendix")
+        + "\n"
         + "## Appendix\n\n### Detail\n\nUses `internal_only_flag`.\n"
         + "## Tail\n\nUses `base-ai-review-single.yml`.\n"
     )
@@ -324,7 +338,9 @@ def test_marked_section_ends_at_the_next_sibling_heading() -> None:
 def test_marked_section_survives_a_comment_line_in_fenced_code() -> None:
     en_only = (
         _EN
-        + "\n" + _marker("English-only appendix") + "\n"
+        + "\n"
+        + _marker("English-only appendix")
+        + "\n"
         + "## Appendix\n\n```bash\n# Looks like a heading, is not one\ngh api\n```\n"
         + "Uses `internal_only_flag`.\n"
     )
@@ -334,12 +350,10 @@ def test_marked_section_survives_a_comment_line_in_fenced_code() -> None:
 
 def test_bare_marker_does_not_exempt_a_section() -> None:
     """A reasonless marker must leave the section under both checks."""
-    en_only = (
-        _EN
-        + f"\n{BARE_MARKER}\n"
-        + "## Appendix\n\nSee `internal_only_flag`.\n"
+    en_only = _EN + f"\n{BARE_MARKER}\n" + "## Appendix\n\nSee `internal_only_flag`.\n"
+    assert any(
+        "Appendix" in line for line in shape_diff(headings(en_only), headings(_KO))
     )
-    assert any("Appendix" in line for line in shape_diff(headings(en_only), headings(_KO)))
     assert presence_diff(identifier_counts(en_only), identifier_counts(_KO)) == [
         "  internal_only_flag: README.md x1, README.ko.md x0"
     ]
@@ -370,7 +384,9 @@ def test_marker_inside_a_code_fence_is_not_honoured() -> None:
         + _marker("English-only appendix")
         + "\n```\n\n## Appendix\n\nSee `internal_only_flag`.\n"
     )
-    assert any("Appendix" in line for line in shape_diff(headings(documented), headings(_KO)))
+    assert any(
+        "Appendix" in line for line in shape_diff(headings(documented), headings(_KO))
+    )
     assert presence_diff(identifier_counts(documented), identifier_counts(_KO)) == [
         "  internal_only_flag: README.md x1, README.ko.md x0"
     ]

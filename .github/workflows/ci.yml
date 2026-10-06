@@ -12,6 +12,9 @@ jobs:
           python-version-file: .github/scripts/.python-version
       - run: pip install -r .github/scripts/requirements.txt
       - run: pip install -r .github/scripts/requirements-dev.txt
+      # Cheap check first, so a formatting miss is reported without waiting
+      # on the suite and is never hidden behind a test failure.
+      - run: ruff format --check .
       # No PYTHONPATH here on purpose: pyproject.toml carries the path setup,
       # so this is the same bare command a person runs (AT-2508).
       - run: pytest -v

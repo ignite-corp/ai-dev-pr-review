@@ -35,7 +35,11 @@ def _ruleset(*, enforcement: str = "active", extra_param: dict | None = None) ->
             {"type": "pull_request", "parameters": params},
             {
                 "type": "required_status_checks",
-                "parameters": {"required_status_checks": [{"context": "check-one", "integration_id": 1}]},
+                "parameters": {
+                    "required_status_checks": [
+                        {"context": "check-one", "integration_id": 1}
+                    ]
+                },
             },
         ],
         "bypass_actors": [{"actor_id": 1, "bypass_mode": "always"}],
@@ -52,7 +56,9 @@ def test_identical_documents_report_no_paths() -> None:
 
 
 def test_changed_scalar_reports_its_path() -> None:
-    assert drifted_paths(_ruleset(), _ruleset(enforcement="evaluate")) == ["enforcement"]
+    assert drifted_paths(_ruleset(), _ruleset(enforcement="evaluate")) == [
+        "enforcement"
+    ]
 
 
 def test_key_present_on_one_side_only_is_reported() -> None:
@@ -118,11 +124,18 @@ def test_no_document_value_ever_appears_in_the_output() -> None:
     # Hard safety requirement: paths carry schema keys, never ruleset content.
     stored = {
         "name": "stored-name-value",
-        "rules": [{"type": "stored-type-value", "parameters": {"context": "stored-context-value"}}],
+        "rules": [
+            {
+                "type": "stored-type-value",
+                "parameters": {"context": "stored-context-value"},
+            }
+        ],
     }
     live = {
         "name": "live-name-value",
-        "rules": [{"type": "live-type-value", "parameters": {"context": "live-context-value"}}],
+        "rules": [
+            {"type": "live-type-value", "parameters": {"context": "live-context-value"}}
+        ],
         "enforcement": "live-enforcement-value",
     }
     output = "\n".join(drifted_paths(stored, live))
@@ -143,7 +156,9 @@ def test_main_prints_paths_for_two_json_files(
     stored_path.write_text(json.dumps(_ruleset()), encoding="utf-8")
     live_path.write_text(json.dumps(_ruleset(enforcement="disabled")), encoding="utf-8")
 
-    monkeypatch.setattr("sys.argv", ["ruleset_drift_paths.py", str(stored_path), str(live_path)])
+    monkeypatch.setattr(
+        "sys.argv", ["ruleset_drift_paths.py", str(stored_path), str(live_path)]
+    )
     assert main() == 0
     assert capsys.readouterr().out == "enforcement\n"
 
