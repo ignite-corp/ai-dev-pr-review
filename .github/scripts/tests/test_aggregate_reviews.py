@@ -1479,13 +1479,8 @@ class TestSummaryLabels:
 
     def test_approve_clean_label(self) -> None:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
-        # dict is invariant in its value type: the dict[str, dict] a test
-        # builds is refused where the module's read-only parameter says
-        # dict[str, dict | None]. Widening the signature to Mapping cascades
-        # through the module's helpers, so the ten call sites carry the
-        # pragma instead (AT-2418).
         summary = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "reason",
             reviews,
@@ -1572,10 +1567,10 @@ class TestSummaryLabels:
             "codex": _make_named_review("codex", []),
             "gemini": _make_named_review("gemini", []),
         }
-        verdict, reason, available = apply_verdict_rules(reviews)  # pyright: ignore[reportArgumentType]
+        verdict, reason, available = apply_verdict_rules(reviews)
         assert verdict == "approve"
         summary = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             verdict,
             reason,
             available,
@@ -1606,7 +1601,7 @@ class TestSummaryLabels:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
         del reviews["gemini"]
         summary = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "reason",
             reviews,
@@ -1629,7 +1624,7 @@ class TestSummaryLabels:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
         del reviews["gemini"]
         summary = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "reason",
             reviews,
@@ -3873,7 +3868,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.delenv("EXCLUDED_PATHS", raising=False)
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
         body = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "3/3 LLM responses -- no issues",
             reviews,
@@ -3886,7 +3881,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_PATHS", "")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
         body = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "3/3 LLM responses -- no issues",
             reviews,
@@ -3903,7 +3898,7 @@ class TestPartialExclusionOnTheVerdict:
         )
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
         body = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "3/3 LLM responses -- no issues",
             reviews,
@@ -3927,7 +3922,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
         body = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "3/3 LLM responses -- no issues",
             reviews,
@@ -3946,7 +3941,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_PATHS", "tick`\x1b[0m.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
         body = format_summary(
-            reviews,  # pyright: ignore[reportArgumentType]
+            reviews,
             "approve",
             "3/3 LLM responses -- no issues",
             reviews,
