@@ -1,0 +1,6 @@
+# What a person installs to run the suite the way ci.yml does; the
+# runtime deps are in requirements.txt. Pinned: a floating linter turns
+# the tree red on its own release day, which reads as a defect in
+# whatever PR happens to be open (AT-2508).
+pytest==8.4.2
+ruff==0.14.11
