@@ -214,24 +214,24 @@ Per the record's rule that an unmeasured claim is marked as one:
 | An enterprise `GH_HOST` | The host check is argued from `gh help environment`, never measured against a real enterprise host. If it rejects your own clone, export `GH_HOST`. |
 | The composite `action.yml` being unreadable | No dedicated exit code. It ships in this repository and CI asserts it parses, so at runtime this is an edited working tree; it becomes a `reviewer_crashed` verdict with a traceback naming the file. |
 
-### Two known limits this PR does not fix
+### One known limit this PR does not fix
 
-Both come from identifying a verdict by **who wrote it** rather than by its
-marker, and both live in code shared with every consumer's Actions runs
-(`post_inline_comments.py`, `aggregate_reviews.py`), so changing them is a
-change to the Actions path, not to this driver.
+It comes from identifying a verdict by **who wrote it** rather than by its
+marker, and it lives in code shared with every consumer's Actions runs
+(`post_inline_comments.py`), so changing it is a change to the Actions path,
+not to this driver.
 
-1. **The round counter does not count local runs.** `fetch_round_count`
-   filters on `.user.type == "Bot"`, and a local verdict is authored by you.
-   In a repository Actions cannot reach -- the reason this driver exists --
-   the counter stays at zero and the convergence cutoff never fires.
-2. **`BOT_LOGIN` cannot fold both histories.** On a PR with both Actions and
-   local rounds, prior Actions verdicts were written by
-   `github-actions[bot]` and local ones by you; one login folds one set or
-   the other. Measured: a local run on such a PR minimized none of the 11
-   already-minimized comments and left both of its own expanded.
+**The round counter does not count local runs.** `fetch_round_count`
+filters on `.user.type == "Bot"`, and a local verdict is authored by you.
+In a repository Actions cannot reach -- the reason this driver exists --
+the counter stays at zero and the convergence cutoff never fires. Keying on
+`REVIEW_MARKER` and ignoring the author would close it (AT-2427).
 
-Keying on `REVIEW_MARKER` and ignoring the author would close both at once.
+The stale-item fold had the same limit -- `BOT_LOGIN` folded one login's
+history, so on a PR with both Actions and local rounds a local run minimized
+none of the Actions verdicts -- until AT-2599 made `aggregate_reviews.py`
+fold by the marker alone. The driver still resolves `BOT_LOGIN` and passes
+it; the fold no longer reads it.
 
 ### One asymmetry worth knowing
 
@@ -249,7 +249,7 @@ is not done here.
 | Difference | Why |
 |---|---|
 | Reviewers run one at a time | Actions gives each of its three jobs its own checkout. Here they share one tree and two of them can write to it. The price is wall-clock time. |
-| `BOT_LOGIN` defaults to your `gh` login | The verdict's author here is you, so a previous local verdict is folded rather than stacked (AT-2208). |
+| `BOT_LOGIN` defaults to your `gh` login | The verdict's author here is you. The aggregate's fold no longer reads the login (AT-2599), so the value decides nothing today; the driver still resolves it, and `gh auth login` is still what makes it resolvable. |
 | Inline comments are posted after all reviewers finish | Each reviewer's comments can then dedup against the previous one's. In Actions the three race and none sees the others. |
 | A reviewer's exit code reaches the aggregate | Actions loses it to `continue-on-error`, so a credential failure is reported as success (AT-1837). |
 | Legacy verdict names are promoted **before** the fallbacks | The workflow promotes after, so an error verdict masks the real one (AT-2424). |

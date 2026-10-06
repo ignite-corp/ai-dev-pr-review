@@ -28,11 +28,17 @@ _BOT_LOGIN_SUFFIX = "[bot]"
 def normalize_bot_login(login: str) -> str:
     """Reduce every GitHub spelling of an app's login to the bare app slug.
 
+    NO PRODUCTION PATH CALLS THIS TODAY. The stale-item fold did, and since
+    AT-2599 it keys on the review marker instead of the author. It is kept,
+    with its tests, for a read that must trust a verdict rather than fold
+    it, where a login comparison needs this normalizer whenever REST and
+    GraphQL disagree on the spelling. Delete it if no such read lands.
+
     The same GitHub App is rendered three ways depending on which surface
     reports it: REST ``.user.login`` says ``github-actions[bot]``, GraphQL
     ``author.login`` says ``github-actions`` (no suffix), and ``gh pr view
     --json author`` says ``app/github-actions``. ``BOT_LOGIN`` defaults to
-    the REST spelling while the stale-item pass reads authors over GraphQL,
+    the REST spelling while the stale-item pass read authors over GraphQL,
     so a verbatim compare of the two never matched and no prior-round
     aggregate item was ever minimized under the default (AT-2208).
 

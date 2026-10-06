@@ -40,6 +40,8 @@ from aggregate_reviews import (
     post_verdict,
     FAILED_DETAIL_PREFIX,
     REVIEWER_NAMES,
+    _STALE_COMMENTS_QUERY,
+    _STALE_REVIEWS_QUERY,
 )
 from github_pr_support import REVIEW_MARKER, normalize_bot_login
 
@@ -3664,17 +3666,15 @@ _STALE_MARKED = f"{REVIEW_MARKER}\nprior round"
 
 
 def _minimize_stale(
-    monkeypatch: pytest.MonkeyPatch,
     comments: list[dict[str, Any]],
     reviews: list[dict[str, Any]],
 ) -> list[tuple[str, str]]:
-    """Run ``_minimize_stale_bot_items`` with the default ``BOT_LOGIN``.
+    """Run ``_minimize_stale_bot_items`` over the given pages.
 
     Returns the ``(node_id, label)`` of every mutation it issued, in order.
     """
     from aggregate_reviews import _minimize_stale_bot_items
 
-    monkeypatch.delenv("BOT_LOGIN", raising=False)
     issued: list[tuple[str, str]] = []
 
     def record(query: str, node_id: str, label: str) -> None:
@@ -3691,47 +3691,65 @@ def _minimize_stale(
     return issued
 
 
-class TestMinimizeStaleBotItemsMatchesGraphQLLogin:
-    """The GraphQL ``author.login`` of an app has no ``[bot]`` suffix.
+def _comment(
+    comment_id: str, login: str | None, body: str = _STALE_MARKED
+) -> dict[str, Any]:
+    """A comments-page node.
 
-    ``BOT_LOGIN`` defaults to the REST spelling ``github-actions[bot]``, but
-    the stale-item queries read ``author { login }`` over GraphQL, where the
-    same app is ``github-actions``. Compared verbatim the two never match,
-    so with the default nothing was ever minimized and every round of a PR
-    appended another aggregate comment (AT-2208, observed on PR #151).
+    The query selects ``id``, ``isMinimized`` and ``body``, which is what
+    the fold reads. ``author`` is carried anyway, so a case can name who
+    posted an item and an author predicate added later has something to
+    match -- which is how the control tests below detect one.
+    """
+    return {
+        "id": comment_id,
+        "author": None if login is None else {"login": login},
+        "isMinimized": False,
+        "body": body,
+    }
+
+
+def _review(
+    review_id: str, login: str | None, state: str, body: str = _STALE_MARKED
+) -> dict[str, Any]:
+    """A reviews-page node, as ``_comment`` is for the other query.
+
+    The query selects ``id``, ``state`` and ``body``; ``author`` is carried
+    for the same reason.
+    """
+    return {
+        "id": review_id,
+        "author": None if login is None else {"login": login},
+        "state": state,
+        "body": body,
+    }
+
+
+class TestMinimizeStaleBotItemsFoldsByMarker:
+    """A prior-round item is one whose body carries ``REVIEW_MARKER``.
+
+    The fold used to match the author's login against ``BOT_LOGIN`` as
+    well, and that one login never covered every identity the pipeline
+    posts under: the reviewer App's ``APPROVED`` reviews carry the App's
+    login (AT-2599), and on the local driver the verdict is the operator's
+    (AT-2208). The marker is this pipeline's own HTML comment, so it is the
+    one thing every verdict shares and nothing else carries by accident.
+
+    Each refusal case below shares a page with the accepted case and
+    differs from it in exactly one predicate, so a refusal is attributable
+    to that predicate alone -- and the test fails if that predicate is
+    later dropped, because the paired node would then be folded too.
     """
 
-    _MARKED = _STALE_MARKED
+    _OWN = _review("R_own", "github-actions", "APPROVED")
+    _OWN_FOLDED = [("R_own", "dismiss"), ("R_own", "minimize")]
 
-    def _run(
+    def test_prior_round_comment_and_review_of_the_default_bot_are_folded(
         self,
-        monkeypatch: pytest.MonkeyPatch,
-        comments: list[dict[str, Any]],
-        reviews: list[dict[str, Any]],
-    ) -> list[tuple[str, str]]:
-        return _minimize_stale(monkeypatch, comments, reviews)
-
-    def test_graphql_login_of_the_default_bot_is_minimized(
-        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        issued = self._run(
-            monkeypatch,
-            comments=[
-                {
-                    "id": "C_1",
-                    "author": {"login": "github-actions"},
-                    "isMinimized": False,
-                    "body": self._MARKED,
-                }
-            ],
-            reviews=[
-                {
-                    "id": "R_1",
-                    "author": {"login": "github-actions"},
-                    "state": "CHANGES_REQUESTED",
-                    "body": self._MARKED,
-                }
-            ],
+        issued = _minimize_stale(
+            comments=[_comment("C_1", "github-actions")],
+            reviews=[_review("R_1", "github-actions", "CHANGES_REQUESTED")],
         )
         assert issued == [
             ("C_1", "minimize"),
@@ -3739,75 +3757,122 @@ class TestMinimizeStaleBotItemsMatchesGraphQLLogin:
             ("R_1", "minimize"),
         ]
 
-    def test_a_different_bot_is_left_alone(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_own_approved_marker_review_is_dismissed_and_minimized(
+        self,
     ) -> None:
-        issued = self._run(
-            monkeypatch,
-            comments=[
-                {
-                    "id": "C_2",
-                    "author": {"login": "gemini-code-assist"},
-                    "isMinimized": False,
-                    "body": self._MARKED,
-                }
-            ],
-            reviews=[
-                {
-                    "id": "R_2",
-                    "author": {"login": "gemini-code-assist"},
-                    "state": "CHANGES_REQUESTED",
-                    "body": self._MARKED,
-                }
-            ],
-        )
-        assert issued == []
+        """The defect of AT-2599: a prior head's APPROVED review of our own
+        was never dismissed, so it kept satisfying a ruleset whose
+        dismiss_stale_reviews_on_push is off on a head no review had seen."""
+        issued = _minimize_stale(comments=[], reviews=[self._OWN])
+        assert issued == self._OWN_FOLDED
 
-
-class TestMinimizeStaleBotItemsSkipsNullAuthor:
-    """GraphQL ``author`` is nullable: a deleted or ghost account yields
-    ``"author": null``, so the key is present with value ``None`` and a
-    ``node.get("author", {})`` default never applies. Such nodes must be
-    skipped, not crash the pass, and the bot's own items on the same page
-    must still be minimized.
-    """
-
-    def test_null_author_nodes_are_skipped_and_the_rest_minimized(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_reviewer_app_approved_marker_review_is_dismissed_and_minimized(
+        self,
     ) -> None:
+        """The approval is posted with the App's token, under the App's
+        login; the fold does not need to know that login."""
         issued = _minimize_stale(
-            monkeypatch,
-            comments=[
-                {
-                    "id": "C_ghost",
-                    "author": None,
-                    "isMinimized": False,
-                    "body": _STALE_MARKED,
-                },
-                {
-                    "id": "C_bot",
-                    "author": {"login": "github-actions"},
-                    "isMinimized": False,
-                    "body": _STALE_MARKED,
-                },
-            ],
+            comments=[],
+            reviews=[_review("R_app", "ignite-ai-review-approver", "APPROVED")],
+        )
+        assert issued == [("R_app", "dismiss"), ("R_app", "minimize")]
+
+    def test_a_marker_review_by_any_other_author_is_dismissed_too(
+        self,
+    ) -> None:
+        """By design. Authorship is not read: the local driver's verdict is
+        posted by a human (the operator), another bot quoting the marker is
+        housekeeping, and an author filter would spare one path's prior
+        round while folding the other's. This is the control for the
+        anchor below -- it fails if an author or type check is added."""
+        issued = _minimize_stale(
+            comments=[_comment("C_human", "hyuk-hur")],
             reviews=[
-                {
-                    "id": "R_ghost",
-                    "author": None,
-                    "state": "CHANGES_REQUESTED",
-                    "body": _STALE_MARKED,
-                },
-                {
-                    "id": "R_bot",
-                    "author": {"login": "github-actions"},
-                    "state": "CHANGES_REQUESTED",
-                    "body": _STALE_MARKED,
-                },
+                _review("R_human", "hyuk-hur", "APPROVED"),
+                _review("R_other_bot", "gemini-code-assist", "APPROVED"),
             ],
         )
         assert issued == [
-            ("C_bot", "minimize"),
-            ("R_bot", "dismiss"),
-            ("R_bot", "minimize"),
+            ("C_human", "minimize"),
+            ("R_human", "dismiss"),
+            ("R_human", "minimize"),
+            ("R_other_bot", "dismiss"),
+            ("R_other_bot", "minimize"),
         ]
+
+    def test_items_without_the_marker_are_left_alone(self) -> None:
+        """The anchor: with no author read, the marker is the whole of
+        what separates a prior-round item from everything else on the PR."""
+        issued = _minimize_stale(
+            comments=[
+                _comment("C_own", "github-actions"),
+                _comment("C_unmarked", "github-actions", body="prior round"),
+            ],
+            reviews=[
+                self._OWN,
+                _review("R_unmarked", "github-actions", "APPROVED", body="LGTM"),
+                _review("R_human_plain", "hyuk-hur", "APPROVED", body="LGTM"),
+            ],
+        )
+        assert issued == [("C_own", "minimize"), *self._OWN_FOLDED]
+
+    def test_an_already_minimized_comment_is_not_minimized_again(self) -> None:
+        minimized = _comment("C_done", "github-actions")
+        minimized["isMinimized"] = True
+        issued = _minimize_stale(
+            comments=[minimized, _comment("C_own", "github-actions")], reviews=[]
+        )
+        assert issued == [("C_own", "minimize")]
+
+    def test_a_review_that_quotes_a_verdict_is_left_alone(self) -> None:
+        """GitHub's "Quote reply" copies the quoted body's raw markdown,
+        HTML comments included, so a human review that quotes a verdict and
+        approves carries the marker -- behind "> ". The marker's position
+        is what tells the two apart: every verdict this pipeline posts
+        opens with it. Paired with the folded node, so dropping the
+        position test fails here and dropping the marker test fails the
+        anchor below."""
+        quoted = f"> {_STALE_MARKED}\n\nAgreed, approving."
+        issued = _minimize_stale(
+            comments=[_comment("C_quote", "hyuk-hur", body=quoted)],
+            reviews=[self._OWN, _review("R_quote", "hyuk-hur", "APPROVED", quoted)],
+        )
+        assert issued == self._OWN_FOLDED
+
+    def test_leading_whitespace_before_the_marker_still_folds(self) -> None:
+        """Position, not column: whitespace ahead of the marker changes no
+        body's authorship, and is what a hand-assembled body picks up."""
+        issued = _minimize_stale(
+            comments=[],
+            reviews=[_review("R_pad", None, "APPROVED", f"\n {_STALE_MARKED}")],
+        )
+        assert issued == [("R_pad", "dismiss"), ("R_pad", "minimize")]
+
+    @pytest.mark.parametrize("state", ["COMMENTED", "PENDING", "DISMISSED"])
+    def test_a_state_the_dismiss_mutation_refuses_is_not_dismissed(
+        self, state: str
+    ) -> None:
+        """``dismissPullRequestReview`` accepts approved or rejected reviews
+        only; issuing it for anything else would log a warning every round
+        for as long as the review exists."""
+        issued = _minimize_stale(
+            comments=[],
+            reviews=[self._OWN, _review("R_other", "github-actions", state)],
+        )
+        assert issued == self._OWN_FOLDED
+
+    @pytest.mark.parametrize(
+        "query",
+        [_STALE_COMMENTS_QUERY, _STALE_REVIEWS_QUERY],
+        ids=["comments", "reviews"],
+    )
+    def test_the_stale_queries_do_not_request_the_author(self, query: str) -> None:
+        """The fold reads no author, so neither query asks for one.
+
+        Asserted on the query rather than on behaviour because a predicate
+        cannot be caught reading a field the server never sent: an author
+        check added back here would be dead against production and alive
+        only against fixtures that still carry the key. The cases above
+        pin the fold's behaviour; this pins the shape it sees.
+        """
+        assert "author" not in query

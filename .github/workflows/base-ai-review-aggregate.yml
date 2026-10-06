@@ -215,6 +215,13 @@ jobs:
           POLICY_SKIPPED: ${{ inputs.policy_skipped }}
           EXCLUDED_COUNT: ${{ inputs.excluded_count }}
           EXCLUDED_PATHS: ${{ inputs.excluded_paths }}
+          # The identity the aggregate's own verdict comments are posted
+          # under. Nothing in aggregate_reviews.py reads it today: the stale
+          # fold keys on the review marker since AT-2599, so a superseded
+          # head's approval is dismissed whichever identity posted it. Kept
+          # for a read that must trust a verdict rather than fold it, and
+          # because the local driver resolves this name from the default
+          # declared here (local_review_config.py).
           BOT_LOGIN: ${{ vars.BOT_LOGIN || 'github-actions[bot]' }}
           CRITICAL_THRESHOLD: ${{ vars.CRITICAL_THRESHOLD || '1' }}
           DEPENDABOT_CRITICAL_THRESHOLD: ${{ vars.DEPENDABOT_CRITICAL_THRESHOLD || '2' }}
