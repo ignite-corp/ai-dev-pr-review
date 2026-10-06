@@ -37,7 +37,12 @@ def test_the_envelope_carries_every_key_the_aggregate_validates():
     """aggregate_reviews rejects a payload missing any of these."""
     verdict = error_verdict("summary", "kind", "detail")
     assert set(verdict) == {
-        "summary", "status", "early_exit", "issues", "error", "error_detail"
+        "summary",
+        "status",
+        "early_exit",
+        "issues",
+        "error",
+        "error_detail",
     }
     assert verdict["status"] == "failed"
     assert verdict["early_exit"] is False
@@ -180,10 +185,10 @@ def test_neither_shim_builds_a_failed_verdict_itself(shim):
 
 def test_the_baseline_detector_actually_detects():
     """A check nobody has seen fail is not a check."""
-    baseline = '''
+    baseline = """
 def error_verdict(summary, kind, detail):
     return {"summary": summary, "status": "failed", "issues": []}
-'''
+"""
     assert failed_verdict_builders(baseline) == ["error_verdict"]
 
 

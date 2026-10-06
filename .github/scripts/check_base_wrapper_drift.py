@@ -239,7 +239,9 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if doc is None:
         return {}
     if not isinstance(doc, dict):
-        raise UnreadableYamlError(f"{path}: top level is {type(doc).__name__}, not a mapping")
+        raise UnreadableYamlError(
+            f"{path}: top level is {type(doc).__name__}, not a mapping"
+        )
     return doc
 
 
@@ -362,7 +364,9 @@ def load_correspondence(path: Path) -> DriftConfig:
                 where = f"entry {index}"
                 if field != "base_step" and str(raw.get("base_step") or "").strip():
                     where += f" ({raw['base_step']!r})"
-                raise MalformedConfigError(f"correspondence {where} is missing {field!r}")
+                raise MalformedConfigError(
+                    f"correspondence {where} is missing {field!r}"
+                )
         entry = StepCorrespondence(
             base_file=str(raw["base_file"]),
             base_step=str(raw["base_step"]),
@@ -388,7 +392,9 @@ def load_correspondence(path: Path) -> DriftConfig:
     )
 
 
-def _load_output_correspondence(doc: dict[str, Any]) -> tuple[OutputCorrespondence, ...]:
+def _load_output_correspondence(
+    doc: dict[str, Any],
+) -> tuple[OutputCorrespondence, ...]:
     """Parse the ``outputs:`` section, with axis 1's reason rules.
 
     A file with no wrapper counterpart needs a reason; one that maps
@@ -398,7 +404,9 @@ def _load_output_correspondence(doc: dict[str, Any]) -> tuple[OutputCorresponden
     entries: list[OutputCorrespondence] = []
     for index, raw in enumerate(doc.get("outputs") or []):
         if not isinstance(raw, dict):
-            raise MalformedConfigError(f"outputs correspondence entry {index} is not a mapping")
+            raise MalformedConfigError(
+                f"outputs correspondence entry {index} is not a mapping"
+            )
         if not str(raw.get("base_file") or "").strip():
             raise MalformedConfigError(
                 f"outputs correspondence entry {index} is missing 'base_file'"
@@ -444,7 +452,9 @@ def load_exceptions(path: Path) -> Exceptions:
             for key, entry in (by_key or {}).items():
                 reason = _reason(entry)
                 if not reason:
-                    raise MalformedConfigError(f"env {base_file}:{base_step!r} {key} has no reason")
+                    raise MalformedConfigError(
+                        f"env {base_file}:{base_step!r} {key} has no reason"
+                    )
                 reasons[str(key)] = reason
             env_exceptions[(str(base_file), str(base_step))] = reasons
     output_exceptions: dict[str, dict[str, str]] = {}
@@ -456,7 +466,9 @@ def load_exceptions(path: Path) -> Exceptions:
                 raise MalformedConfigError(f"outputs {base_file} {key} has no reason")
             reasons[str(key)] = reason
         output_exceptions[str(base_file)] = reasons
-    return Exceptions(vars=vars_exceptions, env=env_exceptions, outputs=output_exceptions)
+    return Exceptions(
+        vars=vars_exceptions, env=env_exceptions, outputs=output_exceptions
+    )
 
 
 def _base_docs(
@@ -513,10 +525,14 @@ def check_env_keys(
     for entry in config.steps:
         base_keys = find_step_env_keys(base_docs[entry.base_file], entry.base_step)
         if entry.has_no_counterpart:
-            notes.append(f"  step {entry.label} has no wrapper counterpart: {entry.reason}")
+            notes.append(
+                f"  step {entry.label} has no wrapper counterpart: {entry.reason}"
+            )
             continue
         if entry.wrapper_file not in wrapper_docs:
-            wrapper_docs[entry.wrapper_file] = _load_yaml(wrapper_dir / entry.wrapper_file)
+            wrapper_docs[entry.wrapper_file] = _load_yaml(
+                wrapper_dir / entry.wrapper_file
+            )
         wrapper_doc = wrapper_docs[entry.wrapper_file]
         wrapper_union: set[str] = set()
         for wrapper_step in entry.wrapper_steps:
@@ -563,7 +579,9 @@ def check_workflow_outputs(
     for entry in config.outputs:
         base_keys = workflow_call_outputs(base_docs[entry.base_file])
         if entry.has_no_counterpart:
-            notes.append(f"  outputs {entry.label} has no wrapper counterpart: {entry.reason}")
+            notes.append(
+                f"  outputs {entry.label} has no wrapper counterpart: {entry.reason}"
+            )
             continue
         wrapper_union: set[str] = set()
         for name in entry.wrapper_files:
@@ -608,11 +626,16 @@ def check_vars_consumed(
                 "(a consumer setting it has no effect and no error)"
             )
 
-    info = [f"  vars.{name} (wrapper-only, not a drift)" for name in sorted(wrapper_vars - base_vars)]
+    info = [
+        f"  vars.{name} (wrapper-only, not a drift)"
+        for name in sorted(wrapper_vars - base_vars)
+    ]
     return findings, notes, info
 
 
-def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions_path: Path) -> int:
+def run(
+    base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions_path: Path
+) -> int:
     try:
         config = load_correspondence(correspondence_path)
         exceptions = load_exceptions(exceptions_path)
@@ -621,7 +644,9 @@ def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions
         return 1
 
     try:
-        env_findings, env_notes = check_env_keys(base_dir, wrapper_dir, config, exceptions)
+        env_findings, env_notes = check_env_keys(
+            base_dir, wrapper_dir, config, exceptions
+        )
         vars_findings, vars_notes, vars_info = check_vars_consumed(
             base_dir, wrapper_dir, config, exceptions
         )
@@ -677,7 +702,9 @@ def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--base-dir", required=True, type=Path)
     parser.add_argument("--wrapper-dir", required=True, type=Path)
     parser.add_argument("--correspondence", required=True, type=Path)

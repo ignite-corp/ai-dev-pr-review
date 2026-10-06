@@ -361,9 +361,10 @@ def test_rescue_does_not_fire_for_a_line_that_is_already_in_range(tmp_path):
 
     assert counts["rescued"] == 0
     assert counts["mislocated"] == 1
-    assert json.loads((tmp_path / "review-gemini.json").read_text())["issues"][0][
-        "line"
-    ] is None
+    assert (
+        json.loads((tmp_path / "review-gemini.json").read_text())["issues"][0]["line"]
+        is None
+    )
 
 
 def test_a_line_that_is_no_offset_is_not_rescued_but_is_still_screened(tmp_path):
@@ -381,9 +382,10 @@ def test_a_line_that_is_no_offset_is_not_rescued_but_is_still_screened(tmp_path)
     counts = check_reviewer_coordinates(work, "codex")
 
     assert counts == {"rescued": 0, "mislocated": 1, "unquoted": 0, "checked": 1}
-    assert json.loads((tmp_path / "review-codex.json").read_text())["issues"][0][
-        "line"
-    ] is None
+    assert (
+        json.loads((tmp_path / "review-codex.json").read_text())["issues"][0]["line"]
+        is None
+    )
 
 
 def test_a_rescued_line_that_then_fails_the_check_names_the_reviewers_number(
@@ -548,9 +550,10 @@ def test_a_finding_that_quotes_nothing_is_counted_not_judged(tmp_path):
     counts = check_reviewer_coordinates(work, "claude")
 
     assert counts == {"rescued": 0, "mislocated": 0, "unquoted": 1, "checked": 0}
-    assert json.loads((tmp_path / "review-claude.json").read_text())["issues"][0][
-        "line"
-    ] == 3
+    assert (
+        json.loads((tmp_path / "review-claude.json").read_text())["issues"][0]["line"]
+        == 3
+    )
 
 
 def test_a_finding_about_a_removed_line_is_the_documented_blind_spot(tmp_path):
@@ -582,8 +585,13 @@ def test_a_finding_about_a_removed_line_is_the_documented_blind_spot(tmp_path):
     write_verdict(
         tmp_path,
         "claude",
-        [issue(2, "the removed `stale_cache.invalidate()` was the only thing"
-                  " keeping this from returning a stale build")],
+        [
+            issue(
+                2,
+                "the removed `stale_cache.invalidate()` was the only thing"
+                " keeping this from returning a stale build",
+            )
+        ],
     )
 
     counts = check_reviewer_coordinates(work, "claude")
@@ -607,23 +615,25 @@ def test_the_window_admits_evidence_a_few_lines_off():
     hits = evidence_lines(source, {"subprocess"})
     assert hits == [10]
     assert any(abs(hit - (10 + EVIDENCE_WINDOW)) <= EVIDENCE_WINDOW for hit in hits)
-    assert not any(abs(hit - (10 + EVIDENCE_WINDOW + 1)) <= EVIDENCE_WINDOW
-                   for hit in hits)
+    assert not any(
+        abs(hit - (10 + EVIDENCE_WINDOW + 1)) <= EVIDENCE_WINDOW for hit in hits
+    )
 
 
 # --------------------------------------------------- degradation, not death
 
 
-@pytest.mark.parametrize(
-    "content", ["", "not json", "[]", '{"issues": "not a list"}']
-)
+@pytest.mark.parametrize("content", ["", "not json", "[]", '{"issues": "not a list"}'])
 def test_an_unusable_verdict_file_is_left_for_the_aggregate_to_report(
     tmp_path, content
 ):
     work = make_tree(tmp_path, ["a"], all_additions_diff(["a"]))
     (tmp_path / "review-codex.json").write_text(content, encoding="utf-8")
     assert check_reviewer_coordinates(work, "codex") == {
-        "rescued": 0, "mislocated": 0, "unquoted": 0, "checked": 0
+        "rescued": 0,
+        "mislocated": 0,
+        "unquoted": 0,
+        "checked": 0,
     }
 
 
@@ -657,9 +667,10 @@ def test_a_missing_diff_still_lets_the_evidence_half_run(tmp_path):
     # outside EVIDENCE_WINDOW, so this is the mislocated case.
     counts = check_reviewer_coordinates(tmp_path, "claude")
     assert counts["checked"] == 1 and counts["mislocated"] == 1
-    assert json.loads((tmp_path / "review-claude.json").read_text())["issues"][0][
-        "line"
-    ] is None
+    assert (
+        json.loads((tmp_path / "review-claude.json").read_text())["issues"][0]["line"]
+        is None
+    )
 
 
 # ------------------------------------------- the four findings, as written

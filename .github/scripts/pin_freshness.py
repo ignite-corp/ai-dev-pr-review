@@ -169,7 +169,9 @@ def _format(version: Version) -> str:
     return "v%d.%d.%d" % version
 
 
-def judge_release(tag: str, versions: dict[str, Version], latest: Version) -> tuple[bool, str]:
+def judge_release(
+    tag: str, versions: dict[str, Version], latest: Version
+) -> tuple[bool, str]:
     """Apply the MINOR-tolerance currency rule to a resolved release tag."""
     version = versions[tag]
     if version >= latest:
@@ -188,7 +190,11 @@ def judge_release(tag: str, versions: dict[str, Version], latest: Version) -> tu
             _format(latest),
             MINOR_TOLERANCE,
         )
-    return False, "%s is %d minor releases behind latest %s" % (tag, gap, _format(latest))
+    return False, "%s is %d minor releases behind latest %s" % (
+        tag,
+        gap,
+        _format(latest),
+    )
 
 
 def classify(
@@ -238,10 +244,14 @@ def classify(
                 "(latest release is %s)" % (pin, _format(latest))
             )
         if versions[tag] >= latest:
-            return True, "floating tag %s resolves to %s -- %s is the latest release" % (
-                pin,
-                tag,
-                tag,
+            return (
+                True,
+                "floating tag %s resolves to %s -- %s is the latest release"
+                % (
+                    pin,
+                    tag,
+                    tag,
+                ),
             )
         return False, (
             "floating tag %s still resolves to %s; the major tag has not moved to "
@@ -271,7 +281,9 @@ def classify(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tags", required=True, help="tag listing file, or - for stdin")
+    parser.add_argument(
+        "--tags", required=True, help="tag listing file, or - for stdin"
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--pin", help="the pin string found in a consumer workflow")
     group.add_argument(

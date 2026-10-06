@@ -266,13 +266,20 @@ def fetch_paginated_nodes(
     cursor = ""
     for page_num in range(_MAX_FETCH_PAGES):
         cmd = [
-            "gh", "api", "graphql",
-            "-f", f"query={query}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
             # -F (--field) auto-converts integers to JSON number type
-            "-F", f"first={page_size}",
-            "-F", f"pr={pr_number}",
+            "-F",
+            f"first={page_size}",
+            "-F",
+            f"pr={pr_number}",
         ]
         if cursor:
             cmd += ["-f", f"after={cursor}"]

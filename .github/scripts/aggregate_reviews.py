@@ -541,8 +541,7 @@ def format_prepare_failure_summary(result: str, run_url: str) -> str:
     blocks and a check that blocks actionably.
     """
     headline = (
-        f"**Result: [X] Review did not run -- the prepare job reported"
-        f" `{result}`**"
+        f"**Result: [X] Review did not run -- the prepare job reported `{result}`**"
     )
     why_red = (
         "No reviewer ran, so this check reports a failure rather than a"
@@ -709,7 +708,9 @@ def format_policy_skip_summary(paths: list[str]) -> str:
     )
     # prepare already sanitizes; rendered through display_path again so a
     # path list from any other producer cannot close the code span either.
-    listed = [f"- `{display_path(path)}`" for path in paths] or ["- (paths not reported)"]
+    listed = [f"- `{display_path(path)}`" for path in paths] or [
+        "- (paths not reported)"
+    ]
     outcome = (
         "This check reports success by policy: the excluded content is not"
         " review material, and this is not a review of it. A gate that must"
@@ -1063,7 +1064,9 @@ def format_summary(
     # comment_only and quorum-short would report the auto-approve killswitch
     # but never mention that a reviewer didn't respond (AT-2240 follow-up).
     coverage_segment = (
-        f"not every reviewer responded ({coverage})" if approve_quorum_short else coverage
+        f"not every reviewer responded ({coverage})"
+        if approve_quorum_short
+        else coverage
     )
 
     # The posting axis: only rendered when it diverges from the plain
@@ -1160,7 +1163,9 @@ def format_summary(
         # `error` check below, even when both are present, because "N issue(s)"
         # implies looking and a failed reviewer never looked (AT-2123).
         if status == STATUS_FAILED:
-            header = f"### {name.title()} -- [ ] not run ({_failed_status_detail(review)})"
+            header = (
+                f"### {name.title()} -- [ ] not run ({_failed_status_detail(review)})"
+            )
         else:
             header = f"### {name.title()} -- {len(issues)} issue(s)"
             if review.get("error"):

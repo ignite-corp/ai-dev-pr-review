@@ -21,7 +21,9 @@ from google.genai import types as genai_types
 from review_status import stamp_model_status
 
 REVIEW_FILE = "review-gemini.json"
-REVIEW_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "review-schema.json"
+REVIEW_SCHEMA_PATH = (
+    Path(__file__).resolve().parent.parent / "schemas" / "review-schema.json"
+)
 # Defaults to gemini-2.5-pro (current latest stable). Override via vars.GEMINI_MODEL
 # in the orchestrator workflow (matches the CLAUDE_MODEL / CODEX_MODEL pattern).
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
@@ -314,7 +316,9 @@ def main() -> None:
         )
 
         if client.models is None:
-            raise RuntimeError("google-genai Client.models is None after Client(api_key=...)")
+            raise RuntimeError(
+                "google-genai Client.models is None after Client(api_key=...)"
+            )
         response = _call_gemini_with_retry(
             client,
             model=MODEL,
@@ -323,7 +327,11 @@ def main() -> None:
         )
         # Detect MAX_TOKENS truncation BEFORE attempting JSON parse, so the operator
         # gets a clear actionable error instead of an opaque JSONDecodeError.
-        if response.candidates and response.candidates[0] and response.candidates[0].finish_reason:
+        if (
+            response.candidates
+            and response.candidates[0]
+            and response.candidates[0].finish_reason
+        ):
             fr = response.candidates[0].finish_reason
             fr_name = fr.name if hasattr(fr, "name") else str(fr)
             if fr_name == "MAX_TOKENS":
@@ -343,7 +351,9 @@ def main() -> None:
             )
         text = response.text
         if not text:
-            raise ValueError("Gemini returned empty response (filtered or no candidates)")
+            raise ValueError(
+                "Gemini returned empty response (filtered or no candidates)"
+            )
         review = extract_json(text)  # type: ignore[reportUnknownVariableType]
         # Stamp explicit status (AT-1799 contract): keep a valid model-emitted
         # value, otherwise derive from the early_exit flag.

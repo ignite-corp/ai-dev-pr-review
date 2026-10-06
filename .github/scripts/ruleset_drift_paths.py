@@ -68,7 +68,9 @@ def drifted_paths(stored: object, live: object) -> list[str]:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("usage: ruleset_drift_paths.py <stored.json> <live.json>", file=sys.stderr)
+        print(
+            "usage: ruleset_drift_paths.py <stored.json> <live.json>", file=sys.stderr
+        )
         return 2
     with open(sys.argv[1], encoding="utf-8") as fh:
         stored = json.load(fh)
