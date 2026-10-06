@@ -34,6 +34,13 @@ env:
           By design. Base parameterises the step on its reviewer input; the
           wrapper's 'Read Claude early_exit' / 'Read Codex early_exit' steps
           each hardcode their reviewer's file.
+    Emit Gemini error verdict (no verdict file):
+      STEP_OUTCOME:
+        reason: >-
+          By design. Base's net names the gemini step's outcome in its
+          error_detail; the wrapper's 'Synthesize missing reviewer verdicts'
+          nets all three reviewers from one step with a neutral detail and
+          reads only the codex outcomes it branches on (AT-2539).
   base-ai-review-aggregate.yml:
     Aggregate and post verdict:
       PREPARE_RESULT:

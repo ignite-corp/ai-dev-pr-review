@@ -1186,6 +1186,7 @@ def vendored_exceptions_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
 POST_PIN_STEPS = frozenset(
     {
         ("base-ai-review-prepare.yml", "Filter policy-excluded files"),  # AT-2206
+        ("base-ai-review-single.yml", "Emit Gemini error verdict (no verdict file)"),  # AT-2539
     }
 )
 

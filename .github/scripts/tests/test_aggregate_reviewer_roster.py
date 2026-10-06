@@ -550,11 +550,12 @@ class TestNoArtifactRoundIsNotBenign:
 
     * The reviewer step in base-ai-review-single.yml is continue-on-error,
       so a step's own death does not fail the job. What turns that into a
-      signal is an always() step that records the failure: claude's emits
-      an error verdict, codex's fails the job, and gemini has neither --
-      so a killed gemini step leaves the job green with nothing uploaded.
-      The chaining-guard caveat in base-ai-review-orchestrator.yml says
-      the same from the guard's side.
+      signal is an always() step that records the failure: claude's and
+      gemini's emit an error verdict, codex's fails the job (AT-2539). So
+      this round now has no known producer short of every net dying with
+      its step -- and the aggregate still cannot tell that from here. The
+      chaining-guard caveat in base-ai-review-orchestrator.yml says the
+      same from the guard's side.
     * There is no trivial-diff round behind it either. Every "nothing to
       review" state is settled before a reviewer runs: an empty diff fails
       prepare (extract_pr_diff.sh, AT-2201), a size skip exits 1, and an

@@ -250,11 +250,10 @@ jobs:
       # sequential clauses tolerate a failed upstream job (AT-2125). The
       # cost is that the step's outcome does not reach the conclusion, so
       # the failure has to be recorded by the reviewer path itself --
-      # claude's always() step emits an error verdict, codex's fails the
-      # job, and gemini does neither, so a killed gemini step leaves no
-      # trace (AT-2539). What that costs the chaining guard is written
-      # where the guard is: base-ai-review-orchestrator.yml, the note
-      # above review-codex-s.
+      # claude's and gemini's always() steps emit an error verdict, and
+      # codex's fails the job (AT-2539). What that costs the chaining
+      # guard is written where the guard is:
+      # base-ai-review-orchestrator.yml, the note above review-codex-s.
       - name: Run Claude review
         if: inputs.reviewer == 'claude'
         id: claude-review
@@ -401,9 +400,10 @@ jobs:
         run: pip install -r .ai-dev-pr-review/.github/scripts/requirements.txt
 
       # Why continue-on-error and its cost: the note above 'Run Claude
-      # review'. This is the path with no always() net of its own.
+      # review'. The always() net for this path is the step after it.
       - name: Run Gemini review
         if: inputs.reviewer == 'gemini'
+        id: gemini-review
         continue-on-error: true
         timeout-minutes: 10
         env:
@@ -412,6 +412,63 @@ jobs:
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
         run: python .ai-dev-pr-review/.github/scripts/review_gemini.py
+
+      # review_gemini.py records its own failures, but only from inside its
+      # try/except: a step killed by its timeout-minutes, or dead before
+      # main() reaches that handler, writes nothing and the job still ends
+      # green with no verdict -- which the aggregate can only report as
+      # "early-exit or no-output" (AT-2539). On cancellation the job
+      # concludes `cancelled`, which the aggregate already reports as
+      # non-benign; always() still runs this net and the always() upload
+      # step, so the verdict is recorded on that path too.
+      #
+      # The same net claude has, for the same reason (the note above 'Emit
+      # Claude error verdict'): a failed verdict reaches the aggregate,
+      # which names gemini on the headline and in the roster. Not
+      # continue-on-error: if we cannot even record the failure, the job
+      # must not report success. A step killed mid-write leaves a non-empty
+      # file that is not JSON, which the aggregate would drop as malformed
+      # -- the same absence -- so presence here means one parseable JSON
+      # object, not merely a non-empty file: `jq empty` alone exits 0 on
+      # whitespace-only input (zero values) and on a bare scalar, and
+      # `jq -e` without --slurp judges only the last value of a stream, so
+      # `null {"a":1}` would pass it; all three are malformed to the
+      # aggregate's single-document load. Whether the object has the
+      # verdict's fields is not checked here; that is the model-output
+      # path, not a dead step.
+      - name: Emit Gemini error verdict (no verdict file)
+        if: inputs.reviewer == 'gemini' && always()
+        env:
+          STEP_OUTCOME: ${{ steps.gemini-review.outcome }}
+        run: |
+          set -euo pipefail
+          # One filter for the gate and the self-check after the write, so
+          # the two cannot drift apart.
+          OBJECT_FILTER='length == 1 and (.[0] | type == "object")'
+          if [ -s review-gemini.json ] && jq -e -s "$OBJECT_FILTER" review-gemini.json >/dev/null 2>&1; then
+            echo "::notice::Gemini verdict file present"
+            exit 0
+          fi
+          ERROR_KIND="script_invocation_failed"
+          # The detail reaches the roster and the PR, so it says which guard
+          # failed: a file killed mid-write is not "nothing written". One
+          # REASON, so the summary and the log cannot contradict it.
+          if [ -s review-gemini.json ]; then
+            REASON="verdict file present but not a JSON object, replaced"
+          else
+            REASON="no verdict file written"
+          fi
+          DETAIL="review_gemini.py outcome=${STEP_OUTCOME}; ${REASON}"
+          echo "::warning::Gemini review produced no usable verdict file -- emitting error verdict (${ERROR_KIND})"
+          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" '{
+            summary: ("Gemini review failed: " + $detail),
+            status: "failed",
+            early_exit: false,
+            issues: [],
+            error: $kind,
+            error_detail: $detail
+          }' > review-gemini.json
+          jq -e -s "$OBJECT_FILTER" review-gemini.json >/dev/null
 
       # --- Codex ---
       - name: Install Codex CLI

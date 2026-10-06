@@ -144,8 +144,9 @@ jobs:
   #
   # What this tolerance does NOT cover, so nobody reads it as protection
   # against a reviewer outage: the reviewer step is continue-on-error, so
-  # a job can conclude `success` having uploaded no verdict artifact. An
-  # outage does not arrive here as `failure`, and a `failure` is tolerated
+  # a dead claude or gemini step still concludes `success`, carrying the
+  # `failed` verdict artifact its always() net wrote; only codex's verify
+  # step turns a dead step into `failure`, and a `failure` is tolerated
   # anyway, so no decision here turns on one. It surfaces in the
   # aggregate's per-reviewer roster instead; the note above 'Run Claude
   # review' in base-ai-review-single.yml has the per-reviewer mechanisms.
