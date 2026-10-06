@@ -19,7 +19,7 @@ import pytest
 SCRIPT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from ruleset_drift_paths import drifted_paths, main
+from ruleset_drift_paths import drifted_paths, main  # noqa: E402
 
 
 def _ruleset(*, enforcement: str = "active", extra_param: dict | None = None) -> dict:
