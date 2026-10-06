@@ -209,9 +209,7 @@ def test_the_codex_prompt_travels_on_stdin_and_not_in_argv(tree, monkeypatch):
     assert not any(len(str(part)) > 1000 for part in captured["argv"])
 
 
-def test_the_codex_argv_keeps_the_sandbox_the_review_invocation_uses(
-    tree, monkeypatch
-):
+def test_the_codex_argv_keeps_the_sandbox_the_review_invocation_uses(tree, monkeypatch):
     captured = fake_spawn(monkeypatch, codex, code=0)
     codex.run_cli("p", "m")
     assert "--sandbox" in captured["argv"]
@@ -231,8 +229,7 @@ def test_no_argv_size_ceiling_survives_in_the_codex_shim():
     for gone in ("_MAX_ARG_BYTES", "_EXIT_PROMPT_TOO_LARGE"):
         assert not hasattr(codex, gone), gone
     assert not any(
-        isinstance(value, int) and value == 131072
-        for value in vars(codex).values()
+        isinstance(value, int) and value == 131072 for value in vars(codex).values()
     )
 
 
@@ -251,7 +248,7 @@ def test_no_argv_size_ceiling_survives_in_the_codex_shim():
 def test_each_spawn_failure_gets_its_own_exit_code(
     tree, monkeypatch, module, raised, expected
 ):
-    """"Not installed" and "ran for ten minutes" are different problems with
+    """ "Not installed" and "ran for ten minutes" are different problems with
     different fixes, and both used to arrive as the same empty output."""
     fake_spawn(monkeypatch, module, raises=raised)
     assert module.run_cli("p", "m")[0] == expected
@@ -445,9 +442,7 @@ def _raise_missing(argv, **kwargs):
 def test_claude_recovers_a_verdict_the_model_printed(tree, monkeypatch):
     """The CLI answered in text instead of writing the file."""
     verdict = {"summary": "s", "status": "ok", "early_exit": False, "issues": []}
-    fake_spawn(
-        monkeypatch, claude, stdout=json.dumps({"result": json.dumps(verdict)})
-    )
+    fake_spawn(monkeypatch, claude, stdout=json.dumps({"result": json.dumps(verdict)}))
     claude.review()
     assert json.loads(Path(claude.REVIEW_FILE).read_text())["summary"] == "s"
 
@@ -577,8 +572,7 @@ def real_timeout():
     so the tests use the real article rather than a convenient stand-in.
     """
     script = (
-        "import sys, time; print('PARTIAL OUTPUT'); sys.stdout.flush();"
-        " time.sleep(30)"
+        "import sys, time; print('PARTIAL OUTPUT'); sys.stdout.flush(); time.sleep(30)"
     )
     try:
         subprocess.run(
@@ -941,11 +935,7 @@ def _run_shim_as_its_own_process(tmp_path, name, env_extra: dict[str, str]) -> s
     stand_in.chmod(0o755)
     (tmp_path / "context.md").write_text("guidelines", encoding="utf-8")
     (tmp_path / "pr.diff").write_text("+a\n", encoding="utf-8")
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key != DRIVER_ENV_MARKER
-    }
+    env = {key: value for key, value in os.environ.items() if key != DRIVER_ENV_MARKER}
     env["PATH"] = f"{binder}{os.pathsep}{os.environ['PATH']}"
     env["PYTHONPATH"] = str(SCRIPT_DIR)
     env.update(env_extra)

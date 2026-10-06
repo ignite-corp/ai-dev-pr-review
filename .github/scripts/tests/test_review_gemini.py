@@ -10,7 +10,7 @@ import pytest
 SCRIPT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import review_gemini
+import review_gemini  # noqa: E402
 
 
 def test_is_rate_limit_error_detects_429_in_message():

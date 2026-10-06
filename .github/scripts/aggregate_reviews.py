@@ -714,7 +714,7 @@ def format_policy_skip_summary(paths: list[str]) -> str:
         "This check reports success by policy: the excluded content is not"
         " review material, and this is not a review of it. A gate that must"
         " not merge on a skipped review can key on the"
-        f" `<!-- lens:skipped ... -->` marker in this comment."
+        " `<!-- lens:skipped ... -->` marker in this comment."
     )
     lines = [
         REVIEW_MARKER,

@@ -1,0 +1,18 @@
+# Tool configuration for the scripts under .github/scripts/. This repository is
+# not a Python package; the file exists so that the commands a person runs by
+# hand are the commands CI runs (AT-2508).
+
+[tool.pytest.ini_options]
+# Bare `pytest` from the repository root is the suite, after
+#   pip install -r .github/scripts/requirements.txt -r .github/scripts/requirements-dev.txt
+# The path setup used to live only in ci.yml as PYTHONPATH, so the same
+# command failed to collect six modules on a developer's machine (AT-2508).
+testpaths = [".github/scripts/tests"]
+pythonpath = [".github/scripts"]
+
+[tool.ruff]
+# Pinned explicitly so a formatter default change cannot move the baseline
+# silently. 88 is the width the tree was written to: measured at 32 of 54
+# files drifting at 88 against 51 at 79/80 and 36 at 90 (AT-2508).
+line-length = 88
+target-version = "py314"

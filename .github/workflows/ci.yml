@@ -16,7 +16,10 @@ jobs:
         with:
           python-version-file: .github/scripts/.python-version
       - run: pip install -r .github/scripts/requirements.txt
-      - run: pip install pytest
-      - run: pytest .github/scripts/tests/ -v
-        env:
-          PYTHONPATH: .github/scripts
+      # Pinned: a floating linter turns the tree red on its own release day,
+      # which reads as a defect in whatever PR happens to be open.
+      - run: pip install pytest ruff==0.14.11
+      # No PYTHONPATH here on purpose: pyproject.toml carries the path setup,
+      # so this is the same bare command a person runs (AT-2508).
+      - run: pytest -v
+      - run: ruff check .github/scripts
