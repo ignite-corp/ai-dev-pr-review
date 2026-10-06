@@ -1,0 +1,36 @@
+# Repository-wide ruff configuration. CI runs `ruff format --check .` against
+# this, so every Python file is held to the pinned formatter unless a line
+# here says otherwise; a script added anywhere is checked by default.
+
+# docs/tasks/local-review-driver-design-record/evidence/ is recorded evidence,
+# not maintained code: design-record.md section 5 and evidence/MANIFEST.md cite
+# scripts/measure.py as the script that regenerated their figures on
+# 2026-09-20, and the directory is the preserved record of that run.
+# Reformatting it would make the committed text differ from the artifact the
+# record describes, so it is excluded rather than formatted.
+#
+# The other two entries are checkouts of a different commit of this same
+# repository, sitting untracked under the root and listed in no .gitignore:
+# .ai-dev-pr-review/ is where base-ai-review-prepare.yml, -single.yml and
+# -aggregate.yml check out the pinned release their steps run, and
+# .claude/worktrees/ is where Claude Code checks out other branches. A
+# `ruff format .` run where either is present would rewrite that other
+# commit's files, not this working tree's.
+#
+# tests/test_ruff_format_scope.py holds each entry: dropping one turns it red.
+extend-exclude = [
+    "docs/tasks/local-review-driver-design-record/evidence/",
+    ".ai-dev-pr-review/",
+    ".claude/worktrees/",
+]
+
+# Apply the exclusion even when the path is named on the command line, so a
+# contributor's direct `ruff format <that path>` does not rewrite the record.
+force-exclude = true
+
+# The formatter is target-sensitive: what it may rewrite depends on the syntax
+# the target allows, and with no pyproject.toml to infer from it would fall
+# back to ruff's default rather than the interpreter CI runs under. The number
+# has one home, .github/scripts/.python-version; this is a copy of it, and
+# tests/test_ruff_format_scope.py holds the two equal.
+target-version = "py314"

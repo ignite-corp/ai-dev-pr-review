@@ -27,10 +27,14 @@ import pytest
 import yaml
 
 _ORCHESTRATOR = (
-    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-orchestrator.yml"
+    Path(__file__).resolve().parents[2]
+    / "workflows"
+    / "base-ai-review-orchestrator.yml"
 )
 
-_PARALLEL_CONDITION = "vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'"
+_PARALLEL_CONDITION = (
+    "vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'"
+)
 _SEQUENTIAL_HEAD_CONDITION = (
     "vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false'"
 )
@@ -85,8 +89,12 @@ def _evaluate(
     expr = expr.replace("vars.REVIEW_MODE", " mode ")
     expr = expr.replace("needs.prepare.outputs.skip", " prepare_skip ")
     expr = re.sub(r"needs\.([\w-]+)\.result", r' jobs["\1"].result ', expr)
-    expr = re.sub(r"needs\.([\w-]+)\.outputs\.early_exit", r' jobs["\1"].early_exit ', expr)
-    leftovers = re.findall(r"needs\.|vars\.|!(?!=)|always\(\)|success\(\)|failure\(\)", expr)
+    expr = re.sub(
+        r"needs\.([\w-]+)\.outputs\.early_exit", r' jobs["\1"].early_exit ', expr
+    )
+    leftovers = re.findall(
+        r"needs\.|vars\.|!(?!=)|always\(\)|success\(\)|failure\(\)", expr
+    )
     assert not leftovers, f"unsupported token(s) {leftovers} in {condition!r}"
     return bool(
         eval(  # controlled input: the repo's own workflow file
@@ -122,11 +130,15 @@ class TestEvaluatorSanity:
 class TestParallelModeUntouched:
     """AT-2125 is confined to the `vars.REVIEW_MODE == 'sequential'` jobs."""
 
-    @pytest.mark.parametrize("job", ["review-gemini-p", "review-codex-p", "review-claude-p"])
+    @pytest.mark.parametrize(
+        "job", ["review-gemini-p", "review-codex-p", "review-claude-p"]
+    )
     def test_parallel_job_condition_is_unchanged(self, job: str) -> None:
         assert _condition(job) == _PARALLEL_CONDITION
 
-    @pytest.mark.parametrize("job", ["review-gemini-p", "review-codex-p", "review-claude-p"])
+    @pytest.mark.parametrize(
+        "job", ["review-gemini-p", "review-codex-p", "review-claude-p"]
+    )
     def test_parallel_job_needs_only_prepare(self, job: str) -> None:
         assert _jobs()[job]["needs"] == "prepare"
 
@@ -141,19 +153,27 @@ class TestSequentialGatesAreSymmetric:
         assert "== 'success'" not in _condition(job)
 
     @pytest.mark.parametrize("job", ["review-codex-s", "review-gemini-s"])
-    def test_downstream_job_suppresses_the_implicit_success_check(self, job: str) -> None:
+    def test_downstream_job_suppresses_the_implicit_success_check(
+        self, job: str
+    ) -> None:
         """Without a status function a failed upstream job skips this one."""
         condition = _condition(job)
         assert "!cancelled()" in condition
-        assert "always()" not in condition, "always() lets a cancelled run start new jobs"
+        assert "always()" not in condition, (
+            "always() lets a cancelled run start new jobs"
+        )
 
     @pytest.mark.parametrize("job", ["review-codex-s", "review-gemini-s"])
-    def test_negated_status_function_is_wrapped_in_expression_braces(self, job: str) -> None:
+    def test_negated_status_function_is_wrapped_in_expression_braces(
+        self, job: str
+    ) -> None:
         """A bare leading `!` is a YAML tag indicator (AT-2092)."""
         condition = _condition(job)
         assert condition.startswith("${{") and condition.endswith("}}")
 
-    def test_gemini_has_one_clause_per_upstream_reviewer_in_the_same_shape(self) -> None:
+    def test_gemini_has_one_clause_per_upstream_reviewer_in_the_same_shape(
+        self,
+    ) -> None:
         condition = _condition("review-gemini-s")
         for reviewer in ("claude", "codex"):
             clause = (
@@ -184,7 +204,9 @@ class TestCodexGate:
     """`review-codex-s` against every `review-claude-s` outcome."""
 
     def _runs(self, claude: Job, **state: Any) -> bool:
-        return _evaluate(_condition("review-codex-s"), needs={"review-claude-s": claude}, **state)
+        return _evaluate(
+            _condition("review-codex-s"), needs={"review-claude-s": claude}, **state
+        )
 
     def test_runs_after_a_normal_claude_review(self) -> None:
         assert self._runs(OK)
@@ -248,7 +270,9 @@ class TestGeminiGate:
     def test_skipped_when_codex_requested_early_exit(self) -> None:
         assert not self._runs(OK, EARLY_EXIT)
 
-    def test_skipped_when_codex_requested_early_exit_after_a_claude_failure(self) -> None:
+    def test_skipped_when_codex_requested_early_exit_after_a_claude_failure(
+        self,
+    ) -> None:
         assert not self._runs(FAILED, EARLY_EXIT)
 
     def test_skipped_when_prepare_skipped_the_pr(self) -> None:
@@ -285,5 +309,7 @@ class TestOriginalDefectIsGone:
 
     def test_old_gemini_guard_skipped_on_a_claude_failure(self) -> None:
         old = self._OLD_GEMINI.replace("always()", "!cancelled()")
-        assert not _evaluate(old, needs={"review-claude-s": FAILED, "review-codex-s": OK})
+        assert not _evaluate(
+            old, needs={"review-claude-s": FAILED, "review-codex-s": OK}
+        )
         assert _evaluate(old, needs={"review-claude-s": OK, "review-codex-s": FAILED})

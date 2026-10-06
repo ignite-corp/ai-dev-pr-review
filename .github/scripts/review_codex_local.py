@@ -212,9 +212,7 @@ def normalize_verdict_file() -> None:
         if not isinstance(payload, dict):
             continue
         payload.setdefault("early_exit", False)
-        Path(REVIEW_FILE).write_text(
-            json.dumps(payload, indent=2), encoding="utf-8"
-        )
+        Path(REVIEW_FILE).write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"Normalized {candidate} -> {REVIEW_FILE}")
         return
 

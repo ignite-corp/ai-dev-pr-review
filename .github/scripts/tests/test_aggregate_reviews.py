@@ -561,9 +561,7 @@ class TestCommentOnlyGating:
         return commands
 
     def _has_review_request_changes(self, commands: list[list[str]]) -> bool:
-        return any(
-            "review" in cmd and "--request-changes" in cmd for cmd in commands
-        )
+        return any("review" in cmd and "--request-changes" in cmd for cmd in commands)
 
     def _has_pr_comment(self, commands: list[list[str]]) -> bool:
         return any("comment" in cmd for cmd in commands)
@@ -873,9 +871,7 @@ class TestCommentOnlyToggle:
         monkeypatch.setenv("ALLOW_AUTO_APPROVE", "false")
         assert _is_comment_only() is True
 
-    def test_true_disables_comment_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_true_disables_comment_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
         assert _is_comment_only() is False
 
@@ -891,9 +887,7 @@ class TestStatusContract:
         assert _get_available(reviews) == {}
 
     def test_status_ok_counted(self) -> None:
-        reviews: dict[str, dict[str, Any] | None] = {
-            "codex": _make_review(status="ok")
-        }
+        reviews: dict[str, dict[str, Any] | None] = {"codex": _make_review(status="ok")}
         assert "codex" in _get_available(reviews)
 
     def test_status_ok_wins_over_error_key(self) -> None:
@@ -930,9 +924,7 @@ class TestStatusContract:
         assert not _is_partial(_make_review(status="ok"))
 
     def test_status_failed_labeled_in_summary(self) -> None:
-        reviews: dict[str, dict[str, Any] | None] = {
-            n: None for n in REVIEWER_NAMES
-        }
+        reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         reviews[list(REVIEWER_NAMES)[0]] = _make_review(status="failed")
         summary = format_summary(reviews, "comment", "reason", {}, comment_only=True)
         assert "status=failed" in summary
@@ -1037,9 +1029,7 @@ class TestSummaryLabels:
     """
 
     def test_request_changes_comment_only_label(self) -> None:
-        summary = format_summary(
-            {}, "request_changes", "reason", {}, comment_only=True
-        )
+        summary = format_summary({}, "request_changes", "reason", {}, comment_only=True)
         assert "[!] Changes Requested | posted as comment (auto-approve off)" in summary
 
     def test_request_changes_active_label(self) -> None:
@@ -1056,12 +1046,20 @@ class TestSummaryLabels:
         summary = format_summary(
             {}, "approve", "reason", {}, comment_only=True, approve_quorum=True
         )
-        assert "[OK] Approved | posted as comment (auto-approve off) | 0/3 reviewers" in summary
+        assert (
+            "[OK] Approved | posted as comment (auto-approve off) | 0/3 reviewers"
+            in summary
+        )
 
     def test_approve_clean_label(self) -> None:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
         summary = format_summary(
-            reviews, "approve", "reason", reviews, comment_only=False, approve_quorum=True
+            reviews,
+            "approve",
+            "reason",
+            reviews,
+            comment_only=False,
+            approve_quorum=True,
         )
         assert "[OK] Approved | 3/3 reviewers" in summary
 
@@ -1079,7 +1077,9 @@ class TestSummaryLabels:
         summary = format_summary(
             reviews, verdict, reason, available, comment_only=False, approve_quorum=True
         )
-        assert "[!] Approved with 1 unreviewed major issue(s) | 3/3 reviewers" in summary
+        assert (
+            "[!] Approved with 1 unreviewed major issue(s) | 3/3 reviewers" in summary
+        )
         assert "[OK]" not in summary
 
     def test_approve_without_quorum_loses_ok_icon_and_states_coverage(self) -> None:
@@ -2687,9 +2687,7 @@ class TestSizeSkipVerdict:
         monkeypatch.setenv("SIZE_SKIPPED", value)
         assert _size_skip_details() is None
 
-    def test_unset_takes_the_normal_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unset_takes_the_normal_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Consumers pinned to an older tag send no size inputs at all."""
         monkeypatch.delenv("SIZE_SKIPPED", raising=False)
         assert _size_skip_details() is None
@@ -2783,7 +2781,9 @@ class TestPolicySkipVerdict:
             main()
         assert excinfo.value.code == 0
         commands = [call.args[0] for call in mock_run.call_args_list]
-        assert commands == [["gh", "pr", "comment", "42", "--body-file", "-", "--repo", "owner/repo"]]
+        assert commands == [
+            ["gh", "pr", "comment", "42", "--body-file", "-", "--repo", "owner/repo"]
+        ]
 
     def test_policy_skip_body_carries_both_markers_in_order(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2810,7 +2810,10 @@ class TestPolicySkipVerdict:
         ):
             main()
         body = mock_post.call_args[0][0]
-        assert "**Result: [OK] Review skipped -- only policy-excluded files changed**" in body
+        assert (
+            "**Result: [OK] Review skipped -- only policy-excluded files changed**"
+            in body
+        )
         assert ".github/lens-ignore" in body
         assert "- `secrets/key.pem`" in body
         assert "- `config/prod.env -> config/live.env`" in body
@@ -2900,25 +2903,35 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.delenv("EXCLUDED_COUNT", raising=False)
         monkeypatch.delenv("EXCLUDED_PATHS", raising=False)
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews, "approve", "3/3 LLM responses -- no issues", reviews
+        )
         assert "excluded by policy" not in body
 
     def test_zero_count_adds_no_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("EXCLUDED_COUNT", "0")
         monkeypatch.setenv("EXCLUDED_PATHS", "")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews, "approve", "3/3 LLM responses -- no issues", reviews
+        )
         assert "excluded by policy" not in body
 
     def test_exclusion_is_listed_under_the_headline(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("EXCLUDED_COUNT", "2")
-        monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem\nconfig/prod.env -> config/live.env")
+        monkeypatch.setenv(
+            "EXCLUDED_PATHS", "secrets/key.pem\nconfig/prod.env -> config/live.env"
+        )
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews, "approve", "3/3 LLM responses -- no issues", reviews
+        )
         lines = body.splitlines()
-        headline = next(i for i, line in enumerate(lines) if line.startswith("**Result:"))
+        headline = next(
+            i for i, line in enumerate(lines) if line.startswith("**Result:")
+        )
         note = (
             "> [i] 2 file(s) excluded by policy (.github/lens-ignore):"
             " `secrets/key.pem`, `config/prod.env -> config/live.env`"
@@ -2932,8 +2945,13 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "")
         monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
-        assert "> [i] 1 file(s) excluded by policy (.github/lens-ignore): `secrets/key.pem`" in body
+        body = format_summary(
+            reviews, "approve", "3/3 LLM responses -- no issues", reviews
+        )
+        assert (
+            "> [i] 1 file(s) excluded by policy (.github/lens-ignore): `secrets/key.pem`"
+            in body
+        )
 
     def test_verdict_note_cannot_be_broken_by_a_path(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2942,12 +2960,16 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "1")
         monkeypatch.setenv("EXCLUDED_PATHS", "tick`\x1b[0m.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews, "approve", "3/3 LLM responses -- no issues", reviews
+        )
         assert "(.github/lens-ignore): `tick\u02cb\\x1b[0m.pem`" in body
         assert "tick`" not in body
         assert "\x1b" not in body
 
-    def test_partial_exclusion_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_partial_exclusion_does_not_skip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Only the all-excluded case skips; a partial diff is reviewed."""
         monkeypatch.setenv("POLICY_SKIPPED", "false")
         monkeypatch.setenv("EXCLUDED_COUNT", "1")
@@ -3035,21 +3057,27 @@ class TestReviewTreeMatchesTheDiff:
 
     def test_prepare_is_not_given_its_own_output(self) -> None:
         """It produces head_sha; consuming it would be a cycle."""
-        supplied = dict(_workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]["prepare"].get("with") or {})
+        supplied = dict(
+            _workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]["prepare"].get("with") or {}
+        )
         assert "head_sha" not in supplied
 
     @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
     def test_checkout_prefers_the_resolved_head(self, path: Path) -> None:
         job = next(iter(_workflow(path)["jobs"].values()))
         checkout = next(
-            s for s in job["steps"] if str(s.get("name", "")).startswith("Checkout caller repo")
+            s
+            for s in job["steps"]
+            if str(s.get("name", "")).startswith("Checkout caller repo")
         )
         ref = str(checkout["with"]["ref"])
         assert "inputs.head_sha" in ref
         assert ref.index("inputs.head_sha") < ref.index("github.ref")
 
     @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
-    def test_guard_passes_when_the_tree_matches(self, path: Path, tmp_path: Path) -> None:
+    def test_guard_passes_when_the_tree_matches(
+        self, path: Path, tmp_path: Path
+    ) -> None:
         head = _git_repo_at(tmp_path)
         assert _run_guard(_guard_script(path), tmp_path, head) == 0
 
@@ -3069,23 +3097,43 @@ class TestReviewTreeMatchesTheDiff:
 
 
 def _git_repo_at(root: Path) -> str:
-    env = {"PATH": os.environ["PATH"], "HOME": str(root),
-           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(root),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
     (root / "f").write_text("x", encoding="utf-8")
     for args in (["init", "-q"], ["add", "f"], ["commit", "-qm", "c"]):
-        subprocess.run(["git", *args], cwd=root, env=env, check=True,
-                       capture_output=True, timeout=30)
-    out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, env=env,
-                         check=True, capture_output=True, text=True, timeout=30)
+        subprocess.run(
+            ["git", *args],
+            cwd=root,
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     return out.stdout.strip()
 
 
 def _run_guard(script: str, cwd: Path, head_sha: str) -> int:
     return subprocess.run(
-        ["bash", "-c", script], cwd=cwd,
+        ["bash", "-c", script],
+        cwd=cwd,
         env={"PATH": os.environ["PATH"], "HEAD_SHA": head_sha},
-        capture_output=True, timeout=30,
+        capture_output=True,
+        timeout=30,
         check=False,  # the exit code IS the assertion here
     ).returncode
 
@@ -3255,9 +3303,7 @@ class TestPrepareFailureVerdict:
         monkeypatch.setenv("PREPARE_RESULT", value)
         assert _prepare_failure_result() is None
 
-    def test_unset_takes_the_normal_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unset_takes_the_normal_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Consumers pinned to an older tag send no prepare_result at all."""
         monkeypatch.delenv("PREPARE_RESULT", raising=False)
         assert _prepare_failure_result() is None
@@ -3475,9 +3521,7 @@ class TestSupersededHeadPostsNoVerdict:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Every download is continue-on-error, so nothing else stops it."""
-        self._set_env(
-            monkeypatch, ["cancelled"] * 3, head_sha=self._REVIEWED
-        )
+        self._set_env(monkeypatch, ["cancelled"] * 3, head_sha=self._REVIEWED)
         with (
             self._head_lookup(self._NEWER),
             patch("aggregate_reviews.load_reviews") as mock_load,
@@ -3490,9 +3534,7 @@ class TestSupersededHeadPostsNoVerdict:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Exit 0 would be a green required check for an unreviewed commit."""
-        self._set_env(
-            monkeypatch, ["success"] * 3, head_sha=self._REVIEWED
-        )
+        self._set_env(monkeypatch, ["success"] * 3, head_sha=self._REVIEWED)
         with self._head_lookup(self._NEWER), pytest.raises(SystemExit) as excinfo:
             main()
         assert excinfo.value.code != 0
@@ -3629,11 +3671,7 @@ class TestNormalizeBotLogin:
 
     @pytest.mark.parametrize(
         ("left", "right"),
-        [
-            (a, b)
-            for a in _GITHUB_ACTIONS_SPELLINGS
-            for b in _APPROVER_SPELLINGS
-        ],
+        [(a, b) for a in _GITHUB_ACTIONS_SPELLINGS for b in _APPROVER_SPELLINGS],
     )
     def test_different_apps_stay_different(self, left: str, right: str) -> None:
         assert normalize_bot_login(left) != normalize_bot_login(right)
@@ -3647,14 +3685,10 @@ class TestNormalizeBotLogin:
         assert normalize_bot_login("Github-Actions[bot]") == "Github-Actions"
 
 
-def _stale_pages(
-    comments: list[dict[str, Any]], reviews: list[dict[str, Any]]
-) -> Any:
+def _stale_pages(comments: list[dict[str, Any]], reviews: list[dict[str, Any]]) -> Any:
     """Stand in for ``fetch_paginated_nodes``, keyed on the query's field."""
 
-    def fake(
-        query: str, field: str, *args: Any, **kwargs: Any
-    ) -> list[dict[str, Any]]:
+    def fake(query: str, field: str, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return {"comments": comments, "reviews": reviews}[field]
 
     return fake

@@ -1,0 +1,8 @@
+# CI-only tooling. Runtime deps live in requirements.txt, which every
+# consumer's review job installs; nothing here belongs there.
+# Pinned: a floating formatter turns the tree red on its own release day.
+# A local `pip install -r` picks this up too, so `ruff format` run by a
+# contributor matches the version CI checks against.
+ruff==0.14.11
+# The same reason pins the test runner: CI and a local run share one pytest.
+pytest==9.1.1

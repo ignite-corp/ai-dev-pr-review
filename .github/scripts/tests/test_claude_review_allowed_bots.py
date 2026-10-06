@@ -88,8 +88,7 @@ def is_allowed_bot(actor: str, allowed_bots: str) -> bool:
         return False
 
     allowed_list = [
-        _BOT_SUFFIX_RE.sub("", bot.strip().lower())
-        for bot in trimmed.split(",")
+        _BOT_SUFFIX_RE.sub("", bot.strip().lower()) for bot in trimmed.split(",")
     ]
     allowed_list = [bot for bot in allowed_list if bot]
 
@@ -117,13 +116,19 @@ class TestIsAllowedBotPort:
         assert is_allowed_bot(actor, self.ALLOWED)
 
     def test_list_entry_with_surrounding_whitespace_still_matches(self) -> None:
-        assert is_allowed_bot("dependabot[bot]", " dependabot[bot] ,github-actions[bot]")
+        assert is_allowed_bot(
+            "dependabot[bot]", " dependabot[bot] ,github-actions[bot]"
+        )
 
     def test_entry_without_suffix_still_matches_actor_with_suffix(self) -> None:
         # AT-2272's own fix relies on this: an entry with no "[bot]" and an
         # actor with one (or vice versa) normalize to the same string.
-        assert is_allowed_bot("ignite-actions-token-app[bot]", "ignite-actions-token-app")
-        assert is_allowed_bot("ignite-actions-token-app", "ignite-actions-token-app[bot]")
+        assert is_allowed_bot(
+            "ignite-actions-token-app[bot]", "ignite-actions-token-app"
+        )
+        assert is_allowed_bot(
+            "ignite-actions-token-app", "ignite-actions-token-app[bot]"
+        )
 
     def test_unlisted_bot_is_rejected(self) -> None:
         assert not is_allowed_bot("codex[bot]", self.ALLOWED)
@@ -138,7 +143,9 @@ class TestIsAllowedBotPort:
         # A semicolon-separated value (an easy typo) parses as one entry and
         # matches nothing real -- this is the "wrong form fails silently"
         # trap the ticket warned about.
-        assert not is_allowed_bot("dependabot[bot]", "dependabot[bot];github-actions[bot]")
+        assert not is_allowed_bot(
+            "dependabot[bot]", "dependabot[bot];github-actions[bot]"
+        )
 
 
 def _load_yaml(path: Path) -> dict:
@@ -180,7 +187,11 @@ class TestCompositeDefault:
         )
         # Ensure the fix is additive, not a swap-in that dropped an existing
         # entry.
-        for existing in ("dependabot[bot]", "pilot-cd-dispatcher[bot]", "github-actions[bot]"):
+        for existing in (
+            "dependabot[bot]",
+            "pilot-cd-dispatcher[bot]",
+            "github-actions[bot]",
+        ):
             assert is_allowed_bot(existing, default), f"{existing} must remain admitted"
 
     def test_default_does_not_admit_everything(self) -> None:
