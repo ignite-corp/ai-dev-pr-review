@@ -20,7 +20,9 @@ from typing import Any
 import pytest
 import yaml
 
-_SINGLE = Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-single.yml"
+_SINGLE = (
+    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-single.yml"
+)
 _RESTRICT = "Restrict the Codex sandbox"
 _AUTH = "Authenticate Codex CLI with API key"
 _RUN = "Run Codex review"
@@ -51,7 +53,9 @@ def _exec_call() -> str:
     return call[: call.index("| tee")]
 
 
-def _run_restrict(tmp_path: Path, parent_name: str) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+def _run_restrict(
+    tmp_path: Path, parent_name: str
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     """Run the step body as a child of a shell copied to <root>/bin/<parent_name>."""
     body = str(_step(_RESTRICT)["run"])
     shell = shutil.which("dash") or shutil.which("sh")
@@ -120,7 +124,9 @@ def test_the_run_step_hands_no_credential_to_the_model_process(tmp_path: Path) -
     assert [n for n in names if any(fnmatch.fnmatchcase(n, p) for p in excludes)] == []
 
 
-def test_the_config_selects_a_profile_that_extends_workspace_write(tmp_path: Path) -> None:
+def test_the_config_selects_a_profile_that_extends_workspace_write(
+    tmp_path: Path,
+) -> None:
     proc, codex_home, _ = _run_restrict(tmp_path, _WORKER)
     assert proc.returncode == 0, proc.stderr
     config = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
@@ -129,9 +135,12 @@ def test_the_config_selects_a_profile_that_extends_workspace_write(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "name", ["OPENAI_API_KEY", "CODEX_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "SOME_SECRET"]
+    "name",
+    ["OPENAI_API_KEY", "CODEX_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "SOME_SECRET"],
 )
-def test_the_sandboxed_shell_does_not_inherit_credentials(tmp_path: Path, name: str) -> None:
+def test_the_sandboxed_shell_does_not_inherit_credentials(
+    tmp_path: Path, name: str
+) -> None:
     proc, codex_home, _ = _run_restrict(tmp_path, _WORKER)
     assert proc.returncode == 0, proc.stderr
     policy = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))[

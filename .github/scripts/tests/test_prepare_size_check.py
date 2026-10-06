@@ -32,13 +32,17 @@ from github_pr_support import (
     describe_size_breach,
 )
 
-WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-prepare.yml"
+WORKFLOW = (
+    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-prepare.yml"
+)
 STEP_NAME = "Check PR size"
 REPO = "ignite-corp/ai-dev-pr-review"
 
 _EXPRESSION = re.compile(r"\$\{\{(.+?)\}\}")
 # `vars.NAME || 'default'`: GitHub yields the default when the var is unset.
-_VAR_OR_DEFAULT = re.compile(r"^vars\.(?P<name>[A-Z_][A-Z0-9_]*)\s*\|\|\s*'(?P<default>[^']*)'$")
+_VAR_OR_DEFAULT = re.compile(
+    r"^vars\.(?P<name>[A-Z_][A-Z0-9_]*)\s*\|\|\s*'(?P<default>[^']*)'$"
+)
 
 
 def _step() -> dict[str, Any]:
@@ -170,9 +174,7 @@ def test_combined_gate_default_limit_reviews_a_small_pr(tmp_path):
 
 def test_combined_gate_counts_deletions_toward_the_one_limit(tmp_path):
     """Regression: with no split var a deletion-heavy PR still skips."""
-    result, outputs, _ = _run(
-        tmp_path, additions=100, deletions=5000, repo_vars={}
-    )
+    result, outputs, _ = _run(tmp_path, additions=100, deletions=5000, repo_vars={})
     assert result.returncode == 0, result.stderr
     assert outputs["skip"] == "true"
 
@@ -246,7 +248,10 @@ def test_both_axes_exceeded_join_their_messages(tmp_path):
         tmp_path,
         additions=1500,
         deletions=2000,
-        repo_vars={"PR_SIZE_LIMIT_ADDITIONS": "1000", "PR_SIZE_LIMIT_DELETIONS": "1200"},
+        repo_vars={
+            "PR_SIZE_LIMIT_ADDITIONS": "1000",
+            "PR_SIZE_LIMIT_DELETIONS": "1200",
+        },
     )
     assert result.returncode == 0, result.stderr
     assert outputs["skip"] == "true"

@@ -99,9 +99,17 @@ class _PR:
         self.comments: list[dict[str, str]] = []
         self.inline: list[dict[str, Any]] = []
 
-    def add_comment(self, body: str, login: str = _BOT, author_type: str | None = None) -> None:
-        self.comments.append({"login": login, "body": body,
-                              "author_type": author_type or ("Bot" if login.endswith("[bot]") else "User")})
+    def add_comment(
+        self, body: str, login: str = _BOT, author_type: str | None = None
+    ) -> None:
+        self.comments.append(
+            {
+                "login": login,
+                "body": body,
+                "author_type": author_type
+                or ("Bot" if login.endswith("[bot]") else "User"),
+            }
+        )
 
     def fold_comment_bodies(self) -> list[str]:
         return [
@@ -206,7 +214,11 @@ def _run_post(
             counts = []
             for page in pages or [[]]:
                 payload = [
-                    {"user": {"login": c["login"], "type": c["author_type"]}, "body": c["body"]} for c in page
+                    {
+                        "user": {"login": c["login"], "type": c["author_type"]},
+                        "body": c["body"],
+                    }
+                    for c in page
                 ]
                 result = _REAL_RUN(
                     ["jq", "--raw-output", query],
@@ -440,8 +452,11 @@ class TestTheFoldCommentCarriesTheCount:
         pr.add_comment("unrelated first page")
         pr.add_comment("another unrelated comment")
         marker = fold_markers_for("claude", _PAST_CUTOFF + 1)[0]
-        pr.add_comment(f"{marker}\r\n{fold_count_line(2, _HEAD)}", existing_login,
-                       author_type="User" if existing_login == "contributor" else "Bot")
+        pr.add_comment(
+            f"{marker}\r\n{fold_count_line(2, _HEAD)}",
+            existing_login,
+            author_type="User" if existing_login == "contributor" else "Bot",
+        )
         _write_review(tmp_path, "claude", _TWO_MINORS)
         _run_post(monkeypatch, tmp_path, pr, "claude", completed_rounds=_PAST_CUTOFF)
         assert len(pr.comments) == (

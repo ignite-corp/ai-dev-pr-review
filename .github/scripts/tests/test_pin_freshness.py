@@ -33,7 +33,9 @@ TAGS = [
 
 
 def judge(pin, tags=None):
-    versions, by_sha, floating = pin_freshness.build_index(tags if tags is not None else TAGS)
+    versions, by_sha, floating = pin_freshness.build_index(
+        tags if tags is not None else TAGS
+    )
     return pin_freshness.classify(pin, versions, by_sha, floating)
 
 

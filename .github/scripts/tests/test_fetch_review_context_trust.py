@@ -111,7 +111,11 @@ class TestDeletedAccount:
         self, threads: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("BOT_LOGIN", _APP_REST)
-        ghost = {"body": "Fixed: checked at L10", "author": None, "authorAssociation": "MEMBER"}
+        ghost = {
+            "body": "Fixed: checked at L10",
+            "author": None,
+            "authorAssociation": "MEMBER",
+        }
         threads.append(_thread(_comment(_APP_GRAPHQL, "major: x"), ghost))
         out = frc._format_prior_threads("o/r", "1")
         assert "[] Fixed: checked at L10" in out
@@ -128,7 +132,9 @@ class TestDeletedAccount:
         ]
 
         def fake_run(*_: Any, **__: Any) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess([], 0, stdout=json.dumps(comments), stderr="")
+            return subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps(comments), stderr=""
+            )
 
         monkeypatch.setattr(frc.subprocess, "run", fake_run)
         out = frc._format_bydesign_comments("o/r", "1")

@@ -741,9 +741,7 @@ def test_the_prompt_paths_are_settled_before_anything_clones():
     )
 
 
-def test_an_overridden_bot_login_does_not_skip_the_gh_auth_check(
-    tmp_path, monkeypatch
-):
+def test_an_overridden_bot_login_does_not_skip_the_gh_auth_check(tmp_path, monkeypatch):
     """Every later stage needs an authenticated `gh`, so the probe is a
     precondition of the run and not of one value's default.
 

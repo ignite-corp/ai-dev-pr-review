@@ -25,7 +25,9 @@ from typing import Any
 import pytest
 import yaml
 
-_SINGLE = Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-single.yml"
+_SINGLE = (
+    Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-single.yml"
+)
 _COPY = "Copy ai-dev-pr-review scripts outside the workspace"
 _CHECKOUT = "Checkout ai-dev-pr-review scripts (pinned to release tag)"
 # The model steps the trusted snapshot must precede.
@@ -112,12 +114,21 @@ def test_a_rewritten_workspace_script_is_not_what_the_net_runs(tmp_path: Path) -
     script = workdir / ".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
     script.parent.mkdir(parents=True)
     script.write_text(f'#!/usr/bin/env bash\n: > "{marks}/trusted"\n', encoding="utf-8")
-    env = {"PATH": os.environ["PATH"], "RUNNER_TEMP": str(runner_temp), "REVIEWER": "claude"}
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNNER_TEMP": str(runner_temp),
+        "REVIEWER": "claude",
+    }
 
     def run(name: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             _RUNNER_BASH + [str(steps[_index(steps, name)]["run"])],
-            cwd=workdir, env=env, capture_output=True, text=True, timeout=30, check=False,
+            cwd=workdir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
 
     assert run(_COPY).returncode == 0

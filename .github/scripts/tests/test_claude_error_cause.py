@@ -359,13 +359,16 @@ class TestTheNetIsWired:
     def test_the_net_reads_what_the_classes_rest_on(self) -> None:
         env = _single_step(_NET_STEP)["env"]
         run_id = _single_step(_RUN_STEP)["id"]
-        assert env["INNER_OUTCOME"] == f"${{{{ steps.{run_id}.outputs.inner_outcome }}}}"
+        assert (
+            env["INNER_OUTCOME"] == f"${{{{ steps.{run_id}.outputs.inner_outcome }}}}"
+        )
         assert env["ACTOR_CHECK_FILE"] == f"${{{{ runner.temp }}}}/{_MARKER_NAME}"
         assert env["STEP_CAP_MINUTES"] == "${{ inputs.claude-timeout-minutes }}"
         # The pre-check writes to RUNNER_TEMP under the same name.
-        assert f'"${{RUNNER_TEMP}}/{_MARKER_NAME}"' in _composite_step(_CHECK_STEP_ID)[
-            "run"
-        ]
+        assert (
+            f'"${{RUNNER_TEMP}}/{_MARKER_NAME}"'
+            in _composite_step(_CHECK_STEP_ID)["run"]
+        )
 
 
 @requires_jq
@@ -472,7 +475,16 @@ class TestWhatTheNetClassifies:
         # inputs' refused the value; it must still record the failure.
         step = _single_step(_NET_STEP)
         result = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+            [
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-e",
+                "-o",
+                "pipefail",
+                "-c",
+                step["run"],
+            ],
             cwd=tmp_path,
             env={
                 "PATH": os.environ["PATH"],
@@ -488,7 +500,9 @@ class TestWhatTheNetClassifies:
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        verdict = json.loads((tmp_path / "review-claude.json").read_text(encoding="utf-8"))
+        verdict = json.loads(
+            (tmp_path / "review-claude.json").read_text(encoding="utf-8")
+        )
         assert verdict["error_cause"] == "action_error"
 
 
@@ -520,7 +534,9 @@ class TestWhatTheAggregateShows:
     def test_each_class_is_named(self, cause: str) -> None:
         review = _failed(cause)
         assert _failed_status_detail(review) == _RENDERED[cause]
-        assert _payload_failure_reason(review) == FAILED_DETAIL_PREFIX + _RENDERED[cause]
+        assert (
+            _payload_failure_reason(review) == FAILED_DETAIL_PREFIX + _RENDERED[cause]
+        )
         # The check's annotations and job summary.
         assert _partial_short_message("claude", review, "success") == _RENDERED[cause]
 
@@ -533,9 +549,12 @@ class TestWhatTheAggregateShows:
         assert _partial_short_message("claude", review, "success") == _KIND
 
     @pytest.mark.parametrize(
-        "error", ["script_invocation_failed", "output_unparseable", "cli_invocation_failed"]
+        "error",
+        ["script_invocation_failed", "output_unparseable", "cli_invocation_failed"],
     )
-    def test_a_cause_is_shown_only_on_the_kind_that_carries_it(self, error: str) -> None:
+    def test_a_cause_is_shown_only_on_the_kind_that_carries_it(
+        self, error: str
+    ) -> None:
         # The classes describe the claude net's action_invocation_failed;
         # attached to any other error -- a gemini or codex payload, which an
         # LLM may author -- they would name the wrong cause.

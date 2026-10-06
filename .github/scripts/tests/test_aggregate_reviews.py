@@ -3003,9 +3003,7 @@ class TestVerdictWriteDoesNotFollowLinks:
     is model-writable, so the path can be a link the model planted.
     """
 
-    def test_a_symlinked_output_is_replaced_not_followed(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_symlinked_output_is_replaced_not_followed(self, tmp_path: Path) -> None:
         outside = tmp_path / "outside"
         outside.write_text("do not overwrite me", encoding="utf-8")
         target = tmp_path / "review-x.json"
@@ -3148,13 +3146,21 @@ class TestPromotionScriptAgreesWithItsCallers:
         # workspace used to stand as this run's verdict (AT-2941).
         outside = tmp_path / "outside.json"
         outside.write_text(
-            json.dumps({"summary": "s", "status": "ok", "early_exit": False, "issues": []})
+            json.dumps(
+                {"summary": "s", "status": "ok", "early_exit": False, "issues": []}
+            )
         )
         workdir = tmp_path / "work"
         workdir.mkdir()
         (workdir / "review-codex.json").symlink_to(outside)
         result = subprocess.run(
-            ["bash", str(_PROMOTE_SCRIPT), "promote", "--target-is-ours", "review-codex.json"],
+            [
+                "bash",
+                str(_PROMOTE_SCRIPT),
+                "promote",
+                "--target-is-ours",
+                "review-codex.json",
+            ],
             cwd=workdir,
             env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
             capture_output=True,
@@ -3165,9 +3171,7 @@ class TestPromotionScriptAgreesWithItsCallers:
         assert not (workdir / "review-codex.json").is_symlink()
         assert json.loads(outside.read_text())["summary"] == "s"
 
-    def test_a_symlinked_legacy_candidate_is_not_promoted(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_symlinked_legacy_candidate_is_not_promoted(self, tmp_path: Path) -> None:
         # A legacy candidate planted as a link between the clear and the
         # in-run promotion must not have the link's target promoted onto
         # the canonical verdict (AT-2941).
@@ -3208,7 +3212,12 @@ class TestPromotionScriptAgreesWithItsCallers:
         assert not (tmp_path / "review-codex.json").exists()
 
     def test_write_installs_a_verdict(self, tmp_path: Path) -> None:
-        verdict = {"summary": "s", "status": "failed", "early_exit": False, "issues": []}
+        verdict = {
+            "summary": "s",
+            "status": "failed",
+            "early_exit": False,
+            "issues": [],
+        }
         result = subprocess.run(
             ["bash", str(_PROMOTE_SCRIPT), "write", "review-codex.json"],
             cwd=tmp_path,
@@ -4070,7 +4079,9 @@ class TestReviewTreeMatchesTheDiff:
         # SHA or `github.ref` when the repository under review is the caller,
         # nothing on a cross-repository run (AT-2520; the shape is pinned in
         # test_target_repo_threading.py).
-        assert ref.index("inputs.head_sha") < ref.index("steps.target.outputs.fallback_ref")
+        assert ref.index("inputs.head_sha") < ref.index(
+            "steps.target.outputs.fallback_ref"
+        )
 
     @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
     def test_guard_passes_when_the_tree_matches(

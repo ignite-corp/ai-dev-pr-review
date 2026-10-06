@@ -154,8 +154,12 @@ REVIEWER_ARTIFACTS = {
     for name, extra in {
         "claude": ("claude-exec.json", "claude-run.log"),
         # The legacy verdict names normalize_verdict_file promotes from.
-        "codex": ("codex-prompt.md", "codex-run.log", "verdict-openai.json",
-                  "verdict-codex.json"),
+        "codex": (
+            "codex-prompt.md",
+            "codex-run.log",
+            "verdict-openai.json",
+            "verdict-codex.json",
+        ),
         "gemini": (),
     }.items()
 }
@@ -347,15 +351,25 @@ def size_breaches(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach
     """
     if limits.additions is None and limits.deletions is None:
         total = refs.additions + refs.deletions
-        checks = [SizeBreach(total, COMBINED_SIZE_AXIS, COMBINED_SIZE_VAR, limits.combined)]
+        checks = [
+            SizeBreach(total, COMBINED_SIZE_AXIS, COMBINED_SIZE_VAR, limits.combined)
+        ]
         split = False
     else:
         checks = [
             _axis_check(
-                refs.additions, ADDITIONS_SIZE_AXIS, ADDITIONS_SIZE_VAR, limits.additions, limits
+                refs.additions,
+                ADDITIONS_SIZE_AXIS,
+                ADDITIONS_SIZE_VAR,
+                limits.additions,
+                limits,
             ),
             _axis_check(
-                refs.deletions, DELETIONS_SIZE_AXIS, DELETIONS_SIZE_VAR, limits.deletions, limits
+                refs.deletions,
+                DELETIONS_SIZE_AXIS,
+                DELETIONS_SIZE_VAR,
+                limits.deletions,
+                limits,
             ),
         ]
         split = True
@@ -512,8 +526,13 @@ def remote_path_exists(repo: str, ref: str, path: str) -> bool:
     """
     result = run(
         [
-            "gh", "api", "-X", "GET",
-            f"repos/{repo}/contents/{path}", "-f", f"ref={ref}",
+            "gh",
+            "api",
+            "-X",
+            "GET",
+            f"repos/{repo}/contents/{path}",
+            "-f",
+            f"ref={ref}",
         ],
         capture=True,
         check=False,
@@ -860,8 +879,15 @@ def ensure_clone(run_dir: Path, clone: Path, repo: str) -> None:
     # The reused scripts call plain `git`, so the credential helper has to
     # live in the clone rather than on each of this module's own calls.
     run(
-        ["git", "-C", str(clone), "config", "--local",
-         "credential.helper", "!gh auth git-credential"]
+        [
+            "git",
+            "-C",
+            str(clone),
+            "config",
+            "--local",
+            "credential.helper",
+            "!gh auth git-credential",
+        ]
     )
     disarm_hooks(clone)
     (run_dir / CLONE_MARKER).write_text(config_fingerprint(clone), encoding="utf-8")
@@ -906,15 +932,31 @@ def create_review_worktree(clone: Path, work: Path, pr_number: str, refs: Refs) 
     # The pull ref rather than the head SHA: it resolves for a fork PR and
     # for a merged PR whose branch has been deleted.
     run(
-        ["git", "-C", str(clone), "fetch", "--no-tags", "origin",
-         f"+refs/pull/{pr_number}/head:refs/remotes/origin/pr/{pr_number}",
-         f"+refs/heads/{refs.base_ref}:refs/remotes/origin/{refs.base_ref}"]
+        [
+            "git",
+            "-C",
+            str(clone),
+            "fetch",
+            "--no-tags",
+            "origin",
+            f"+refs/pull/{pr_number}/head:refs/remotes/origin/pr/{pr_number}",
+            f"+refs/heads/{refs.base_ref}:refs/remotes/origin/{refs.base_ref}",
+        ]
     )
     remove_review_worktree(clone, work)
     work.parent.mkdir(parents=True, exist_ok=True)
     run(
-        ["git", "-C", str(clone), "worktree", "add", "--detach", "--force",
-         str(work), refs.head_sha]
+        [
+            "git",
+            "-C",
+            str(clone),
+            "worktree",
+            "add",
+            "--detach",
+            "--force",
+            str(work),
+            refs.head_sha,
+        ]
     )
     actual = run(
         ["git", "-C", str(work), "rev-parse", "HEAD"], capture=True
@@ -1011,8 +1053,14 @@ def _regular_file_blob(work: Path, rev: str, path: str) -> str | None:
     """
     listed = run(
         [
-            "git", "ls-tree", "--full-tree", "-z", "--format=%(objectmode)",
-            rev, "--", path,
+            "git",
+            "ls-tree",
+            "--full-tree",
+            "-z",
+            "--format=%(objectmode)",
+            rev,
+            "--",
+            path,
         ],
         cwd=work,
         capture=True,
@@ -1098,7 +1146,9 @@ def append_prior_context(work: Path, repo: str, pr_number: str) -> None:
     # operator, a human, so it has none -- empty keeps the fixed bot list,
     # and neither an exported value nor resolve_bot_login's login widens it.
     env = script_env({**os.environ, "BOT_LOGIN": ""}, repo, pr_number)
-    run([sys.executable, str(SCRIPT_DIR / "fetch_review_context.py")], cwd=work, env=env)
+    run(
+        [sys.executable, str(SCRIPT_DIR / "fetch_review_context.py")], cwd=work, env=env
+    )
     run([sys.executable, str(SCRIPT_DIR / "verify_action_shas.py")], cwd=work, env=env)
     # continue-on-error in the workflow: a thread-collection outage must not
     # cost the review. run() has already converted every way the spawn can
@@ -1363,8 +1413,10 @@ def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
     except OSError as exc:
         # The spawn itself failed, so the shim's own error-verdict code
         # never ran and there is nothing to read a conclusion from.
-        print(f"::warning::the {name} reviewer could not be started: {exc}",
-              file=sys.stderr)
+        print(
+            f"::warning::the {name} reviewer could not be started: {exc}",
+            file=sys.stderr,
+        )
         print(f"  {name}: failure (not started: {exc})")
         return "failure"
     # A REVIEWER THE DRIVER KILLED IS A FAILURE WHATEVER IS ON DISK.
@@ -1415,9 +1467,7 @@ def verdict_failure(work: Path, name: str) -> str | None:
     kill and never on this answer.
     """
     try:
-        payload = json.loads(
-            (work / f"review-{name}.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads((work / f"review-{name}.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(payload, dict) or payload.get("status") != "failed":
@@ -1555,9 +1605,7 @@ def shared_input_digests(work: Path) -> dict[str, str]:
     (load_threads, the policy gate) before the first reviewer starts, so
     rewriting it afterwards changes nothing any reviewer is handed.
     """
-    return {
-        name: file_digest(work / name) for name in ("pr.diff", "context.md")
-    }
+    return {name: file_digest(work / name) for name in ("pr.diff", "context.md")}
 
 
 def check_shared_inputs(work: Path, digests: dict[str, str]) -> bool:
@@ -1792,7 +1840,11 @@ def check_coordinates(work: Path) -> None:
 
 
 def inline_comment_env(
-    repo: str, pr_number: str, config: LocalConfig, bot_login: str, inline_run_id: str = ""
+    repo: str,
+    pr_number: str,
+    config: LocalConfig,
+    bot_login: str,
+    inline_run_id: str = "",
 ) -> dict[str, str]:
     return script_env(
         {
@@ -1809,7 +1861,12 @@ def inline_comment_env(
 
 
 def post_inline_comments(
-    work: Path, repo: str, pr_number: str, config: LocalConfig, bot_login: str, inline_run_id: str = ""
+    work: Path,
+    repo: str,
+    pr_number: str,
+    config: LocalConfig,
+    bot_login: str,
+    inline_run_id: str = "",
 ) -> None:
     """Post each reviewer's findings, one reviewer at a time.
 
@@ -1826,9 +1883,16 @@ def post_inline_comments(
             continue
         try:
             posted = run(
-                [sys.executable, str(SCRIPT_DIR / "post_inline_comments.py"),
-                 "--issues", review_file.name, "--diff", "pr.diff",
-                 "--reviewer", name],
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "post_inline_comments.py"),
+                    "--issues",
+                    review_file.name,
+                    "--diff",
+                    "pr.diff",
+                    "--reviewer",
+                    name,
+                ],
                 cwd=work,
                 env=env,
                 check=False,
@@ -1932,7 +1996,9 @@ def require_gh_auth() -> str:
     result = run(["gh", "api", "user", "--jq", ".login"], capture=True, check=False)
     login = result.stdout.strip()
     if result.returncode != 0 or not login:
-        raise DriverError("cannot resolve the authenticated gh user; run `gh auth login`")
+        raise DriverError(
+            "cannot resolve the authenticated gh user; run `gh auth login`"
+        )
     return login
 
 
@@ -2173,9 +2239,7 @@ def pre_review(
     bot_login = resolve_bot_login(config, require_gh_auth())
     refs = resolve_refs(args.repo, args.pr_number)
     verify_prompt_paths(args.repo, refs, (args.system_prompt_path, args.checklist_path))
-    size_skipped, size = size_gate(
-        args.repo, args.pr_number, refs, size_limits(config)
-    )
+    size_skipped, size = size_gate(args.repo, args.pr_number, refs, size_limits(config))
     return bot_login, refs, size_skipped, size
 
 
@@ -2201,7 +2265,9 @@ def run_review_stage(
         print("Skipping the coordinate screen and the inline comments.")
         return
     check_coordinates(work)
-    post_inline_comments(work, args.repo, args.pr_number, config, bot_login, inline_run_id)
+    post_inline_comments(
+        work, args.repo, args.pr_number, config, bot_login, inline_run_id
+    )
 
 
 def review_pr(
@@ -2230,7 +2296,9 @@ def review_pr(
         # No cwd: the run directory is the first thing tried, so it may be
         # what failed. main() falls back to it and the aggregate reports a
         # missing one rather than assuming it is there.
-        return ReviewOutcome("failure", bot_login, size, policy, conclusions, "", "", None)
+        return ReviewOutcome(
+            "failure", bot_login, size, policy, conclusions, "", "", None
+        )
 
     if size_skipped:
         # The workflow's refs step does not run on a size skip, so the
@@ -2257,15 +2325,23 @@ def review_pr(
     else:
         if policy["POLICY_SKIPPED"] != "true":
             try:
-                run_review_stage(work, config, args, conclusions, bot_login, inline_run_id)
+                run_review_stage(
+                    work, config, args, conclusions, bot_login, inline_run_id
+                )
             except Exception as exc:
                 # Prepare succeeded, so PREPARE_RESULT stays `success` and
                 # the head it settled is reported. Too few verdicts is
                 # already the aggregate's own failing verdict.
                 report_stage_failure("review", exc)
     return ReviewOutcome(
-        "success", bot_login, size, policy, conclusions,
-        refs.head_sha, refs.pr_author, work,
+        "success",
+        bot_login,
+        size,
+        policy,
+        conclusions,
+        refs.head_sha,
+        refs.pr_author,
+        work,
         inline_run_id,
     )
 
