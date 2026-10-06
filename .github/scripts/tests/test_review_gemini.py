@@ -278,6 +278,30 @@ def test_main_exception_payload_has_status_failed(tmp_path, monkeypatch):
     assert data["error"] == "boom"
 
 
+def test_main_writes_no_verdict_when_it_dies_before_the_handler(tmp_path, monkeypatch):
+    """What review_gemini.py cannot record: a death before its own handler.
+
+    The partial-fail ``try/except`` in main() writes a ``status: "failed"``
+    verdict for anything the model call raises, but load_files() and
+    _load_schema() run before it, and a step killed by its timeout-minutes
+    or cancelled never reaches it at all. On those paths nothing is
+    written, so the job ends green with no verdict -- the gap the always()
+    net in base-ai-review-single.yml exists to cover (AT-2539).
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "test-key")
+
+    def die() -> tuple[str, str]:
+        raise OSError("input unreadable")
+
+    monkeypatch.setattr(review_gemini, "load_files", die)
+
+    with pytest.raises(OSError):
+        review_gemini.main()
+
+    assert not (tmp_path / review_gemini.REVIEW_FILE).exists()
+
+
 def test_max_output_tokens_env_override(monkeypatch):
     """GEMINI_MAX_OUTPUT_TOKENS env var must override the default at import time."""
     original = os.environ.get("GEMINI_MAX_OUTPUT_TOKENS")
