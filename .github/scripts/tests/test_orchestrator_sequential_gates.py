@@ -162,22 +162,23 @@ class TestSequentialGatesAreSymmetric:
             )
             assert clause in condition, reviewer
 
-    def test_no_artifact_caveat_is_documented_at_the_guard(self) -> None:
-        """A reviewer step that dies can still leave the job green with no artifact.
+    def test_outage_caveat_is_documented_at_the_guard(self) -> None:
+        """A reviewer step that dies can still leave the job green.
 
         The comment exists so nobody reads the failure clause as protection
-        against that; deleting it is what this test refuses. The first two
-        assertions pin the framing and survive any repair of the gap. The
-        third pins the current mechanism on purpose -- close that gap so an
-        outage reaches this guard as `failure` instead, and the caveat and
-        this assertion change together.
+        against that; deleting it is what this test refuses. The first
+        assertion pins the framing and survives any change of mechanism.
+        The other two pin the current mechanism on purpose: a dead claude or
+        gemini step reaches this guard as `success` with a failed verdict
+        artifact (AT-2539), and only codex's reaches it as `failure`. Change
+        a net, and the caveat and these assertions change together.
         """
         text = _ORCHESTRATOR.read_text(encoding="utf-8")
         assert "nobody reads it as protection" in text
-        assert "no verdict artifact" in text
-        # The reason, not just the framing: an outage reaches this guard as
-        # `success`, so the failure clause never sees it.
-        assert "outage does not arrive here as `failure`" in text
+        # Comment lines are rewrapped; pin the claim, not the wrapping.
+        flat = " ".join(text.replace("#", " ").split())
+        assert "`failed` verdict artifact its always() net wrote" in flat
+        assert "only codex's verify step turns a dead step into `failure`" in flat
 
 
 class TestCodexGate:

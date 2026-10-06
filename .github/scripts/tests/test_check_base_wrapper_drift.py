@@ -1187,6 +1187,7 @@ POST_PIN_STEPS = frozenset(
     {
         ("base-ai-review-prepare.yml", "Filter policy-excluded files"),  # AT-2206
         ("base-ai-review-single.yml", "Validate timeout inputs"),  # AT-2876
+        ("base-ai-review-single.yml", "Emit Gemini error verdict (no verdict file)"),  # AT-2539
     }
 )
 
