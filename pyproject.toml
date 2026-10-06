@@ -17,6 +17,24 @@ pythonpath = [".github/scripts"]
 line-length = 88
 target-version = "py314"
 
+[tool.ruff.lint]
+# PLR0915 is the rule the review prompts cite for function size. Selected
+# here so this repository is held to the number it tells consumers; the
+# prompt line and this threshold are tied together by
+# .github/scripts/tests/test_checklist_cites_its_tool.py (AT-2420).
+extend-select = ["PLR0915"]
+
+[tool.ruff.lint.pylint]
+# The number examples/prompts/*.md states for PLR0915; pinned explicitly so
+# a ruff default change cannot move what the templates tell consumers.
+max-statements = 50
+
+[tool.ruff.lint.per-file-ignores]
+# format_summary was 58 statements on the day the rule was switched on.
+# Splitting it belongs with a change to that module, not with the one that
+# turned the check on, so the single offender is grandfathered (AT-2420).
+".github/scripts/aggregate_reviews.py" = ["PLR0915"]
+
 [tool.pyright]
 # Every Python file here lives under a dot-directory, which pyright's default
 # exclude (`**/.*`) skips even when the file is named on the command line: it
