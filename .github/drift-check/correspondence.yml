@@ -127,6 +127,15 @@ steps:
     base_step: Run Gemini review
     wrapper_file: wrapper.yml
     wrapper_steps: [Run Gemini review]
+  # The wrapper already nets a dead gemini step: its one synthesize step
+  # writes a failed verdict for any reviewer file still absent, gemini
+  # included (reviewer_produced_no_verdict), so base's per-reviewer net
+  # maps onto it rather than onto a port by name (AT-2539). The one env
+  # key base reads and the wrapper does not is excused in exceptions.yml.
+  - base_file: base-ai-review-single.yml
+    base_step: Emit Gemini error verdict (no verdict file)
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Synthesize missing reviewer verdicts]
   - base_file: base-ai-review-single.yml
     base_step: Authenticate Codex CLI with API key
     wrapper_file: wrapper.yml

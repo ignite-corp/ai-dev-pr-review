@@ -234,9 +234,18 @@ jobs:
   # never emits -- reviewer_produced_no_verdict (reviewer ran, wrote nothing)
   # and `reviewer_not_run: authentication failed` (a dead OPENAI_API_KEY
   # fails `codex login --with-api-key`, so the Codex run step is skipped and
-  # never reaches cli_invocation_failed). Gemini has no fixed kind --
-  # review_gemini.py stores the exception text as `error` -- so for Gemini
-  # the marker is its summary prefix `Review failed:`. That verdict is produced
+  # never reaches cli_invocation_failed). Gemini has two markers: its
+  # always() net emits script_invocation_failed when the step died without
+  # writing (AT-2539), and review_gemini.py itself stores the exception text
+  # as `error`, so for a failure the script did see the marker is its summary
+  # prefix `Review failed:`. The net's kind is a liveness marker, not a
+  # credential marker: it fires on the absence of a usable verdict file,
+  # which can happen before, during or after an API call (a failed earlier
+  # step, a timeout mid-call, a cancellation, a clean exit that wrote
+  # nothing -- the net reads the file, not the outcome), so it says nothing about
+  # the secret value; it is in the alternation because the scan matches
+  # every kind base emits, not because it is evidence about the key. The
+  # `Review failed:` verdict is the credential marker: it is produced
   # only after a real API call was attempted with the real secret value, so a
   # sustained streak of it reflects that value's actual behavior against the
   # provider, the same way credential-probe's direct call does -- unlike an
@@ -428,7 +437,7 @@ jobs:
                 def is_error($body):
                   section($body)
                   | (split("\n") | .[:2] | join("\n"))
-                  | test("action_invocation_failed|cli_invocation_failed|output[ _]unparseable|provenance_unavailable|reviewer_produced_no_verdict|reviewer_not_run|review failed:|unavailable \\(quota/auth error\\)"; "i");
+                  | test("action_invocation_failed|cli_invocation_failed|script_invocation_failed|output[ _]unparseable|provenance_unavailable|reviewer_produced_no_verdict|reviewer_not_run|review failed:|unavailable \\(quota/auth error\\)"; "i");
                 [ .data.repository.pullRequests.nodes[]?
                   | [ (.reviews.nodes[]?, .comments.nodes[]?)
                       | select(.body | contains("<!-- multi-llm-review -->")) ]
@@ -886,7 +895,7 @@ jobs:
                     # issue bullets may legitimately quote error-like phrases.
                     section($body)
                     | (split("\n") | .[:2] | join("\n"))
-                    | test("cli_invocation_failed|output[ _]unparseable|provenance_unavailable|review failed:|unavailable \\(quota/auth error\\)"; "i");
+                    | test("cli_invocation_failed|script_invocation_failed|output[ _]unparseable|provenance_unavailable|review failed:|unavailable \\(quota/auth error\\)"; "i");
                   [ .data.repository.pullRequests.nodes[]?
                     | [ (.reviews.nodes[]?, .comments.nodes[]?)
                         | select(.body | contains("<!-- multi-llm-review -->")) ]

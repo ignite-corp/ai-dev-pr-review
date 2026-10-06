@@ -14,10 +14,11 @@ rendered by ``aggregate_reviews.format_summary`` -- the real renderer, in
 both the current ``[ ] not run (<kind>)`` header shape (AT-2123) and the
 older ``[!] (partial: <kind>)`` one still present on pilot PRs inside the
 scan window. For Claude, Codex and the wrapper kinds the summary line is
-deliberately neutral so the match must come from the kind itself. Gemini has
-no fixed kind -- ``review_gemini.py`` stores the exception text as ``error``
--- so its case renders the real ``Review failed:`` summary, which is the
-load-bearing marker for that reviewer.
+deliberately neutral so the match must come from the kind itself. Gemini's
+always() net emits ``script_invocation_failed`` like the others (AT-2539),
+but ``review_gemini.py`` itself has no fixed kind -- it stores the exception
+text as ``error`` -- so that case renders the real ``Review failed:``
+summary, which is the load-bearing marker for a failure the script did see.
 
 Kinds come from two places. Base's own emitter is read from the tree.
 Pilot consumers run the wrapper's inline copy of that emitter
@@ -29,6 +30,7 @@ those are listed here with their source.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -54,7 +56,13 @@ WRAPPER_ONLY_ERROR_KINDS = (
     "reviewer_not_run: authentication failed",
 )
 
-requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+# A missing jq skips on a developer machine. In CI it fails instead: the
+# scan's regex is only ever exercised through jq, and a silent skip there is
+# a green build over zero coverage (AT-2539).
+requires_jq = pytest.mark.skipif(
+    shutil.which("jq") is None and not os.environ.get("CI"),
+    reason="jq not installed",
+)
 
 
 def _pilot_scan_jq_program() -> str:
@@ -165,6 +173,9 @@ class TestPilotScanErrorMarkers:
             # commit, so it skips the review rather than read one of them
             # as its own result (AT-2424).
             "provenance_unavailable",
+            # Gemini, when the run step died without writing a verdict: its
+            # always() net records the step outcome (AT-2539).
+            "script_invocation_failed",
         }
 
     @pytest.mark.parametrize("kind", _all_kinds())

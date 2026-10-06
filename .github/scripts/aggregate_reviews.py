@@ -835,17 +835,20 @@ def _has_payload(review: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
 #
 # There is deliberately no counterpart for the parallel round where no
 # reviewer wrote any artifact at all. That signature -- every job green,
-# nothing uploaded -- is exactly what a credential outage produces
-# (base-ai-review-orchestrator.yml, the note above review-codex-s: the
-# review step is continue-on-error, so a reviewer whose CLI or action dies
-# on a missing or bad credential reports `success` with no verdict
-# artifact), and the aggregate is given nothing that separates the two: it
-# reads job conclusions and artifacts, and both are identical in the two
-# cases. Nor is there a trivial-diff round hiding behind it to protect --
-# every "nothing to review" state is decided before the reviewers run and
-# is reported elsewhere: prepare fails the round on an empty diff
-# (extract_pr_diff.sh, AT-2201), a size skip exits 1, and a policy skip
-# takes its own branch in main() with POLICY_SKIP_ROSTER_REASON.
+# nothing uploaded -- has no known producer short of every net dying with
+# its step: each reviewer path records its own death, claude's and
+# gemini's as a `failed` verdict and codex's by failing the job
+# (base-ai-review-single.yml, the note above 'Run Claude review'; AT-2539
+# closed gemini's gap), and the nets are ordinary steps that can die with
+# the job. What is left is that, or a job this pipeline's reviewer steps
+# did not produce, and the aggregate is given nothing that separates
+# either from a caller's deliberate exclusion: it reads job conclusions
+# and artifacts, and both say only that nothing was written -- it cannot
+# tell from here. Nor is there a trivial-diff round hiding behind it to
+# protect -- every "nothing to review" state is decided before the
+# reviewers run and is reported elsewhere: prepare fails the round on an
+# empty diff (extract_pr_diff.sh, AT-2201), a size skip exits 1, and a
+# policy skip takes its own branch in main() with POLICY_SKIP_ROSTER_REASON.
 # base-ai-review-single.yml says the same thing from the reviewer's side --
 # "the prompt requires a verdict file even for early_exit, so a missing
 # file here is always an infrastructure failure, never a benign skip".
