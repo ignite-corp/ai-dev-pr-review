@@ -890,7 +890,7 @@ AFTER   3초 뒤: CLAUDE.md exists = False
 `REPO_RE.match` 의 끝 앵커 없음, `_action() -> dict` 맨 주석,
 `RUN_ARTIFACTS` 가 shim 의 상수 이름을 다시 적음(드리프트 시 **이전 실행의 레거시 판정이 이번 실행의
 답으로 승격**된다 — `RUN_ARTIFACTS` 주석이 막겠다고 적은 바로 그 실패),
-`run()` 을 우회하는 subprocess 호출 넷.
+`run()` 을 우회하는 subprocess 호출 넷(감쌀 것 기준 — 다른 기준의 셈은 §4-D 표에 적었다).
 [codex R12](https://github.com/ignite-corp/ai-dev-pr-review/pull/172#issuecomment-5749091741) ·
 [claude R12](https://github.com/ignite-corp/ai-dev-pr-review/pull/172#issuecomment-5749114728) ·
 [최종 집계](https://github.com/ignite-corp/ai-dev-pr-review/pull/172#issuecomment-5749116609)
@@ -996,6 +996,19 @@ d0b8ea5  [#170, 이전]    1167: create_review_worktree -> 1168: clean_artifacts
 ```
 [#172 T26 답글](https://github.com/ignite-corp/ai-dev-pr-review/pull/172#discussion_r4056227665)
 
+**`9cee8e6` 은 이후 재작성으로 조상에서 떠났다 — 스냅숏 시점의 인용으로는 맞다.** 위 표의 `현재` 는
+2026-09-20 스냅숏 당시 각 PR 의 head 를 뜻한다. **아래 셋은 모두 그 PR 을 한때 fetch 한 작업 사본에서
+2026-10-06 에 `d554aee` 를 기준으로 잰 것이다**: `git merge-base --is-ancestor 9cee8e6 d554aee` → 종료 1 ·
+`git branch -a --contains 9cee8e6` → 빈 출력 · `git cat-file -t 9cee8e6` → `commit`.
+**객체가 없는 새 clone 에서는 셋 다 객체를 못 찾고 끝난다** — `--is-ancestor` 와 `cat-file` 은 종료 128
+(`fatal: Not a valid object name`), `branch --contains` 는 종료 129(`error: malformed object name`). 실측:
+이 저장소를 `git clone --no-local` 한 사본에서 셋을 그대로 돌렸다. 그러니 **종료 1(닿긴 하는데 조상은
+아니다)과 종료 128(판단 불가)을 바꿔 읽으면 안 된다** — 그 둘의 혼동이 바로 이 절이 말하는 자리다.
+누구나 재확인할 수 있는 쪽은 GitHub 의 커밋 URL 이고, 그것은 열린다.
+링크가 열리니 확인한 것처럼 보이는데, 그 커밋은 어느 브랜치에도 없다.
+SHA 를 바꾸지 않고 이 사실을 적는다: 오늘 재확인하는 독자에게 **검증 실패와 부재가 구분되지 않는 것**이
+이 절이 목록화한 부류이고, 이 행이 그 사례다(AT-2428).
+
 **셋은 앞선 라운드에 #172 에서 "Fixed" 로 공개 답변됐다.** 그 답은 **작업이 이루어진 브랜치에 대해서는
 참이었고, 지적이 제기된 브랜치에 대해서는 거짓**이었다. 스택은 이 실패를 싸게 만들고, 리뷰어가 같은
 줄을 재제기하기 전까지 보이지 않게 만들며, **아래쪽이 먼저 머지되므로 `main` 이 그 구멍을 먼저 받는다.**
@@ -1020,7 +1033,7 @@ d0b8ea5  [#170, 이전]    1167: create_review_worktree -> 1168: clean_artifacts
 | `re.match` 끝 앵커 | `_INPUT_REF_RE` | R12 에 `REPO_RE.match` 가 **같은 모양으로 남았다**(미해결) |
 | 가드 없는 `json.loads` | `existing_threads_block` | 드라이버의 `load_threads` 에도 있었고 거기 `len()` 은 dict 까지 조용히 받았다 |
 | `TimeoutExpired` 가 `DriverError` 가 아님 | `clone_origin` (주석이 이미 그 결함을 적고 있었다) | **모든 호출이 지나가는 `run()` 은 그 주석이 묘사하는 모양 그대로** |
-| 맨 `subprocess.run` | (지적되지 않음) | R12 에 **넷**: `tracked_artifact_names` · `_prompt_text` · `append_prior_context` · `resolve_bot_login` |
+| 맨 `subprocess.run` | (지적되지 않음) | R12 에 **넷**: `tracked_artifact_names` · `_prompt_text` · `append_prior_context` · `resolve_bot_login` — **세는 기준**: 리뷰어가 `DriverError` 로 감싸야 한다고 본 것. `run()` 자신을 뺀 `subprocess.run` 호출 자리 전부를 세면 #172 head `e9592d8` 에서 **여덟**이다(AST 로 센 자리 9 중 `run()` 의 것 하나를 뺀 수; 나머지 넷은 `clone_origin` · `run_reviewer` · `post_inline_comments` · `aggregate`). 둘 다 맞고 기준이 다르다(AT-2428) |
 | 정적 분석 경고 묶음 | — | **묶음의 하나를 확인하고 나머지를 같이 넘김 — 두 번** (`result` possibly-unbound, `_populate` is not accessed) |
 
 출처: [#172 T10](https://github.com/ignite-corp/ai-dev-pr-review/pull/172#discussion_r4042331742) ·
@@ -1290,13 +1303,14 @@ pr.diff:654   ->  +    extract = subprocess.run(   <- claude 가 말한 바로 �
 `claude: no inline comments to post` 로 끝났다.
 
 **gemini 는 반대쪽으로 실패했다.** `review_pr` 이 1240–1418 줄이라고 적었는데, 실제 `review_pr` 은
-**1500–1632**(133줄)이고 1240 은 `aggregate_env` 의 딕셔너리 한가운데다. 그런데 **이 PR 은 파일이
+**1500–1630**(131줄 — 초안은 1632/133줄로 적었다. 함수 뒤의 빈 줄 둘을 넣어 센 것이고, `ce8c324` 의
+`ast` `end_lineno` 로 재면 1630 이다. AT-2428)이고 1240 은 `aggregate_env` 의 딕셔너리 한가운데다. 그런데 **이 PR 은 파일이
 통째로 추가라 모든 줄이 "diff 안"** 이므로 범위 검사가 통과시켰다. **범위 검사는 줄이 diff 안에 있는지만
 보지, 그 줄이 말한 내용과 맞는지는 보지 않는다.**
 
 세 리뷰어 중 **둘이 같은 진짜 결함**(`review_pr` 이 80줄 한도를 넘는다)을 독립적으로 찾았는데,
 하나는 좌표계가 달라 버려지고 하나는 틀린 줄에 달려 접혔다. **claude 의 길이 추정(≈130줄)이
-실제(133줄)에 맞고, gemini 의 추정(179줄)이 틀렸다** — 버려진 쪽이 더 정확했다.
+실제(131줄)에 맞고, gemini 의 추정(179줄)이 틀렸다** — 버려진 쪽이 더 정확했다.
 
 **4000줄 어디에도 이 부류를 지켜보는 코드가 없다.** 가드는 *"판정이 안 나온다"* · *"CLI 가 죽는다"* ·
 *"설정이 틀렸다"* 를 겨냥해 쓰였고, 실제로 일어난 것은 **판정이 정상적으로 나왔는데 그 안의 좌표가
