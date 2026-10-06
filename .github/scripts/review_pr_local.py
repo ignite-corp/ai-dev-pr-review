@@ -1788,18 +1788,26 @@ def aggregate(work: Path, env: dict[str, str]) -> int:
 
 
 def resolve_bot_login(config: LocalConfig) -> str:
-    """The login whose prior verdict comments this run should fold.
+    """The login this run reports as the author of its own verdicts.
 
     The workflow default names the Actions bot, which authors nothing here;
-    the operator posts the verdict, so their login is what the stale-item
-    pass must match (AT-2208). Set BOT_LOGIN to override.
+    the operator posts the verdict, so their login is the one the aggregate
+    is told about. Set BOT_LOGIN to override.
 
-    KNOWN LIMIT, measured, NOT fixed here (see design-record 5-7, 5-8): on a PR with
-    both Actions and local history neither value is right, and the same root
-    cause makes fetch_round_count filter on `.user.type == "Bot"`, so local
-    verdicts never raise the round counter. Both close together by keying on
-    REVIEW_MARKER instead of the author -- shared Actions code, out of scope
-    here. See docs/local-review.md.
+    The stale-item pass no longer matches on it: since AT-2599 it folds a
+    prior round by REVIEW_MARKER, so a local run folds the Actions
+    verdicts on the same PR and vice versa. The value is still resolved
+    because the aggregate step's environment declares the name. The hard
+    failure below is kept as an early `gh auth` precondition check -- every
+    later stage needs the same authenticated `gh` -- not because anything
+    downstream reads the login.
+
+    KNOWN LIMIT, measured, NOT fixed here (see design-record 5-7): fetch_round_count
+    filters on `.user.type == "Bot"` and a local verdict is authored by
+    you, so local verdicts never raise the round counter and the
+    convergence cutoff never fires. It closes by keying on REVIEW_MARKER
+    instead of the author -- shared Actions code, out of scope here
+    (AT-2427). See docs/local-review.md.
     """
     if config.is_overridden("BOT_LOGIN"):
         return config.get("BOT_LOGIN")

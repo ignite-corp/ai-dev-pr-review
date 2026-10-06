@@ -58,7 +58,6 @@ from github_pr_support import (
     fetch_paginated_nodes,
     int_env,
     is_valid_review as _is_valid_review,
-    normalize_bot_login,
     normalize_severity as _normalize_severity,
 )
 
@@ -107,6 +106,14 @@ CRITICAL_THRESHOLD, MAJOR_CONSENSUS_OVERLAP = _resolve_thresholds(
 )
 
 MAJOR_CONSENSUS_MIN = int_env("MAJOR_CONSENSUS_MIN", 2)
+# The identity the aggregate's own verdict comments are posted under.
+# NOTHING IN THIS MODULE READS IT TODAY: the stale fold used to, and since
+# AT-2599 it keys on the review marker instead, because tidying needs no
+# identity. It is kept, rather than deleted, for the reads that do need one
+# -- a read that must decide whether to trust a verdict, not merely fold it,
+# cannot use the marker, which anyone can quote. The local driver resolves
+# this name from the default the aggregate step declares, so the two stay in
+# step. Delete it if no such read lands.
 BOT_LOGIN = os.environ.get("BOT_LOGIN", "github-actions[bot]")
 
 # Map job conclusion -> human-readable missing-verdict reason.
@@ -1230,7 +1237,7 @@ query($owner: String!, $name: String!, $pr: Int!,
     pullRequest(number: $pr) {
       comments(first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id author { login } isMinimized body }
+        nodes { id isMinimized body }
       }
     }
   }
@@ -1244,7 +1251,7 @@ query($owner: String!, $name: String!, $pr: Int!,
     pullRequest(number: $pr) {
       reviews(first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id author { login } state body }
+        nodes { id state body }
       }
     }
   }
@@ -1253,9 +1260,50 @@ query($owner: String!, $name: String!, $pr: Int!,
 
 _STALE_PAGE_SIZE = 50
 
+# dismissPullRequestReview "dismisses an approved or rejected pull request
+# review" (GitHub GraphQL reference) and errors on every other state, which
+# _run_gql_mutation would surface as a warning every round for as long as the
+# review exists. These two are also the only states a ruleset counts, so a
+# marker review in any other state has nothing to dismiss.
+_DISMISSABLE_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED"})
+
+
+def _is_prior_round(body: str | None) -> bool:
+    """Was this body posted by a round of this pipeline?
+
+    Every verdict this pipeline posts opens with REVIEW_MARKER on line 1 --
+    the verdict itself (format_summary), the prepare-failure, size-skip and
+    policy-skip comments, and the local driver's two skip comments -- so the
+    marker's position is as reliable as its presence and discriminates what
+    containment cannot: GitHub's "Quote reply" copies the raw markdown of
+    the quoted body, HTML comments included, so a human who quote-replies a
+    verdict and approves in the same review would have that approval
+    dismissed under a containment test. Leading whitespace is tolerated
+    because it changes no body's authorship; a quoted line starts with "> ".
+    """
+    return (body or "").lstrip().startswith(REVIEW_MARKER)
+
 
 def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
-    """Minimize previous bot comments and dismiss stale reviews."""
+    """Minimize prior-round verdict comments and dismiss prior-round reviews.
+
+    Runs right before the new verdict is posted, so a review of a superseded
+    head -- an approval included -- never outlives the round that replaces
+    it. The ruleset otherwise keeps counting a head-A approval on head B
+    wherever dismiss_stale_reviews_on_push is off (AT-2599).
+
+    An item is prior-round when its body opens with REVIEW_MARKER (see
+    _is_prior_round); who wrote it is not read. The marker is this
+    pipeline's own HTML comment, and the
+    verdicts that carry it are posted under whichever identity a path has
+    -- github-actions[bot], the reviewer App for an approval, the operator's
+    own login on the local driver (review_pr_local.py) -- so any author
+    filter folds one path's history and leaves another's standing. Folding
+    is housekeeping, not trust: a consumer's merge gate decides whether to
+    believe a verdict and needs identity for that; this pass decides what
+    to tidy and does not. The worst case, some other account quoting the
+    marker in a review of its own, costs that review a dismissal.
+    """
     if not repo:
         return
     parts = repo.split("/", 1)
@@ -1263,10 +1311,6 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         print(f"Invalid GITHUB_REPOSITORY format: {repo}", file=sys.stderr)
         return
     owner, name = parts
-    # The queries read author.login over GraphQL, which drops the "[bot]"
-    # suffix the BOT_LOGIN default carries; normalize both sides so the
-    # spelling of either never decides whether a prior round is folded.
-    bot = normalize_bot_login(BOT_LOGIN)
 
     for node in fetch_paginated_nodes(
         _STALE_COMMENTS_QUERY,
@@ -1276,11 +1320,7 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         pr_number,
         page_size=_STALE_PAGE_SIZE,
     ):
-        if (
-            normalize_bot_login((node.get("author") or {}).get("login") or "") == bot
-            and not node.get("isMinimized")
-            and REVIEW_MARKER in node.get("body", "")
-        ):
+        if not node.get("isMinimized") and _is_prior_round(node.get("body")):
             _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
 
     for node in fetch_paginated_nodes(
@@ -1291,10 +1331,8 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         pr_number,
         page_size=_STALE_PAGE_SIZE,
     ):
-        if (
-            normalize_bot_login((node.get("author") or {}).get("login") or "") == bot
-            and node.get("state") == "CHANGES_REQUESTED"
-            and REVIEW_MARKER in node.get("body", "")
+        if node.get("state") in _DISMISSABLE_STATES and _is_prior_round(
+            node.get("body")
         ):
             _run_gql_mutation(_DISMISS_QUERY, node["id"], "dismiss")
             _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
