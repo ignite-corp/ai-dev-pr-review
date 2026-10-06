@@ -1060,8 +1060,13 @@ class TestSummaryLabels:
 
     def test_approve_clean_label(self) -> None:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        # dict is invariant in its value type: the dict[str, dict] a test
+        # builds is refused where the module's read-only parameter says
+        # dict[str, dict | None]. Widening the signature to Mapping cascades
+        # through the module's helpers, so the ten call sites carry the
+        # pragma instead (AT-2418).
         summary = format_summary(
-            reviews, "approve", "reason", reviews, comment_only=False, approve_quorum=True
+            reviews, "approve", "reason", reviews, comment_only=False, approve_quorum=True  # pyright: ignore[reportArgumentType]
         )
         assert "[OK] Approved | 3/3 reviewers" in summary
 
@@ -1074,10 +1079,10 @@ class TestSummaryLabels:
             "codex": _make_named_review("codex", []),
             "gemini": _make_named_review("gemini", []),
         }
-        verdict, reason, available = apply_verdict_rules(reviews)
+        verdict, reason, available = apply_verdict_rules(reviews)  # pyright: ignore[reportArgumentType]
         assert verdict == "approve"
         summary = format_summary(
-            reviews, verdict, reason, available, comment_only=False, approve_quorum=True
+            reviews, verdict, reason, available, comment_only=False, approve_quorum=True  # pyright: ignore[reportArgumentType]
         )
         assert "[!] Approved with 1 unreviewed major issue(s) | 3/3 reviewers" in summary
         assert "[OK]" not in summary
@@ -1089,7 +1094,7 @@ class TestSummaryLabels:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
         del reviews["gemini"]
         summary = format_summary(
-            reviews,
+            reviews,  # pyright: ignore[reportArgumentType]
             "approve",
             "reason",
             reviews,
@@ -1111,7 +1116,7 @@ class TestSummaryLabels:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
         del reviews["gemini"]
         summary = format_summary(
-            reviews,
+            reviews,  # pyright: ignore[reportArgumentType]
             "approve",
             "reason",
             reviews,
@@ -2900,14 +2905,14 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.delenv("EXCLUDED_COUNT", raising=False)
         monkeypatch.delenv("EXCLUDED_PATHS", raising=False)
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)  # pyright: ignore[reportArgumentType]
         assert "excluded by policy" not in body
 
     def test_zero_count_adds_no_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("EXCLUDED_COUNT", "0")
         monkeypatch.setenv("EXCLUDED_PATHS", "")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)  # pyright: ignore[reportArgumentType]
         assert "excluded by policy" not in body
 
     def test_exclusion_is_listed_under_the_headline(
@@ -2916,7 +2921,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "2")
         monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem\nconfig/prod.env -> config/live.env")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)  # pyright: ignore[reportArgumentType]
         lines = body.splitlines()
         headline = next(i for i, line in enumerate(lines) if line.startswith("**Result:"))
         note = (
@@ -2932,7 +2937,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "")
         monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)  # pyright: ignore[reportArgumentType]
         assert "> [i] 1 file(s) excluded by policy (.github/lens-ignore): `secrets/key.pem`" in body
 
     def test_verdict_note_cannot_be_broken_by_a_path(
@@ -2942,7 +2947,7 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "1")
         monkeypatch.setenv("EXCLUDED_PATHS", "tick`\x1b[0m.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)  # pyright: ignore[reportArgumentType]
         assert "(.github/lens-ignore): `tick\u02cb\\x1b[0m.pem`" in body
         assert "tick`" not in body
         assert "\x1b" not in body
@@ -2996,7 +3001,7 @@ _AGGREGATE_WORKFLOW = (
 )
 
 
-def _workflow(path: Path) -> dict[str, Any]:
+def _workflow(path: Path) -> dict[str | bool, Any]:
     return dict(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 

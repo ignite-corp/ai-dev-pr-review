@@ -24,8 +24,7 @@ def test_is_rate_limit_error_detects_429_in_message():
 
 
 def test_is_rate_limit_error_detects_status_code_attr():
-    exc = type("FakeApiException", (Exception,), {})("rate limit")
-    exc.status_code = 429
+    exc = type("FakeApiException", (Exception,), {"status_code": 429})("rate limit")
     assert review_gemini._is_rate_limit_error(exc)
 
 

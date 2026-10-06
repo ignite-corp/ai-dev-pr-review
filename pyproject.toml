@@ -16,3 +16,17 @@ pythonpath = [".github/scripts"]
 # files drifting at 88 against 51 at 79/80 and 36 at 90 (AT-2508).
 line-length = 88
 target-version = "py314"
+
+[tool.pyright]
+# Every Python file here lives under a dot-directory, which pyright's default
+# exclude (`**/.*`) skips even when the file is named on the command line: it
+# reported filesAnalyzed=0 and "0 errors" for as long as this repository has
+# existed (AT-2418). Listing an exclude replaces the whole default list, so
+# the defaults still wanted are re-stated here minus `**/.*`, plus the two
+# dot-directories a developer creates under .github/scripts.
+# .github/scripts/check_pyright_coverage.py counts the .py and .pyi files
+# outside these same trees and fails the run when filesAnalyzed is a
+# different number.
+include = [".github/scripts"]
+exclude = ["**/__pycache__", "**/node_modules", "**/.venv", "**/.pytest_cache"]
+pythonVersion = "3.14"
