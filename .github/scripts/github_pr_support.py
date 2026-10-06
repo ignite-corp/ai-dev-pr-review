@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
@@ -20,6 +21,115 @@ _DEFAULT_PAGE_SIZE = 50
 # Shared so post_inline_comments can count completed review rounds by
 # looking for the exact same string the aggregate script emits.
 REVIEW_MARKER = "<!-- multi-llm-review -->"
+
+# The fold comments: when post_inline_comments puts a reviewer's findings in
+# ONE PR comment instead of inline threads -- the round-cutoff summary, or the
+# inline fallback when no inline post could be made -- the comment opens with
+# one of these markers, bound to the reviewer and the round, and carries the
+# count below. The aggregate reads the count back from the comment, by author
+# and marker, because the comment is the one carrier the PR cannot author
+# (AT-2553): the verdict file is the reviewer's own JSON, written over PR
+# content, and anything recorded there can be planted there.
+#
+# Not named for the round cutoff: that is one of the two routes, not the
+# category. The round in the marker is what keeps a rerun from posting twice
+# and an earlier round's comment from being read as this one's.
+FOLD_COMMENT_MARKERS: tuple[str, ...] = (
+    "<!-- round-cutoff-{reviewer}-r{round} -->",
+    "<!-- inline-fallback-{reviewer}-r{round} -->",
+)
+# One line in the comment body, machine-readable. The head is carried when
+# the posting step knows it, so the aggregate can refuse a comment left by a
+# run on a superseded head; a comment without one binds on the round alone.
+_FOLD_COUNT_RE = re.compile(
+    r"<!-- fold-count: (?P<count>\d+)(?: head: (?P<head>[0-9a-f]{7,40}))? -->"
+)
+
+
+def fold_count_line(count: int, head: str | None = None) -> str:
+    """The line a fold comment carries so the aggregate can read the count."""
+    suffix = f" head: {head}" if head else ""
+    return f"<!-- fold-count: {count}{suffix} -->"
+
+
+def parse_fold_count(body: str) -> tuple[int, str | None] | None:
+    """The (count, head) a fold comment carries, or None when it carries none.
+
+    A comment with the marker but no readable count is a comment the
+    aggregate cannot use: it reads as no count rather than as zero.
+    """
+    match = _FOLD_COUNT_RE.search(body)
+    if match is None:
+        return None
+    return int(match.group("count")), match.group("head")
+
+
+def fold_markers_for(reviewer: str, round_number: int) -> tuple[str, ...]:
+    """The markers a fold comment by ``reviewer`` for ``round_number`` opens with."""
+    return tuple(
+        marker.format(reviewer=reviewer, round=round_number)
+        for marker in FOLD_COMMENT_MARKERS
+    )
+
+
+# A completed round leaves exactly one aggregate verdict post carrying
+# REVIEW_MARKER: a PR review when auto-approve is enabled, or an issue
+# comment in comment-only mode (the default killswitch state). Both sides
+# of the fold contract count rounds the same way, with this one function.
+_ROUND_COUNT_ENDPOINTS = (
+    "repos/{repo}/pulls/{pr}/reviews",
+    "repos/{repo}/issues/{pr}/comments",
+)
+
+
+def fetch_round_count(repo: str, pr_number: str) -> int:
+    """Count completed review rounds on the PR.
+
+    Every completed round ends with exactly one bot-authored aggregate
+    verdict post carrying ``REVIEW_MARKER`` (see _ROUND_COUNT_ENDPOINTS).
+    Counting marker posts rather than raw bot reviews avoids overcounting:
+    each single reviewer job also submits a COMMENT review per round for
+    its inline comment batch.
+
+    Fails open: a gh error yields a partial (possibly zero) count so the
+    cutoff never suppresses findings because of an API failure. On the
+    aggregate side the same partial count makes a fold comment's round
+    fail to match, which reads as unknown -- closed, there.
+    """
+    jq_filter = (
+        'map(select((.user.type // "") == "Bot"'
+        f' and ((.body // "") | contains("{REVIEW_MARKER}")))) | length'
+    )
+    total = 0
+    for template in _ROUND_COUNT_ENDPOINTS:
+        endpoint = template.format(repo=repo, pr=pr_number)
+        try:
+            result = subprocess.run(
+                ["gh", "api", "--paginate", endpoint, "--jq", jq_filter],
+                capture_output=True,
+                text=True,
+                timeout=GH_TIMEOUT_SEC,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Warning: round count timed out for {endpoint}", file=sys.stderr)
+            continue
+        if result.returncode != 0:
+            print(
+                f"Warning: round count failed for {endpoint}: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            continue
+        # --paginate emits one jq result per page; sum them.
+        for token in result.stdout.split():
+            try:
+                total += int(token)
+            except ValueError:
+                print(
+                    f"Warning: unexpected round count output: {token!r}",
+                    file=sys.stderr,
+                )
+    return total
+
 
 _APP_LOGIN_PREFIX = "app/"
 _BOT_LOGIN_SUFFIX = "[bot]"
@@ -266,13 +376,20 @@ def fetch_paginated_nodes(
     cursor = ""
     for page_num in range(_MAX_FETCH_PAGES):
         cmd = [
-            "gh", "api", "graphql",
-            "-f", f"query={query}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
             # -F (--field) auto-converts integers to JSON number type
-            "-F", f"first={page_size}",
-            "-F", f"pr={pr_number}",
+            "-F",
+            f"first={page_size}",
+            "-F",
+            f"pr={pr_number}",
         ]
         if cursor:
             cmd += ["-f", f"after={cursor}"]

@@ -26,6 +26,13 @@ Round-cutoff convergence backstop (RC-5): at review round ROUND_CUTOFF_N
 critical/major issue, minor/suggestion findings are folded into a single
 summary comment instead of individual inline threads. No auto-merge and
 no auto-ticket creation -- a human decides merge timing and follow-up.
+A folded finding is not a review thread, and a merge gate that counts
+unresolved threads read the fold as nothing (AT-2553), so every fold
+comment -- the summary here, and the inline fallback below, which folds the
+same way -- carries a machine-readable count (fold_count_line) that the
+aggregate reads back by author and marker. The verdict file carries
+nothing: it is the reviewer's own, written over PR content, and a count
+recorded there can be planted there.
 """
 
 from __future__ import annotations
@@ -43,11 +50,13 @@ from github_pr_support import (
     DIFF_FILE_PREFIX,
     DIFF_FILE_PREFIX_LEN,
     DIFF_SIDE_RIGHT,
-    REVIEW_MARKER,
+    FOLD_COMMENT_MARKERS,
     REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     fetch_paginated_nodes,
+    fetch_round_count,
+    fold_count_line,
     get_pr_head_sha,
     int_env,
 )
@@ -59,18 +68,13 @@ _FALLBACK_HEADER = "## [bot] {} Inline Review (fallback)"
 # Round-cutoff convergence backstop (RC-5, issue #37). Tunable via the
 # ROUND_CUTOFF_N env var; ROUND_CUTOFF_ENABLED=false disables the gate.
 DEFAULT_ROUND_CUTOFF_N = 5
-_CUTOFF_MARKER = "<!-- round-cutoff-{reviewer}-r{round} -->"
+# Both fold comments open with a marker bound to the reviewer AND the round:
+# the dedup check below keys on it, so a marker without the round would let
+# the first fallback on a PR suppress every later one (AT-2553, round 9).
+_CUTOFF_MARKER, _FALLBACK_MARKER = FOLD_COMMENT_MARKERS
 _CUTOFF_HEADER = "## [bot] {} Round Cutoff Summary (R{})"
 _CUTOFF_LEAD = (
     "R{} convergence cutoff -- the following minor items are recommended for follow-up:"
-)
-
-# A completed round leaves exactly one aggregate verdict post carrying
-# REVIEW_MARKER: a PR review when auto-approve is enabled, or an issue
-# comment in comment-only mode (the default killswitch state).
-_ROUND_COUNT_ENDPOINTS = (
-    "repos/{repo}/pulls/{pr}/reviews",
-    "repos/{repo}/issues/{pr}/comments",
 )
 
 # Fuzzy-dedup thresholds. Two comments on the same path are considered
@@ -374,57 +378,11 @@ def build_comments(
     return comments, no_location, out_of_range
 
 
-def fetch_round_count(repo: str, pr_number: str) -> int:
-    """Count completed review rounds on the PR.
-
-    Every completed round ends with exactly one bot-authored aggregate
-    verdict post carrying ``REVIEW_MARKER`` (see _ROUND_COUNT_ENDPOINTS).
-    Counting marker posts rather than raw bot reviews avoids overcounting:
-    each single reviewer job also submits a COMMENT review per round for
-    its inline comment batch.
-
-    Fails open: a gh error yields a partial (possibly zero) count so the
-    cutoff never suppresses findings because of an API failure.
-    """
-    jq_filter = (
-        'map(select((.user.type // "") == "Bot"'
-        f' and ((.body // "") | contains("{REVIEW_MARKER}")))) | length'
-    )
-    total = 0
-    for template in _ROUND_COUNT_ENDPOINTS:
-        endpoint = template.format(repo=repo, pr=pr_number)
-        try:
-            result = subprocess.run(
-                ["gh", "api", "--paginate", endpoint, "--jq", jq_filter],
-                capture_output=True,
-                text=True,
-                timeout=GH_TIMEOUT_SEC,
-            )
-        except subprocess.TimeoutExpired:
-            print(f"Warning: round count timed out for {endpoint}", file=sys.stderr)
-            continue
-        if result.returncode != 0:
-            print(
-                f"Warning: round count failed for {endpoint}: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-            continue
-        # --paginate emits one jq result per page; sum them.
-        for token in result.stdout.split():
-            try:
-                total += int(token)
-            except ValueError:
-                print(
-                    f"Warning: unexpected round count output: {token!r}",
-                    file=sys.stderr,
-                )
-    return total
-
-
 def round_cutoff_round(
     repo: str,
     pr_number: str,
     issues: list[dict[str, Any]],
+    round_number: int | None = None,
 ) -> int | None:
     """Return the current round number when the convergence cutoff applies.
 
@@ -442,7 +400,8 @@ def round_cutoff_round(
         if rank is None or rank >= _SEVERITY_RANK["major"]:
             return None
     cutoff_n = int_env("ROUND_CUTOFF_N", DEFAULT_ROUND_CUTOFF_N)
-    round_number = fetch_round_count(repo, pr_number) + 1
+    if round_number is None:
+        round_number = fetch_round_count(repo, pr_number) + 1
     if round_number >= cutoff_n:
         return round_number
     return None
@@ -490,10 +449,16 @@ def _post_folded_comment(
     header_lines: list[str],
     comments: list[dict[str, Any]],
     label: str,
+    head: str | None = None,
 ) -> None:
     """Post all comment payloads as a single PR comment.
 
-    Uses a marker comment to prevent duplicate posts on reruns.
+    Uses a marker comment to prevent duplicate posts on reruns. The body
+    also carries ``fold_count_line``: the findings in it are not threads,
+    and this line, under this step's own login, is how the aggregate learns
+    how many a gate counting threads cannot see (AT-2553). ``head`` is
+    written into it when the caller knows the PR head, so a comment left by
+    a run on a superseded head is refused on the reading side.
     """
     check = subprocess.run(
         [
@@ -514,7 +479,7 @@ def _post_folded_comment(
         print(f"{reviewer}: {label} comment already exists, skipping")
         return
 
-    lines = [marker, *header_lines, ""]
+    lines = [marker, fold_count_line(len(comments), head), *header_lines, ""]
     for c in comments:
         lines.append(f"- **{c.get('path')}:{c.get('line')}** -- {c.get('body', '')}")
     body = "\n".join(lines)
@@ -544,17 +509,23 @@ def _post_folded_comment(
 
 
 def post_fallback(
-    repo: str, pr_number: str, reviewer: str, comments: list[dict[str, Any]]
+    repo: str,
+    pr_number: str,
+    reviewer: str,
+    round_number: int,
+    comments: list[dict[str, Any]],
+    head: str | None = None,
 ) -> None:
     """Fallback: post all issues as a single PR comment."""
     _post_folded_comment(
         repo,
         pr_number,
         reviewer,
-        f"<!-- inline-fallback-{reviewer} -->",
+        _FALLBACK_MARKER.format(reviewer=reviewer, round=round_number),
         [_FALLBACK_HEADER.format(reviewer)],
         comments,
         "fallback",
+        head=head,
     )
 
 
@@ -564,6 +535,7 @@ def post_cutoff_summary(
     reviewer: str,
     round_number: int,
     comments: list[dict[str, Any]],
+    head: str | None = None,
 ) -> None:
     """Fold suppressed non-blocking findings into one summary comment.
 
@@ -582,7 +554,47 @@ def post_cutoff_summary(
         ],
         comments,
         "cutoff summary",
+        head=head,
     )
+
+
+def post_findings(
+    repo: str,
+    pr_number: str,
+    reviewer: str,
+    comments: list[dict[str, Any]],
+    round_number: int,
+    cutoff_round: int | None,
+) -> None:
+    """Put the batch on the PR: inline threads, or one comment if it cannot.
+
+    Every fold comment carries its count (``_post_folded_comment``), and the
+    head when this step could learn it: the cutoff route looks it up for
+    that alone and folds without it if the lookup fails, since a comment
+    bound on the round only is still a comment; the fallback after a failed
+    inline post has it from the attempt, and the fallback after a failed
+    head lookup, by definition, does not.
+    """
+    if cutoff_round is not None:
+        print(
+            f"{reviewer}: round cutoff active (round {cutoff_round}) --"
+            f" folding {len(comments)} finding(s) into a summary comment"
+        )
+        try:
+            head: str | None = get_pr_head_sha(pr_number)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            head = None
+        post_cutoff_summary(repo, pr_number, reviewer, cutoff_round, comments, head)
+        return
+
+    try:
+        commit_sha = get_pr_head_sha(pr_number)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"{reviewer}: failed to get PR head SHA: {e}", file=sys.stderr)
+        post_fallback(repo, pr_number, reviewer, round_number, comments)
+        return
+    if not post_inline_review(repo, pr_number, commit_sha, reviewer, comments):
+        post_fallback(repo, pr_number, reviewer, round_number, comments, commit_sha)
 
 
 def main() -> None:
@@ -609,53 +621,48 @@ def main() -> None:
         sys.exit(1)
 
     issues = review.get("issues", [])
+    comments: list[dict[str, Any]] = []
     if not issues:
         print(f"{args.reviewer}: no issues to post")
-        return
+    else:
+        diff_path = Path(args.diff)
+        if not diff_path.exists():
+            print(f"Warning: diff file not found: {args.diff}", file=sys.stderr)
+        # ``errors="replace"`` keeps validation alive when the PR diff carries
+        # non-UTF-8 bytes; we only need hunk headers, which are ASCII.
+        diff_text = (
+            diff_path.read_text(encoding="utf-8", errors="replace")
+            if diff_path.exists()
+            else ""
+        )
+        valid_lines = parse_diff(diff_text)
+        existing_threads = fetch_existing_threads(repo, pr_number)
 
-    diff_path = Path(args.diff)
-    if not diff_path.exists():
-        print(f"Warning: diff file not found: {args.diff}", file=sys.stderr)
-    # ``errors="replace"`` keeps validation alive when the PR diff carries
-    # non-UTF-8 bytes; we only need hunk headers, which are ASCII.
-    diff_text = (
-        diff_path.read_text(encoding="utf-8", errors="replace")
-        if diff_path.exists()
-        else ""
-    )
-    valid_lines = parse_diff(diff_text)
-    existing_threads = fetch_existing_threads(repo, pr_number)
+        comments, no_location, out_of_range = build_comments(
+            issues, valid_lines, existing_threads, args.reviewer
+        )
 
-    comments, no_location, out_of_range = build_comments(
-        issues, valid_lines, existing_threads, args.reviewer
-    )
-
-    if no_location:
-        print(f"{args.reviewer}: {no_location} issue(s) without file/line")
-    if out_of_range:
-        print(f"{args.reviewer}: {out_of_range} issue(s) outside diff")
+        if no_location:
+            print(f"{args.reviewer}: {no_location} issue(s) without file/line")
+        if out_of_range:
+            print(f"{args.reviewer}: {out_of_range} issue(s) outside diff")
+        if not comments:
+            print(f"{args.reviewer}: no inline comments to post")
 
     if not comments:
-        print(f"{args.reviewer}: no inline comments to post")
         return
 
-    cutoff_round = round_cutoff_round(repo, pr_number, issues)
-    if cutoff_round is not None:
-        print(
-            f"{args.reviewer}: round cutoff active (round {cutoff_round}) --"
-            f" folding {len(comments)} finding(s) into a summary comment"
-        )
-        post_cutoff_summary(repo, pr_number, args.reviewer, cutoff_round, comments)
-        return
-
-    try:
-        commit_sha = get_pr_head_sha(pr_number)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        print(f"{args.reviewer}: failed to get PR head SHA: {e}", file=sys.stderr)
-        post_fallback(repo, pr_number, args.reviewer, comments)
-        return
-    if not post_inline_review(repo, pr_number, commit_sha, args.reviewer, comments):
-        post_fallback(repo, pr_number, args.reviewer, comments)
+    # One round number for both fold routes, so their markers agree with
+    # what the aggregate computes from the same count.
+    round_number = fetch_round_count(repo, pr_number) + 1
+    post_findings(
+        repo,
+        pr_number,
+        args.reviewer,
+        comments,
+        round_number,
+        round_cutoff_round(repo, pr_number, issues, round_number),
+    )
 
 
 if __name__ == "__main__":
