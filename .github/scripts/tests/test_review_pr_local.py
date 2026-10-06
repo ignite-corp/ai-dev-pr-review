@@ -732,6 +732,32 @@ def test_the_prompt_paths_are_settled_before_anything_clones():
     )
 
 
+def test_an_overridden_bot_login_does_not_skip_the_gh_auth_check(
+    tmp_path, monkeypatch
+):
+    """Every later stage needs an authenticated `gh`, so the probe is a
+    precondition of the run and not of one value's default.
+
+    Baseline: on 7a525ed `resolve_bot_login` returned the override before
+    probing, so a run with BOT_LOGIN set and no `gh auth login` got past
+    the check and failed on whichever `gh` call came next -- here the
+    refs lookup, which this fake refuses to answer.
+    """
+
+    def probe_fails(argv, **kwargs):
+        if argv[:3] == ["gh", "api", "user"]:
+            return _completed(1, "")
+        pytest.fail(f"ran {argv} without an authenticated gh")
+
+    monkeypatch.setattr(driver, "run", probe_fails)
+    config = LocalConfig({"BOT_LOGIN": "someone"}, {})
+    args = argparse.Namespace(repo="o/r", pr_number="1")
+
+    with pytest.raises(driver.DriverError) as excinfo:
+        driver.pre_review(tmp_path / "run", config, args)
+    assert "gh auth login" in str(excinfo.value)
+
+
 def test_a_path_check_asks_for_the_ref_with_a_GET(monkeypatch):
     """`gh api` switches to POST the moment a body parameter is supplied
     without an explicit method, and `POST /repos/.../contents/<path>` is no

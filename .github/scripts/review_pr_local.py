@@ -1787,30 +1787,46 @@ def aggregate(work: Path, env: dict[str, str]) -> int:
         return 1
 
 
-def resolve_bot_login(config: LocalConfig) -> str:
-    """The login whose prior verdict comments this run should fold.
+def require_gh_auth() -> str:
+    """Fail early unless `gh` is authenticated; return the login it holds.
 
-    The workflow default names the Actions bot, which authors nothing here;
-    the operator posts the verdict, so their login is what the stale-item
-    pass must match (AT-2208). Set BOT_LOGIN to override.
-
-    KNOWN LIMIT, measured, NOT fixed here (see design-record 5-7, 5-8): on a PR with
-    both Actions and local history neither value is right, and the same root
-    cause makes fetch_round_count filter on `.user.type == "Bot"`, so local
-    verdicts never raise the round counter. Both close together by keying on
-    REVIEW_MARKER instead of the author -- shared Actions code, out of scope
-    here. See docs/local-review.md.
+    Every later stage needs the same authenticated `gh`, so this is a
+    precondition of the run and not of any one value: it runs whether or
+    not BOT_LOGIN is overridden. It used to live inside resolve_bot_login,
+    where the override returned before the probe and a run with BOT_LOGIN
+    set skipped the check it was documented to perform.
     """
-    if config.is_overridden("BOT_LOGIN"):
-        return config.get("BOT_LOGIN")
     result = run(["gh", "api", "user", "--jq", ".login"], capture=True, check=False)
     login = result.stdout.strip()
     if result.returncode != 0 or not login:
-        raise DriverError(
-            "cannot resolve the authenticated gh user; run `gh auth login`"
-            " or set BOT_LOGIN"
-        )
+        raise DriverError("cannot resolve the authenticated gh user; run `gh auth login`")
     return login
+
+
+def resolve_bot_login(config: LocalConfig, gh_login: str) -> str:
+    """The login this run reports as the author of its own verdicts.
+
+    The workflow default names the Actions bot, which authors nothing here;
+    the operator posts the verdict, so their `gh` login -- the one
+    require_gh_auth verified -- is the one the aggregate is told about. Set
+    BOT_LOGIN to override. A pure lookup: the probe is require_gh_auth's.
+
+    The stale-item pass no longer matches on it: since AT-2599 it folds a
+    prior round by REVIEW_MARKER, so a local run folds the Actions
+    verdicts on the same PR and vice versa. The value is still resolved
+    because the aggregate step's environment declares the name, not
+    because anything downstream reads the login.
+
+    KNOWN LIMIT, measured, NOT fixed here (see design-record 5-7): fetch_round_count
+    filters on `.user.type == "Bot"` and a local verdict is authored by
+    you, so local verdicts never raise the round counter and the
+    convergence cutoff never fires. It closes by keying on REVIEW_MARKER
+    instead of the author -- shared Actions code, out of scope here
+    (AT-2427). See docs/local-review.md.
+    """
+    if config.is_overridden("BOT_LOGIN"):
+        return config.get("BOT_LOGIN")
+    return gh_login
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -2003,7 +2019,7 @@ def pre_review(
     BEFORE anything clones (see design-record 5-9).
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    bot_login = resolve_bot_login(config)
+    bot_login = resolve_bot_login(config, require_gh_auth())
     refs = resolve_refs(args.repo, args.pr_number)
     verify_prompt_paths(args.repo, refs, (args.system_prompt_path, args.checklist_path))
     size_skipped, size = size_gate(

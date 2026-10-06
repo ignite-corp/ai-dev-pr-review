@@ -439,15 +439,18 @@ limit, not as work. (measured)
 
 Three further differences are not strictness in either direction.
 `BOT_LOGIN` defaults to the operator's `gh` login locally, which is what
-makes AT-2427 bite (section 7). No App token is minted locally, which is
-section 2.3. And **legacy verdict names are promoted before the
-fallbacks** locally, where the workflow promotes elsewhere in its
-sequence: at both `4309344` and `b3555a9` the codex **Normalize review
-file name** step promotes only on the run step's marker and with
-`--target-is-ours`, so a promotion cannot re-derive an error verdict into
-a passing one. That gating is why the ordering no longer decides anything
-and the difference is neutral rather than stricter; AT-2424 (section 7)
-is the history.
+makes AT-2427 bite (section 7). **Superseded in part by AT-2599:** the
+stale-item fold no longer reads `BOT_LOGIN`, so what still makes AT-2427
+bite is the other half — the local verdict is a human's, not a Bot's, and
+`fetch_round_count` filters on `.user.type` — as the section 7 row
+records. No App token is minted locally, which is section 2.3. And
+**legacy verdict names are promoted before the fallbacks** locally, where
+the workflow promotes elsewhere in its sequence: at both `4309344` and
+`b3555a9` the codex **Normalize review file name** step promotes only on
+the run step's marker and with `--target-is-ours`, so a promotion cannot
+re-derive an error verdict into a passing one. That gating is why the
+ordering no longer decides anything and the difference is neutral rather
+than stricter; AT-2424 (section 7) is the history.
 
 **One place local is weaker, and it is structural:** the local path is
 advisory. See section 2.3.
@@ -844,7 +847,7 @@ if the boundary were clean.
 
 | Ticket | Defect | Which boundary it crosses |
 |---|---|---|
-| **AT-2427** | A verdict is identified by **who wrote it**, not by `REVIEW_MARKER`. `fetch_round_count` filters on `.user.type == "Bot"`, so a local verdict never raises the round counter and the convergence cutoff never fires; `BOT_LOGIN` folds one author's history, so on a pull request carrying both Actions and local rounds neither value is right. Both close together by keying on the marker. | Local verdicts are invisible to Actions-path bookkeeping. Open; reproduces at `4309344`. |
+| **AT-2427** | A verdict is identified by **who wrote it**, not by `REVIEW_MARKER`. `fetch_round_count` filters on `.user.type == "Bot"`, so a local verdict never raises the round counter and the convergence cutoff never fires; `BOT_LOGIN` folds one author's history, so on a pull request carrying both Actions and local rounds neither value is right. Both close together by keying on the marker. **Superseded in part by AT-2599:** the stale-item fold now keys on the marker, so only the `fetch_round_count` half is still open. | Local verdicts are invisible to Actions-path bookkeeping. Open; reproduces at `4309344`. |
 | **AT-2510** | The import inversion is **gone** and the guard exists and passes; what remains is the two residuals of sections 3.3 and 3.4 — the dependency axis does not deny by default, and the guard covers import rather than execution. The ticket is still open, which makes a merged boundary violation look live when it is not. | The boundary itself. |
 | **AT-2539** | gemini's run step has no `always()` net, where claude's and codex's steps do (section 4.1). | Actions path only; the local path's `guarded_main` closes the same hole. |
 | **AT-2569** | `no_artifact_bypass` lets the aggregate job exit 0 with every reviewer payload absent, so the merge-gate context of section 2.3 is satisfied by nothing. The formal APPROVED review is withheld by the coverage check; the green status is not. Reachable only when every reviewer step dies without writing — section 6 carries the evidence status. Not via a credential outage: claude's `always()` net writes a failed verdict file and codex's `always()` step exits 1, and either one breaks the every-payload-absent-and-every-job-success conjunction, even though gemini records nothing (section 4.1). | **The merge gate, on both paths**: the aggregate is the same script locally, though a local run starts no job and so reaches no context (section 2.3). |
