@@ -172,12 +172,14 @@ def test_the_spawn_detector_actually_detects():
 
 @pytest.mark.parametrize("module", NEW_MODULES)
 def test_no_function_exceeds_eighty_lines(module):
-    """The checklist's rule, enforced for once.
+    """The checklist's 80-line bound, enforced for the new modules.
 
-    It cites `ruff PLR0915`, which is `too-many-statements` with a default
-    max of 50 and does not measure lines at all: a 116-line function passed
-    it while the limit was cited twice and resolved twice (AT-2420). This
-    counts lines, for the new modules only.
+    The checklist cited `ruff PLR0915` for it, which is `too-many-statements`
+    with a default max of 50 and does not measure lines at all: a 116-line
+    function passed it while the limit was cited twice and resolved twice.
+    The checklist now states both bounds and cites the tool for the one it
+    measures (AT-2420); nothing in ruff counts lines, so this does, for the
+    new modules only.
 
     Baseline: the discarded `review_pr` fails this. Measured by this rule it
     is 131 lines (def at 1500, body ending 1630); design-record 5-3 says
