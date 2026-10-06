@@ -33,8 +33,11 @@ comments cite its sections rather than restating them. This document cites
 both for the same reason. Where a reader wants usage, go there; where a
 reader wants local design rationale, go there.
 
-Every claim here carries one of the labels below, and section 6 collects
-them under exactly these names:
+Every claim here carries one of the labels below, at the claim —
+**measured**, **inferred** and **attributed** alike. Section 6 holds only
+the entries that have no claim site in sections 1–5 — what was not read,
+what nobody has measured, and attributed reports with no sentence of
+their own — under the same names:
 
 | Label | Means |
 |---|---|
@@ -309,7 +312,7 @@ changes no code and proposes none.
 (The literal and `.github/scripts/requirements.txt` are **measured**; that
 a third dependency would escape the guard is **inferred**, since observing
 it would mean adding one; what the install actually makes importable is
-**unmeasured**. Section 6 carries each.)
+**unmeasured**. Section 6 carries the unmeasured one.)
 
 ### 3.4 Second residual — the guard covers import, not execution
 
@@ -715,45 +718,19 @@ inferred from section 7's table.
 
 The epic this ticket sits under exists because a merged design record
 cited evidence that had never run and facts that had gone stale. This
-section is the ledger, and it is part of the deliverable rather than an
-appendix to it.
-
-### Measured
-
-At `4309344`, and re-checked at `b3555a9` for the two workflow files that
-merge touched — except the **comment-prose** citations in section 4's
-divergence table and in section 4.1, which are at `b3555a9` alone because
-that merge wrote them.
-Everything marked (measured) above: the shared roster, its import-time
-check, and the orchestrator's separate hand-written job declarations; the
-two `break`s in `run_reviewers`; the verdict contract and the zero hits
-for `LENS 판정`; the dependency direction and both guard tests, including
-that `test_actions_path_script_imports_without_third_party_packages`'s
-subprocess body ends at `import <module>`; the
-`THIRD_PARTY_ROOTS` literal and the two-line
-`.github/scripts/requirements.txt`; the absence of any check-run or status
-write; the `ALLOW_AUTO_APPROVE` pin and its two tests; the merge gate
-named in `docs/ops/claude-auth-and-review-operations.md`; the three
-reviewers' differing failure nets in `base-ai-review-single.yml`; the
-spike's trigger, target gate, probes and self-labelling; the 23-occurrence
-count and the kinds of change it resolves into; the token handling at
-each write in section 5.2's table;
-the two App-token mints and what each feeds; the orchestrator's
-concurrency key; the tree guard's positional comparison; prepare's API
-resolution of the head.
-
-### Inferred
-
-- A third dependency would silently escape the import guard (section 3.3).
-- An import inside an uncalled function would escape it too (section 3.4).
-- The AT-2539 signature is unreachable on the local path (section 4.1).
-- The spike's REST result does not transfer to `actions/checkout`
-  (section 5.2).
-- The AT-2092 fail-open becomes reachable under a scheduled cross-repo
-  trigger (section 5.4).
-- Cross-repo runs on equal PR numbers would cancel each other
-  (section 5.5): the key and the `cancel-in-progress` setting are
-  measured, the collision has not been observed.
+section is part of the deliverable rather than an appendix to it, and it
+holds only what has no claim site in sections 1–5: observations not
+made, observations nobody has, and attributed reports with no sentence
+of their own. The **measured**, **inferred** and **attributed** marks
+live where each claim is made and are not listed again here. Earlier
+revisions did list them, and in PR
+#187's last two rounds five of eleven findings were that list
+mis-describing what sections 3–5 stated correctly — a wrong bucket, a
+scope widened in restatement, a test named by position (**attributed**
+to AT-2568's body, which classified those rounds; the threads were not
+re-read here, and these rounds post-date `4309344`) — because a
+ledger derived from the prose is a second copy of the prose, and the
+copy is the one that drifts (AT-2568).
 
 ### Not read for this document
 
@@ -818,21 +795,13 @@ resolution of the head.
 
 ### Attributed, not re-verified here
 
-- The six Actions reviews on `hyuk-hur/dev-dotfiles`, 2026-10-01
-  (section 1).
 - The spike result for `ignite-pilot-org/max-builder` — PR read 200, diff
   read, `pull_requests=write` — which appears in **AT-2560's body only**
   and in no AT-2520 comment. The provenance asymmetry is flagged
   deliberately: this is the most-cited positive cross-repo result and it
   has one source.
-- The single end-to-end local run, and everything the local design record
-  derives from it.
 - The `claude` 2.1.269 hook execution that motivates agent-config
   stripping, recorded in `docs/local-review.md`, "Security".
-- The four-way decomposition of the coupling in section 3.5 item 1 —
-  execution location, review target, tool code and version, permission.
-  It is AT-2564's framing of what the measured absence means, not a
-  structure read out of the code.
 
 ---
 
@@ -851,14 +820,16 @@ if the boundary were clean.
 | **AT-2411** | The Actions path passes the codex prompt as one argv element. | Divergence; local uses stdin. |
 | **AT-2424** | Filed when the Actions path promoted legacy verdict names after the fallbacks, so an error verdict masked the real one. At both `4309344` and `b3555a9` the codex promotion is gated on the run step's marker and carries `--target-is-ours`, so that masking no longer occurs; the ticket is still open in Jira against a behaviour whose workflow-side fix has shipped. | Divergence; local promotes before the fallbacks (section 4). |
 | **AT-2520 / AT-2538 / AT-2560** | Cross-repo promotion. Section 5 records which sites the tickets name as important and why the important ones are elsewhere; the appendix records where their line citations have moved. | The unbuilt path. |
-| **AT-2425** | The local design record's evidence script never ran: its comparison does not execute because of a key-name mismatch. | That record's self-verification, not this document's. Still open. |
-| **AT-2428** | Three factual errors in the merged local design record, including a cited commit that is no longer an ancestor, so re-checking it today reads as the document being wrong. | Same. Still open. |
+| **AT-2425** | The local design record's evidence script did not verify what it claimed to: in the only path runnable today its two computed keys are absent from its recorded-value table, so it compared nothing and reported clean. The ticket carries seven items. | That record's self-verification, not this document's. The change that rewrote section 6 addresses items 1–4 by deleting the script (the comparison, the double count, the substring serialisation check, the unreachable no-argument branch) and item 6 by correcting two figures, and records in that record's `evidence/MANIFEST.md`, for each derived number, which source and which command produced it — naming the three whose source went with `/tmp` (prompt composition, the `EXISTING_COMMENTS=` size, `232`), which survive as recorded values against a hash. Items 5 (the machine-bound run scripts) and 7 (the `review-*.json` basenames) are deliberately kept, with the measured reason in that MANIFEST. The ticket's status is Jira's. |
+| **AT-2428** | Three factual errors in the merged local design record, including a cited commit that is no longer an ancestor, so re-checking it today reads as the document being wrong. | Same. All three corrected in the same change; the ticket's status is Jira's. |
 
-**AT-2425 and AT-2428 remain open against
-`docs/tasks/local-review-driver-design-record/design-record.md`.** This
-document does not supersede that record, does not fix those defects, and
-does not inherit its evidence: every claim here was read at `4309344` or
-is marked attributed in section 6.
+**AT-2425 (items 1–4 and 6) and AT-2428 were addressed against
+`docs/tasks/local-review-driver-design-record/design-record.md` in the
+same change as this section's rewrite.** This document does not
+supersede that record and does not inherit its evidence: every claim
+here was read at `4309344` or carries an **attributed** mark at its
+claim site; section 6 lists only the attributed reports that have no
+sentence of their own.
 
 ---
 
