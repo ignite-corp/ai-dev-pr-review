@@ -132,6 +132,39 @@ class TestThreadsJq:
         output = _run_threads_jq(nodes)
         assert len(output) == 1
 
+    def test_inline_envelopes_do_not_change_cross_round_dedup(self) -> None:
+        body = "- **minor** (claude): Missing check."
+        nodes = [
+            _node("claude", "a.py", 10,
+                  "<!-- inline-post-claude-r3 run:actions-123-1 -->\n" + body,
+                  resolved=True, outdated=True),
+            _node("claude", "a.py", 12,
+                  "<!-- inline-post-claude-r4 run:actions-124-1 -->\r\n" + body,
+                  resolved=False, outdated=False),
+        ]
+        output = _run_threads_jq(nodes)
+        assert len(output) == 1
+        assert output[0]["body"] == body
+        assert output[0]["status"] == "unresolved"
+
+    def test_inline_envelope_is_stripped_before_truncation(self) -> None:
+        body = "x" * 490 + "tail-kept!" + "y" * 20
+        node = _node("claude", "a.py", 10,
+                     "<!-- inline-post-claude-r3 run:local-" + "a" * 32 + " -->\n" + body,
+                     resolved=False, outdated=False)
+        assert _run_threads_jq([node])[0]["body"] == body[:500] + "...(truncated)"
+
+    @pytest.mark.parametrize("marker", [
+        "<!-- inline-post-claude-r0 run:actions-123-1 -->",
+        "<!-- inline-post-other-r3 run:actions-123-1 -->",
+        "<!-- inline-post-claude-r3 run:untrusted -->",
+        "prefix <!-- inline-post-claude-r3 run:actions-123-1 -->",
+    ])
+    def test_malformed_inline_envelopes_remain_visible(self, marker: str) -> None:
+        body = marker + "\nOriginal finding"
+        node = _node("claude", "a.py", 10, body, resolved=False, outdated=False)
+        assert _run_threads_jq([node])[0]["body"] == body
+
     def test_unresolved_duplicate_survives_resolved_copy(self) -> None:
         # When a resolved and an unresolved copy of the same finding collide,
         # the unresolved entry must be the one kept.

@@ -58,6 +58,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from filter_pr_diff import DEFAULT_RULE_PATH
 from github_pr_support import (
@@ -1790,11 +1791,15 @@ def check_coordinates(work: Path) -> None:
             )
 
 
-def inline_comment_env(repo: str, pr_number: str, config: LocalConfig) -> dict[str, str]:
+def inline_comment_env(
+    repo: str, pr_number: str, config: LocalConfig, bot_login: str, inline_run_id: str = ""
+) -> dict[str, str]:
     return script_env(
         {
             **os.environ,
             "JACCARD_THRESHOLD": config.get("JACCARD_THRESHOLD"),
+            "BOT_LOGIN": bot_login,
+            "INLINE_REVIEW_RUN_ID": inline_run_id,
             "ROUND_CUTOFF_N": config.get("ROUND_CUTOFF_N"),
             "ROUND_CUTOFF_ENABLED": config.get("ROUND_CUTOFF_ENABLED"),
         },
@@ -1804,7 +1809,7 @@ def inline_comment_env(repo: str, pr_number: str, config: LocalConfig) -> dict[s
 
 
 def post_inline_comments(
-    work: Path, repo: str, pr_number: str, config: LocalConfig
+    work: Path, repo: str, pr_number: str, config: LocalConfig, bot_login: str, inline_run_id: str = ""
 ) -> None:
     """Post each reviewer's findings, one reviewer at a time.
 
@@ -1813,7 +1818,7 @@ def post_inline_comments(
     nothing here and lets post_inline_comments.py dedup against what the
     previous reviewer just posted.
     """
-    env = inline_comment_env(repo, pr_number, config)
+    env = inline_comment_env(repo, pr_number, config, bot_login, inline_run_id)
     for name in REVIEWER_NAMES:
         review_file = work / f"review-{name}.json"
         if not review_file.is_file():
@@ -1854,6 +1859,7 @@ def aggregate_env(
     policy: dict[str, str],
     conclusions: dict[str, str],
     prepare_result: str = "success",
+    inline_run_id: str = "",
 ) -> dict[str, str]:
     return script_env(
         {
@@ -1863,6 +1869,8 @@ def aggregate_env(
             "HEAD_SHA": head_sha,
             "PR_AUTHOR": pr_author,
             "BOT_LOGIN": bot_login,
+            "INLINE_BOT_LOGIN": bot_login,
+            "INLINE_REVIEW_RUN_ID": inline_run_id,
             "CRITICAL_THRESHOLD": config.get("CRITICAL_THRESHOLD"),
             "DEPENDABOT_CRITICAL_THRESHOLD": config.get(
                 "DEPENDABOT_CRITICAL_THRESHOLD"
@@ -2132,6 +2140,7 @@ class ReviewOutcome:
     head_sha: str
     pr_author: str
     cwd: Path | None
+    inline_run_id: str = ""
 
 
 def report_stage_failure(stage: str, exc: BaseException) -> None:
@@ -2171,7 +2180,12 @@ def pre_review(
 
 
 def run_review_stage(
-    work: Path, config: LocalConfig, args: argparse.Namespace, conclusions: dict[str, str]
+    work: Path,
+    config: LocalConfig,
+    args: argparse.Namespace,
+    conclusions: dict[str, str],
+    bot_login: str,
+    inline_run_id: str = "",
 ) -> None:
     """Context, reviewers, coordinate screening, inline comments.
 
@@ -2187,7 +2201,7 @@ def run_review_stage(
         print("Skipping the coordinate screen and the inline comments.")
         return
     check_coordinates(work)
-    post_inline_comments(work, args.repo, args.pr_number, config)
+    post_inline_comments(work, args.repo, args.pr_number, config, bot_login, inline_run_id)
 
 
 def review_pr(
@@ -2209,6 +2223,7 @@ def review_pr(
     bot_login = ""
     size, policy, conclusions = initial_size(), initial_policy(), initial_conclusions()
     try:
+        inline_run_id = f"local-{uuid4().hex}"
         bot_login, refs, size_skipped, size = pre_review(run_dir, config, args)
     except Exception as exc:
         report_stage_failure("pre-review", exc)
@@ -2242,7 +2257,7 @@ def review_pr(
     else:
         if policy["POLICY_SKIPPED"] != "true":
             try:
-                run_review_stage(work, config, args, conclusions)
+                run_review_stage(work, config, args, conclusions, bot_login, inline_run_id)
             except Exception as exc:
                 # Prepare succeeded, so PREPARE_RESULT stays `success` and
                 # the head it settled is reported. Too few verdicts is
@@ -2251,6 +2266,7 @@ def review_pr(
     return ReviewOutcome(
         "success", bot_login, size, policy, conclusions,
         refs.head_sha, refs.pr_author, work,
+        inline_run_id,
     )
 
 
@@ -2283,6 +2299,7 @@ def main(argv: list[str] | None = None) -> int:
             policy=outcome.policy,
             conclusions=outcome.conclusions,
             prepare_result=outcome.prepare_result,
+            inline_run_id=outcome.inline_run_id,
         ),
     )
 

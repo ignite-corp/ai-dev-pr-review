@@ -42,7 +42,7 @@ def findings(monkeypatch):
 
     with monkeypatch.context() as scoped:
         scoped.setattr(subprocess, "run", transport)
-        post_inline_comments.post_fallback("o/r", "7", "claude", comments)
+        post_inline_comments.post_fallback("o/r", "7", "claude", 14, comments)
         post_inline_comments.post_cutoff_summary("o/r", "7", "claude", 14, comments)
     return issues, captured
 
@@ -111,7 +111,7 @@ def test_key_near_misses_do_not_answer_a_major(findings, field, value):
     result = major(_format_issue_line(issues[0]), "> " + _format_issue_line(changed))
     assert result.returncode == 1, result.stdout + result.stderr
     assert _format_issue_line(issues[0]) in result.stdout
-    reply = "Dispositions: inline-fallback-claude\n> " + _format_issue_line(changed)
+    reply = "Dispositions: inline-fallback-claude-r14\n> " + _format_issue_line(changed)
     reply += "\n> " + _format_issue_line(issues[1])
     folded = folded_tests.TestFoldedFindingGate.run_gate(bodies[0], reply)
     assert folded.returncode == 1, folded.stdout + folded.stderr
@@ -134,7 +134,7 @@ def test_key_multiplicity_is_per_source_not_per_surface(findings):
     second = lines[0].replace("(claude)", "(gemini)")
     body = bodies[0].replace(lines[1], second)
     quote = "> " + _format_issue_line(issues[0])
-    reply = "Dispositions: inline-fallback-claude\n" + quote
+    reply = "Dispositions: inline-fallback-claude-r14\n" + quote
     assert folded_tests.TestFoldedFindingGate.run_gate(body, reply).returncode == 1
     result = folded_tests.TestFoldedFindingGate.run_gate(body, reply + "\n" + quote)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -146,7 +146,7 @@ def test_source_binding_and_each_item_remain_required(findings):
     assert (
         folded_tests.TestFoldedFindingGate.run_gate(bodies[0], quoted).returncode == 1
     )
-    reply = "Dispositions: inline-fallback-claude\n> " + _format_issue_line(issues[0])
+    reply = "Dispositions: inline-fallback-claude-r14\n> " + _format_issue_line(issues[0])
     result = folded_tests.TestFoldedFindingGate.run_gate(bodies[0], reply)
     assert result.returncode == 1
     missing = next(line for line in bodies[0].splitlines() if "retry budget" in line)
@@ -186,3 +186,47 @@ def test_early_matching_key_with_large_history_survives_pipefail(findings):
     )
     result = major(_format_issue_line(issues[0]), quotes)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("shape,expected", [("posted", 0), ("plain", 0), ("malformed", 1)])
+def test_actual_thread_snapshot_keeps_posted_major_description_route(monkeypatch, shape, expected):
+    from github_pr_support import inline_post_marker
+    from test_gate_headline_drill import SKILL
+
+    description = "Validate credentials before forwarding"
+    comments, _, _ = post_inline_comments.build_comments(
+        [dict(severity="major", file="a.py", line=1, description=description)],
+        {"a.py": {1}}, [], "claude",
+    )
+    captured = []
+
+    def transport(cmd, **kwargs):
+        captured.extend(json.loads(kwargs["input"])["comments"])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with monkeypatch.context() as scoped:
+        scoped.setenv("INLINE_REVIEW_RUN_ID", "local-" + "a" * 32)
+        scoped.setattr(post_inline_comments, "get_pr_head_sha", lambda *args: "a" * 40)
+        scoped.setattr(subprocess, "run", transport)
+        post_inline_comments.post_findings("o/r", "7", "claude", comments, 14, None, True)
+    body = captured[0]["body"]
+    marker = inline_post_marker("claude", 14, "local-" + "a" * 32)
+    assert body.startswith(marker + "\n")
+    if shape == "plain":
+        body = body.split("\n", 1)[1]
+    elif shape == "malformed":
+        body = body.replace(marker, marker + " suffix", 1)
+    snapshot = {"reviewThreads": {"nodes": [{
+        "path": "a.py", "line": 1, "originalLine": 1, "isResolved": True,
+        "comments": {"nodes": [{"body": body, "author": {"__typename": "Bot"}},
+                                {"body": "Fixed", "author": {"__typename": "User"}}]},
+    }]}}
+    text = SKILL.read_text()
+    block = "thread_data=$(" + text.split("thread_data=$(", 1)[1].split("read -r thr_head", 1)[0]
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + gate_function("thread_answers")
+         + "\nsnap_json=$(cat)\n" + block
+         + '\nthread_answers "$thread_data" a.py 99 "$1"', "bash", description],
+        input=json.dumps(snapshot), text=True, capture_output=True,
+    )
+    assert result.returncode == expected, result.stdout + result.stderr

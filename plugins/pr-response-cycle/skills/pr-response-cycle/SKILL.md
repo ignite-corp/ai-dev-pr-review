@@ -430,10 +430,11 @@ source, even when reviewers differ; quoting one item cannot answer two rows.
 Custom or ambiguous raw renderer fields retain the original exact-line route;
 unique locations also retain the legacy rewritten-location route. This does
 not reconstruct arbitrary multiline descriptions. Explain each disposition
-separately on the following line. For example:
+separately on the following line. Name the exact source marker, including
+its round when present; this example answers the round-14 fallback:
 
 ```text
-Dispositions for `inline-fallback-claude`:
+Dispositions for `inline-fallback-claude-r14`:
 
 > - **a.py:1** -- - **minor** (claude): Validate authentication before forwarding credentials
 Fixed: validate authentication first.
@@ -1498,7 +1499,8 @@ snap=$(printf '%s' "$snap_json" | jq -r \
 # Every thread, resolved or not, one per line in thread_answers' shape:
 # path, its line and original line comma-joined, `replied` when any comment
 # after the first is by a non-Bot account, and the first comment's first
-# line — the producer's finding line; its suggestion follows a blank line
+# line after stripping a valid inline posting envelope — the producer's
+# finding line; its suggestion follows a blank line
 # and is not read — the fields joined by the unit separator, which `read`
 # does not collapse the way it collapses tabs, so a thread with no line
 # keeps its empty field. An empty first comment keeps its field too: jq's
@@ -1512,7 +1514,9 @@ thread_data=$(printf '%s' "$snap_json" | jq -r \
    | [ .path,
        ([.line, .originalLine] | map(select(. != null)) | unique | map(tostring) | join(",")),
        (if ([.comments.nodes[1:][] | select(.author.__typename != "Bot")] | length) > 0 then "replied" else "unreplied" end),
-       ((.comments.nodes[0].body // "") | gsub("\r"; "") | split("\n") | (.[0] // "") | gsub("\u001f"; "")) ]
+       ((.comments.nodes[0].body // "")
+        | sub("^<!-- inline-post-(claude|codex|gemini)-r[1-9][0-9]* run:(actions-[1-9][0-9]*-[1-9][0-9]*|local-[0-9a-f]{32}) -->\\r?\\n"; "")
+        | gsub("\r"; "") | split("\n") | (.[0] // "") | gsub("\u001f"; "")) ]
    | join("\u001f")') \
   || { echo "ERROR: could not read the threads in thread_answers' shape — an unreadable thread list is not 'no threads'"; exit 1; }
 read -r thr_head thr_total unresolved <<<"$snap"

@@ -59,7 +59,13 @@ from github_pr_support import (
     describe_size_breach,
     display_path,
     fetch_paginated_nodes,
+    fetch_round_count,
+    trusted_post_author,
+    fold_envelope,
+    fold_markers_for,
     int_env,
+    inline_post_envelope,
+    inline_run_identity,
     is_valid_review as _is_valid_review,
     normalize_severity as _normalize_severity,
 )
@@ -129,6 +135,9 @@ MAJOR_CONSENSUS_MIN = int_env("MAJOR_CONSENSUS_MIN", 2)
 # this name from the default the aggregate step declares, so the two stay in
 # step. Delete it if no such read lands.
 BOT_LOGIN = os.environ.get("BOT_LOGIN", "github-actions[bot]")
+# Fold evidence trusts only the actual inline/fold posting author (AT-2553),
+# which can differ from the configurable aggregate-verdict identity.
+INLINE_BOT_LOGIN = os.environ.get("INLINE_BOT_LOGIN", "github-actions[bot]")
 
 # Map job conclusion -> human-readable missing-verdict reason.
 # "skipped" means the job was conditionally excluded (e.g. wrong REVIEW_MODE).
@@ -562,8 +571,7 @@ def format_prepare_failure_summary(result: str, run_url: str) -> str:
     blocks and a check that blocks actionably.
     """
     headline = (
-        f"**Result: [X] Review did not run -- the prepare job reported"
-        f" `{result}`**"
+        f"**Result: [X] Review did not run -- the prepare job reported `{result}`**"
     )
     why_red = (
         "No reviewer ran, so this check reports a failure rather than a"
@@ -782,7 +790,9 @@ def format_policy_skip_summary(paths: list[str]) -> str:
     )
     # prepare already sanitizes; rendered through display_path again so a
     # path list from any other producer cannot close the code span either.
-    listed = [f"- `{display_path(path)}`" for path in paths] or ["- (paths not reported)"]
+    listed = [f"- `{display_path(path)}`" for path in paths] or [
+        "- (paths not reported)"
+    ]
     outcome = (
         "This check reports success by policy: the excluded content is not"
         " review material, and this is not a review of it. A gate that must"
@@ -1071,9 +1081,290 @@ def _missing_reviewer_reasons(
 _QUIET_CONCLUSIONS = frozenset({"", "skipped"})
 
 
+_FOLD_COMMENTS_QUERY = """
+query($owner: String!, $name: String!, $pr: Int!,
+      $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) {
+      comments(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { author { login __typename } body }
+      }
+    }
+  }
+}
+"""
+_FOLD_PAGE_SIZE = 50
+# The first line of every inline comment the posting step writes:
+# `{icon} **{severity}** ({reviewer}): {description}`. Anchored at the start
+# of the body, where the LLM-authored description cannot reach, so a
+# description that mentions another reviewer by name cannot pass as that
+# reviewer's post.
+_INLINE_POST_RE = re.compile(
+    rf"^\S+ \*\*(?:{'|'.join(SEVERITY_ICONS)}|unknown)\*\* "
+    rf"\((?P<reviewer>{'|'.join(REVIEWERS)})\):"
+)
+
+
+def _fetch_fold_comments(repo: str, pr_number: str) -> list[dict[str, Any]]:
+    """Every issue comment with its login, author type and body; [] on failure."""
+    parts = repo.split("/", 1)
+    if len(parts) != 2:
+        return []
+    owner, name = parts
+    return [
+        {
+            "login": (node.get("author") or {}).get("login") or "",
+            "author_type": (node.get("author") or {}).get("__typename") or "",
+            "body": node.get("body") or "",
+        }
+        for node in fetch_paginated_nodes(
+            _FOLD_COMMENTS_QUERY,
+            "comments",
+            owner,
+            name,
+            pr_number,
+            page_size=_FOLD_PAGE_SIZE,
+        )
+    ]
+
+
+def _fetch_inline_posts(repo: str, pr_number: str) -> list[dict[str, Any]]:
+    """Every inline comment with its login, type, original posting head and body.
+
+    Read over REST for immutable ``original_commit_id``. GitHub can remap
+    ``commit_id`` to a later head without another post; that mutable value
+    must never establish evidence that this run posted. An absent original
+    supplies no evidence. [] on any failure.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                f"repos/{repo}/pulls/{pr_number}/comments",
+                "--jq",
+                ".[] | [.user.login, .user.type, .original_commit_id, .body] | @json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        print("Warning: inline comment listing timed out", file=sys.stderr)
+        return []
+    if result.returncode != 0:
+        print(
+            f"Warning: inline comment listing failed: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return []
+    posts: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        try:
+            login, author_type, original, body = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        posts.append(
+            {
+                "login": login or "",
+                "author_type": author_type or "",
+                # GitHub remaps commit_id when a later push moves a diff;
+                # only original_commit_id identifies the actual posting head.
+                "posted_commit": original or "",
+                "body": body or "",
+            }
+        )
+    return posts
+
+
+def _fold_comment_count(
+    comments: list[dict[str, Any]], reviewer: str, round_number: int, head_sha: str
+) -> int | None:
+    """The count the reviewer's fold comments for this round carry, or None.
+
+    ``comments`` are already INLINE_BOT_LOGIN's. Read as envelopes
+    (``fold_envelope``): the marker is the whole first line, the count the
+    whole second, and nothing else in the body is searched -- a marker or
+    count quoted in a description reaches bot-authored comments verbatim,
+    and a body-wide match let a previous verdict comment, or another
+    reviewer's fold comment, stand in for this reviewer's (round 10). A
+    comment that names a head other than this run's is a superseded run's
+    and is skipped; one with the marker but no readable count line is
+    skipped too, never read as zero.
+    """
+    counts: list[int] = []
+    markers = fold_markers_for(reviewer, round_number)
+    for comment in comments:
+        envelope = fold_envelope(comment["body"])
+        if envelope is None:
+            continue
+        marker, count, head = envelope
+        if marker not in markers:
+            continue
+        if head and head_sha and head != head_sha:
+            continue
+        counts.append(count)
+    # A timed-out dedup lookup can post the same reviewer/round fold twice.
+    return max(counts) if counts else None
+
+
+def _reviewers_posted_inline(
+    repo: str, pr_number: str, head_sha: str, bot: str, round_number: int
+) -> set[str]:
+    """Reviewers whose complete batch posted on this invocation and head.
+
+    Require an anchored posting envelope for this reviewer, round and run
+    identity as well as the immutable original head and posting author.
+    Missing invocation identity supplies no evidence.
+    """
+    posted: set[str] = set()
+    run_identity = inline_run_identity()
+    if not head_sha or not run_identity:
+        return posted
+    for post in _fetch_inline_posts(repo, pr_number):
+        if not trusted_post_author(post, bot):
+            continue
+        if head_sha != post["posted_commit"]:
+            continue
+        envelope = inline_post_envelope(post["body"])
+        if envelope is None or envelope[1] != round_number or envelope[2] != run_identity:
+            continue
+        match = _INLINE_POST_RE.match(envelope[3])
+        if match and match.group("reviewer") == envelope[0]:
+            posted.add(match.group("reviewer"))
+    return posted
+
+
+def _folded_findings(
+    available: dict[str, dict[str, Any]],
+    repo: str,
+    pr_number: str,
+    head_sha: str,
+) -> dict[str, int | None]:
+    """Per responded reviewer, how many findings its posting step folded.
+
+    Read from the PR, never from the verdict file (AT-2553): a fold comment
+    -- the round-cutoff summary or the inline fallback -- is written by the
+    posting step under ``INLINE_BOT_LOGIN``, opens with a marker bound to the
+    reviewer and the round, and carries ``fold_count_line``. The verdict
+    file is the reviewer's own JSON, written over PR content, so a count
+    recorded there can be planted there; ``INLINE_BOT_LOGIN`` is the identity
+    the PR cannot post under -- the workflow's token on Actions, the
+    operator's login on the local driver, which sets it -- distinct from
+    the configurable aggregate-verdict ``BOT_LOGIN``. It is the
+    trust boundary here. The round is this run's own ``fetch_round_count``,
+    the same function the posting step used, so an earlier round's comment
+    does not match; a comment that names a head is refused when it is not
+    this one, so a superseded run's comment does not either.
+
+    A zero is derived only where the PR cannot have authored it: the
+    payload lists no findings, so there was nothing to fold; or this
+    reviewer's complete inline batch carries this invocation's anchored
+    reviewer/round/run envelope, and was originally posted on this head
+    under ``INLINE_BOT_LOGIN``. Otherwise ``None`` -- unknown. A reviewer
+    that reported findings and left neither a fold comment nor inline
+    comments on this head is one whose posting step died before posting,
+    or posted nothing because every finding was deduplicated against an
+    earlier round's thread or dropped as unlocatable; partially accepted
+    batches carry no zero-evidence envelope either. The aggregate cannot
+    tell these apart and does not guess -- the all-deduplicated round reads
+    as unknown by decision (2026-10-16), not as a zero nothing on this head
+    proves. The documented gate blocks on unknown and lets a label through
+    it (README, "Output contract reference").
+
+    Keyed on ``available``, the dict the roster's ``responded`` is derived
+    from, so a reviewer the roster lists as missing contributes nothing.
+    """
+    folded: dict[str, int | None] = {}
+    with_findings = [
+        n for n in REVIEWERS if n in available and available[n].get("issues")
+    ]
+    for name in REVIEWERS:
+        if name in available and name not in with_findings:
+            folded[name] = 0
+    if not with_findings:
+        return folded
+    bot = INLINE_BOT_LOGIN
+    round_number = fetch_round_count(repo, pr_number) + 1
+    comments = [
+        c
+        for c in _fetch_fold_comments(repo, pr_number)
+        if trusted_post_author(c, bot)
+    ]
+    # Fetched only when a fold comment does not settle every reviewer: the
+    # common round posts inline, and this is one more paginated read.
+    inline: set[str] | None = None
+    for name in with_findings:
+        from_comment = _fold_comment_count(comments, name, round_number, head_sha)
+        if from_comment is not None:
+            folded[name] = from_comment
+            continue
+        # No fold comment for this reviewer and round. That has two
+        # producers, and the rule separating them is where the evidence
+        # comes from: the batch went to threads, so the step is DONE and
+        # the count is a zero the PR could not have authored -- provable
+        # only by this reviewer's inline comments on this head under
+        # INLINE_BOT_LOGIN; or the step DIED (or posted nothing: every finding
+        # deduplicated against an earlier round, or dropped as
+        # unlocatable), which leaves nothing on the PR at all. A zero needs
+        # the evidence; its absence is unknown, never a zero.
+        if inline is None:
+            inline = _reviewers_posted_inline(repo, pr_number, head_sha, bot, round_number)
+        folded[name] = 0 if name in inline else None
+    return folded
+
+
+def _folded_findings_total(folded: dict[str, int | None]) -> int | None:
+    """The sum a gate reads, or ``None`` when any part of it is unknown."""
+    if any(count is None for count in folded.values()):
+        return None
+    return sum(count for count in folded.values() if count is not None)
+
+
+def _folded_segment(
+    folded: dict[str, int | None], available: dict[str, dict[str, Any]]
+) -> str:
+    """Headline rendering of ``_folded_findings``; empty when there is nothing to say.
+
+    An unknown says what the aggregate looked at and did not find: the
+    reviewer reported N findings and this head carries neither a fold
+    comment nor inline comments of its own. A derived zero needs no
+    segment -- a plain headline is the statement, and the roster shows the
+    0 -- so the two producers of "no fold comment" never read alike.
+
+    Names no route: either comment -- the round-cutoff summary or the inline
+    fallback -- is on the PR under the reviewer's name, and a reader sent to
+    look for a "Round Cutoff Summary" on a round the fallback folded would
+    be looking for a comment that does not exist.
+
+    Names the reviewers that folded, and never a number of comments. The
+    fold is per reviewer, one comment each, so a sum over three reviewers
+    described as "one comment" sends a reader to find a third of it and
+    stop.
+    """
+    parts: list[str] = []
+    by_reviewer = {name: n for name, n in folded.items() if n}
+    known = sum(by_reviewer.values())
+    if known:
+        who = ", ".join(f"{name} {n}" for name, n in by_reviewer.items())
+        parts.append(f"{known} finding(s) folded into comments ({who})")
+    unknown = [
+        f"{name}: {len(available.get(name, {}).get('issues') or [])} finding(s)"
+        " reported, none on this head as threads or a fold comment"
+        for name, count in folded.items()
+        if count is None
+    ]
+    if unknown:
+        parts.append(f"fold count unknown ({'; '.join(unknown)})")
+    return "".join(f" | {part}" for part in parts)
+
+
 def write_reviewer_roster(
     available: dict[str, dict[str, Any]],
     missing_reasons: dict[str, str],
+    folded: dict[str, int | None] | None = None,
 ) -> None:
     """Publish who reviewed, and who did not, to ``$GITHUB_OUTPUT`` (AT-2511).
 
@@ -1092,15 +1383,36 @@ def write_reviewer_roster(
     ``responded`` is derived from ``available``, the same dict the coverage
     figure counts, rather than recomputed: a roster that could disagree
     with the headline would reproduce the defect it exists to report.
+
+    ``folded`` and ``folded_findings_count`` are the same fact for the fold
+    (AT-2553): a finding put in one comment rather than an inline thread --
+    by the round cutoff, or by the inline fallback -- is not a thread, so a
+    gate counting unresolved threads reads a round with folded findings as a
+    round with none.
+
+    A zero says those two routes folded nothing. It does NOT say every
+    finding reached a thread: a finding with no file or line, or one outside
+    the diff, is dropped by the posting step and lives only in the verdict
+    comment's body, and no count here covers it. That is pre-existing
+    behaviour, unchanged by AT-2553 -- counting those too would make a
+    common round block on the documented gate, which is a fleet decision
+    rather than this ticket's. The count is empty, not 0, when any
+    responded reviewer's count is unknown (``_folded_findings``) -- the
+    same reading the README's emptiness guard already gives an absent
+    roster. ``folded`` is computed once by the caller and shared with the
+    headline, so the two cannot disagree.
     """
     output_path = os.environ.get("GITHUB_OUTPUT", "")
     if not output_path:
         return
     responded = [name for name in REVIEWERS if name in available]
+    folded = folded if folded is not None else {}
+    folded_total = _folded_findings_total(folded)
     roster = {
         "expected": list(REVIEWERS),
         "responded": responded,
         "missing": missing_reasons,
+        "folded": folded,
     }
     # One line, no heredoc delimiter: reviewer-supplied reason text can carry
     # newlines, and json.dumps escapes them, so the value cannot break out of
@@ -1117,6 +1429,10 @@ def write_reviewer_roster(
             fh.write(f"reviewer_roster={payload}\n")
             fh.write(f"reviewers_expected_count={len(REVIEWERS)}\n")
             fh.write(f"reviewers_responded_count={len(responded)}\n")
+            fh.write(
+                "folded_findings_count="
+                f"{'' if folded_total is None else folded_total}\n"
+            )
     except OSError as e:
         print(f"::warning::Failed to write GITHUB_OUTPUT: {e}", file=sys.stderr)
 
@@ -1132,6 +1448,7 @@ def format_summary(
     approve_quorum: bool = True,
     unreviewed_majors: int,
     sequential_bypass: bool = False,
+    folded: dict[str, int | None] | None = None,
 ) -> str:
     """Build the headline as three independent axes (AT-2240).
 
@@ -1192,7 +1509,9 @@ def format_summary(
     # comment_only and quorum-short would report the auto-approve killswitch
     # but never mention that a reviewer didn't respond (AT-2240 follow-up).
     coverage_segment = (
-        f"not every reviewer responded ({coverage})" if approve_quorum_short else coverage
+        f"not every reviewer responded ({coverage})"
+        if approve_quorum_short
+        else coverage
     )
 
     # The posting axis: only rendered when it diverges from the plain
@@ -1214,6 +1533,13 @@ def format_summary(
         label += f" | comment only | {coverage_segment}"
     else:
         label += f" | {coverage_segment}"
+
+    # The fold axis (AT-2553): findings a reviewer put in one comment -- a
+    # round-cutoff summary, or the inline fallback -- are not threads, so a
+    # reader counting unresolved threads sees none of them. The verdict word
+    # stays; the headline stops being plain. One source with the roster --
+    # the map the caller computed once, rendered.
+    label += _folded_segment(folded or {}, available)
 
     # Append per-reviewer reason annotations for any missing verdicts, and for
     # reviewers that did produce a payload but reported status "failed" -- an
@@ -1299,7 +1625,9 @@ def format_summary(
         # `error` check below, even when both are present, because "N issue(s)"
         # implies looking and a failed reviewer never looked (AT-2123).
         if status == STATUS_FAILED:
-            header = f"### {name.title()} -- [ ] not run ({_failed_status_detail(review)})"
+            header = (
+                f"### {name.title()} -- [ ] not run ({_failed_status_detail(review)})"
+            )
         else:
             header = f"### {name.title()} -- {len(issues)} issue(s)"
             if review.get("error"):
@@ -2008,6 +2336,14 @@ def _aggregate(result: dict[str, Any]) -> None:
     # roster and the exit code read the same flags. A round sequential_bypass
     # lets through ends green sub-quorum by design, and the reason string is
     # the only place that can say so.
+    # Read from the PR once (AT-2553), then rendered twice -- the roster a
+    # gate reads and the headline a human reads -- so they cannot disagree.
+    folded = _folded_findings(
+        available,
+        os.environ.get("GITHUB_REPOSITORY", ""),
+        os.environ.get("PR_NUMBER", ""),
+        os.environ.get("HEAD_SHA", "").strip(),
+    )
     write_reviewer_roster(
         available,
         _missing_reviewer_reasons(
@@ -2016,6 +2352,7 @@ def _aggregate(result: dict[str, Any]) -> None:
             conclusions,
             sequential_bypass=sequential_bypass,
         ),
+        folded,
     )
     comment = format_summary(
         reviews,
@@ -2027,6 +2364,7 @@ def _aggregate(result: dict[str, Any]) -> None:
         approve_quorum=approve_quorum,
         unreviewed_majors=unreviewed_majors,
         sequential_bypass=sequential_bypass,
+        folded=folded,
     )
     _post_recorded_verdict(
         result,

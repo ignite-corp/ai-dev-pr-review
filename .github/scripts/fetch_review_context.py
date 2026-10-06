@@ -17,7 +17,12 @@ import subprocess
 import sys
 from typing import Any
 
-from github_pr_support import GH_TIMEOUT_SEC, fetch_paginated_nodes, normalize_bot_login
+from github_pr_support import (
+    GH_TIMEOUT_SEC,
+    fetch_paginated_nodes,
+    normalize_bot_login,
+    inline_post_envelope,
+)
 
 BODY_TRUNCATE_LEN = 500
 _THREADS_PAGE_SIZE = 100
@@ -147,7 +152,9 @@ def _format_prior_threads(repo: str, pr_number: str) -> str:
         if not _is_bot_author(comments[0], trusted):
             continue
         status = _classify_thread(node)
-        issue = _sanitize(comments[0].get("body", ""))
+        body = comments[0].get("body", "")
+        envelope = inline_post_envelope(body)
+        issue = _sanitize(envelope[3] if envelope else body)
         # Accept replies from trusted authors, and additionally require
         # human replies to begin with a structured rationale prefix. Bot
         # replies pass unconditionally; a trusted human's free-form text

@@ -2,6 +2,10 @@
 # normalize_bot_login in github_pr_support.py does: GraphQL `x`, REST
 # `x[bot]`, `gh` display `app/x`.
 def norm: sub("^app/"; "") | sub("\\[bot\\]$"; "");
+# Match the same first-line envelope as inline_post_envelope in
+# github_pr_support.py before applying the context limit or dedup key.
+def strip_inline_envelope:
+  sub("^<!-- inline-post-(claude|codex|gemini)-r[1-9][0-9]* run:(actions-[1-9][0-9]*-[1-9][0-9]*|local-[0-9a-f]{32}) -->\\r?\\n"; "");
 # `bot` is BOT_LOGIN, the identity the inline comments were posted under --
 # the reviewer App on a cross run (AT-2520). Optional, so a caller that
 # passes no --arg keeps the fixed list.
@@ -18,6 +22,7 @@ def norm: sub("^app/"; "") | sub("\\[bot\\]$"; "");
     status: (if .isResolved then "resolved" else "unresolved" end),
     body: (
       .comments.nodes[0].body
+      | strip_inline_envelope
       | if length > 500 then .[:500] + "...(truncated)" else . end
     )
   }

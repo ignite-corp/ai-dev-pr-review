@@ -1382,6 +1382,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
+          BOT_LOGIN: ${{ steps.target_token.outputs.app-slug && format('{0}[bot]', steps.target_token.outputs.app-slug) || 'github-actions[bot]' }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
           REVIEWER: ${{ inputs.reviewer }}
