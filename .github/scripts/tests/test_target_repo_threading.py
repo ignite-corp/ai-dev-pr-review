@@ -203,6 +203,7 @@ def _step(path: Path, name: str) -> dict[str, Any]:
 def _workflow_call(path: Path) -> dict[str, Any]:
     doc = _load(path)
     trigger = doc.get(True) or doc.get("on")
+    assert trigger, f"no trigger block in {path.name}"
     return dict(trigger["workflow_call"])
 
 

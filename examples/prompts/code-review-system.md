@@ -69,7 +69,7 @@ ruff 0.11.0+ normalizes the parenthesized form to the PEP 758 unparenthesized fo
 
 - **Architecture layers**: <ARCHITECTURE_LAYERS — e.g. `api_server` -> `infrastructure` -> `core`. Core must not import from infrastructure or api_server.>
 - **Naming conventions**: No Manager, Handler, Helper, Utils, Processor, or standalone Service suffixes. Prefer Gateway, Agent, Repository, Resolver. Per the Review Disposition, always provide a concrete alternative name.
-- **Type hints**: All public functions and methods must have complete type annotations (pyright strict).
+- **Type hints**: All public functions and methods must have complete type annotations. pyright reports a missing one only under `typeCheckingMode = "strict"`: the consumer enables it or the citation measures nothing.
 - **Magic numbers**: Extract constants. No inline numeric or string literals in business logic.
 - **Function size**: Flag functions exceeding 80 lines (enforced by ruff PLR0915). Flag classes exceeding 500 lines.
 - **Duplicate code**: Identify copy-paste patterns that should be abstracted.

@@ -38,6 +38,7 @@ def test_picks_last_valid_when_multiple_present():
     {"summary": "second", "early_exit": false, "issues": []}
     '''
     obj = extract(log)
+    assert obj is not None
     assert obj["summary"] == "second"
 
 

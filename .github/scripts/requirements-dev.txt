@@ -4,3 +4,4 @@
 # whatever PR happens to be open (AT-2508).
 pytest==8.4.2
 ruff==0.14.11
+pyright==1.1.408
