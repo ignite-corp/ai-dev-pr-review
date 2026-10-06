@@ -544,21 +544,25 @@ class TestWhatTheAggregateShows:
         assert _partial_short_message("gemini", review, "success") == error
 
     def test_the_comment_carries_it_on_the_headline_and_the_section(self) -> None:
+        ok: dict[str, Any] = {
+            "summary": "ok",
+            "status": "ok",
+            "early_exit": False,
+            "issues": [],
+        }
         reviews: dict[str, dict[str, Any] | None] = {
             "claude": _failed("rejected"),
-            "codex": {"summary": "ok", "status": "ok", "early_exit": False, "issues": []},
-            "gemini": {
-                "summary": "ok",
-                "status": "ok",
-                "early_exit": False,
-                "issues": [],
-            },
+            "codex": ok,
+            "gemini": ok,
         }
+        # `available` is the reviews that answered, keyed by name: a bare list
+        # of names has the length the headline needs but not the `.get` that
+        # _folded_segment calls on it (AT-2418).
         summary = format_summary(
             reviews,
             "approve",
             "2/3",
-            ["codex", "gemini"],
+            {"codex": ok, "gemini": ok},
             {name: "success" for name in reviews},
             unreviewed_majors=0,
         )

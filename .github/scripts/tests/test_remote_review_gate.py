@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 from test_gate_headline_drill import SKILL, gate_function
@@ -57,7 +58,7 @@ def data():
         if mode in ["self", "both"]
         else []
     )
-    checks = (
+    checks: list[dict[str, Any]] = (
         [
             dict(
                 name=WF,
@@ -308,7 +309,7 @@ def test_failed_remote_check_is_judged_by_its_aggregate(answered):
 
 @pytest.mark.parametrize("missing", ["completed_at", "details_url", "status"])
 def test_discovery_preserves_empty_fields(missing):
-    check = dict(
+    check: dict[str, Any] = dict(
         name=WF,
         app="ignite-ai-review-approver",
         status="completed",

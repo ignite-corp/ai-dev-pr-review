@@ -85,11 +85,11 @@ _MIN_JOB_HEADROOM_MINUTES = 5
 _CLAUDE_JOBS = ("review-claude-p", "review-claude-s")
 
 
-def _load(name: str) -> dict[str, Any]:
+def _load(name: str) -> dict[Any, Any]:
     return dict(yaml.safe_load((_WORKFLOWS / name).read_text(encoding="utf-8")))
 
 
-def _call_inputs(workflow: dict[str, Any]) -> dict[str, Any]:
+def _call_inputs(workflow: dict[Any, Any]) -> dict[str, Any]:
     # PyYAML reads the bare ``on:`` key as the boolean True.
     return dict(workflow[True]["workflow_call"]["inputs"])
 
