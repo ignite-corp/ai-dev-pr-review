@@ -16,7 +16,9 @@ jobs:
         with:
           python-version-file: .github/scripts/.python-version
       - run: pip install -r .github/scripts/requirements.txt
-      - run: pip install pytest
+      # Pinned: a floating formatter turns the tree red on its own release day.
+      - run: pip install pytest ruff==0.14.11
       - run: pytest .github/scripts/tests/ -v
         env:
           PYTHONPATH: .github/scripts
+      - run: ruff format --check .github/scripts

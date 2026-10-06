@@ -68,7 +68,10 @@ def _classify(wf_dir: str) -> tuple[set[str], set[str]]:
     """Return (pr_reachable_names, push_only_names) across all workflow files."""
     pr_names: set[str] = set()
     push_names: set[str] = set()
-    for path in sorted(glob.glob(os.path.join(wf_dir, "*.yml")) + glob.glob(os.path.join(wf_dir, "*.yaml"))):
+    for path in sorted(
+        glob.glob(os.path.join(wf_dir, "*.yml"))
+        + glob.glob(os.path.join(wf_dir, "*.yaml"))
+    ):
         try:
             with open(path, encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)

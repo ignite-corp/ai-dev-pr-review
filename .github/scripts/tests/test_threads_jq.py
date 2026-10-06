@@ -59,10 +59,28 @@ class TestThreadsJq:
         # After a push most prior threads become outdated; they must stay
         # in the dedup list so the reviewer can see what it already raised.
         nodes = [
-            _node("claude", "a.py", 10, "current finding", resolved=False, outdated=False),
-            _node("claude", "a.py", 20, "outdated unresolved", resolved=False, outdated=True),
-            _node("codex", "b.py", 30, "outdated resolved", resolved=True, outdated=True),
-            _node("gemini-code-assist", "c.py", 40, "resolved finding", resolved=True, outdated=False),
+            _node(
+                "claude", "a.py", 10, "current finding", resolved=False, outdated=False
+            ),
+            _node(
+                "claude",
+                "a.py",
+                20,
+                "outdated unresolved",
+                resolved=False,
+                outdated=True,
+            ),
+            _node(
+                "codex", "b.py", 30, "outdated resolved", resolved=True, outdated=True
+            ),
+            _node(
+                "gemini-code-assist",
+                "c.py",
+                40,
+                "resolved finding",
+                resolved=True,
+                outdated=False,
+            ),
         ]
         output = _run_threads_jq(nodes)
         assert len(output) == 4
@@ -89,7 +107,14 @@ class TestThreadsJq:
     def test_non_bot_authors_are_excluded(self) -> None:
         nodes = [
             _node("claude", "a.py", 10, "bot finding", resolved=False, outdated=True),
-            _node("some-human", "a.py", 20, "human comment", resolved=False, outdated=False),
+            _node(
+                "some-human",
+                "a.py",
+                20,
+                "human comment",
+                resolved=False,
+                outdated=False,
+            ),
         ]
         output = _run_threads_jq(nodes)
         assert [item["author"] for item in output] == ["claude"]
@@ -120,9 +145,15 @@ class TestThreadsJq:
         # The same finding repeated across rounds must occupy one slot, not
         # three -- normalisation ignores case and punctuation differences.
         nodes = [
-            _node("claude", "a.py", 10, "Missing check.", resolved=False, outdated=True),
-            _node("claude", "a.py", 12, "missing check", resolved=False, outdated=False),
-            _node("codex", "a.py", 14, "Missing  check!", resolved=False, outdated=False),
+            _node(
+                "claude", "a.py", 10, "Missing check.", resolved=False, outdated=True
+            ),
+            _node(
+                "claude", "a.py", 12, "missing check", resolved=False, outdated=False
+            ),
+            _node(
+                "codex", "a.py", 14, "Missing  check!", resolved=False, outdated=False
+            ),
         ]
         output = _run_threads_jq(nodes)
         assert len(output) == 1
@@ -143,9 +174,15 @@ class TestThreadsJq:
         # Same body on different paths and different bodies on the same path
         # are distinct findings and must all survive.
         nodes = [
-            _node("claude", "a.py", 10, "missing check", resolved=False, outdated=False),
-            _node("claude", "b.py", 10, "missing check", resolved=False, outdated=False),
-            _node("claude", "a.py", 20, "other finding", resolved=False, outdated=False),
+            _node(
+                "claude", "a.py", 10, "missing check", resolved=False, outdated=False
+            ),
+            _node(
+                "claude", "b.py", 10, "missing check", resolved=False, outdated=False
+            ),
+            _node(
+                "claude", "a.py", 20, "other finding", resolved=False, outdated=False
+            ),
         ]
         output = _run_threads_jq(nodes)
         assert len(output) == 3

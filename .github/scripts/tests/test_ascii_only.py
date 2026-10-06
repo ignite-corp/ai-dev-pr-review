@@ -3,6 +3,7 @@
 Korean/emoji content belongs in caller repos' prompt files, not in the
 reusable workflow surface area.
 """
+
 import re
 from pathlib import Path
 

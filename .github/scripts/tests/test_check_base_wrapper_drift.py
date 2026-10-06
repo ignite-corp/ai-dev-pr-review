@@ -128,7 +128,10 @@ def test_find_step_env_keys_reads_the_named_step() -> None:
             "review": {
                 "steps": [
                     {"name": "Checkout", "uses": "actions/checkout@x"},
-                    {"name": "Post inline comments", "env": {"GH_TOKEN": "x", "PR_NUMBER": "x"}},
+                    {
+                        "name": "Post inline comments",
+                        "env": {"GH_TOKEN": "x", "PR_NUMBER": "x"},
+                    },
                 ]
             }
         }
@@ -143,7 +146,11 @@ def test_find_step_env_keys_missing_step_raises() -> None:
 
 
 def test_find_step_env_keys_step_with_no_env_block_is_empty_set() -> None:
-    doc = {"jobs": {"review": {"steps": [{"name": "Checkout", "uses": "actions/checkout@x"}]}}}
+    doc = {
+        "jobs": {
+            "review": {"steps": [{"name": "Checkout", "uses": "actions/checkout@x"}]}
+        }
+    }
     assert find_step_env_keys(doc, "Checkout") == set()
 
 
@@ -163,7 +170,15 @@ def test_extract_vars_consumed_collects_distinct_names() -> None:
 
 
 def test_extract_vars_consumed_walks_nested_lists_and_mappings() -> None:
-    doc = {"jobs": {"a": {"steps": [{"run": "echo ${{ vars.ONE }}", "with": {"x": "${{ vars.TWO }}"}}]}}}
+    doc = {
+        "jobs": {
+            "a": {
+                "steps": [
+                    {"run": "echo ${{ vars.ONE }}", "with": {"x": "${{ vars.TWO }}"}}
+                ]
+            }
+        }
+    }
     assert extract_vars_consumed(doc) == {"ONE", "TWO"}
 
 
@@ -198,7 +213,11 @@ def _wrapper_yml(*, with_round_cutoff: bool) -> str:
     if with_round_cutoff:
         keys += ["ROUND_CUTOFF_N", "ROUND_CUTOFF_ENABLED"]
     lines = ["jobs:", "  review:", "    steps:"]
-    for name in ("Post Claude inline comments", "Post Codex inline comments", "Post Gemini inline comments"):
+    for name in (
+        "Post Claude inline comments",
+        "Post Codex inline comments",
+        "Post Gemini inline comments",
+    ):
         lines.append(f"      - name: {name}")
         lines.append("        env:")
         lines.extend(f"          {key}: x" for key in keys)
@@ -217,8 +236,12 @@ _POST_INLINE = StepCorrespondence(
 )
 
 
-def _config(*steps: StepCorrespondence, base_files=("base-ai-review-single.yml",)) -> DriftConfig:
-    return DriftConfig(base_files=tuple(base_files), wrapper_files=("wrapper.yml",), steps=tuple(steps))
+def _config(
+    *steps: StepCorrespondence, base_files=("base-ai-review-single.yml",)
+) -> DriftConfig:
+    return DriftConfig(
+        base_files=tuple(base_files), wrapper_files=("wrapper.yml",), steps=tuple(steps)
+    )
 
 
 @pytest.fixture
@@ -233,8 +256,12 @@ def repo_dirs(tmp_path: Path) -> tuple[Path, Path]:
 
 def test_env_check_passes_when_wrapper_union_covers_base(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
-    findings, notes = check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty())
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
+    findings, notes = check_env_keys(
+        base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty()
+    )
     assert findings == []
     assert notes == []
 
@@ -242,9 +269,15 @@ def test_env_check_passes_when_wrapper_union_covers_base(repo_dirs) -> None:
 def test_env_check_catches_the_at_2120_shape(repo_dirs) -> None:
     """ROUND_CUTOFF_* wired in base, absent from all three wrapper steps."""
     base_dir, wrapper_dir = repo_dirs
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=False), encoding="utf-8")
-    findings, notes = check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty())
-    assert [key for key in AT_2120_KEYS if any(key in f for f in findings)] == list(AT_2120_KEYS)
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=False), encoding="utf-8"
+    )
+    findings, notes = check_env_keys(
+        base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty()
+    )
+    assert [key for key in AT_2120_KEYS if any(key in f for f in findings)] == list(
+        AT_2120_KEYS
+    )
     assert notes == []
 
 
@@ -274,7 +307,9 @@ def test_env_check_key_present_in_only_one_wrapper_step_still_passes(repo_dirs) 
                   GH_TOKEN: x
         """,
     )
-    findings, _ = check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty())
+    findings, _ = check_env_keys(
+        base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty()
+    )
     assert findings == []
 
 
@@ -282,15 +317,20 @@ def test_env_check_wrapper_only_key_is_not_a_finding(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
     _write(
         wrapper_dir / "wrapper.yml",
-        _wrapper_yml(with_round_cutoff=True) + "          WRAPPER_ONLY_SCAFFOLDING: x\n",
+        _wrapper_yml(with_round_cutoff=True)
+        + "          WRAPPER_ONLY_SCAFFOLDING: x\n",
     )
-    findings, _ = check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty())
+    findings, _ = check_env_keys(
+        base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty()
+    )
     assert findings == []
 
 
 def test_env_check_excepted_key_is_noted_not_failed(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=False), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=False), encoding="utf-8"
+    )
     exceptions = Exceptions(
         vars={},
         env={
@@ -300,14 +340,18 @@ def test_env_check_excepted_key_is_noted_not_failed(repo_dirs) -> None:
             }
         },
     )
-    findings, notes = check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE), exceptions)
+    findings, notes = check_env_keys(
+        base_dir, wrapper_dir, _config(_POST_INLINE), exceptions
+    )
     assert findings == []
     assert len(notes) == 2
 
 
 def test_env_check_stale_base_step_name_raises(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
     bad = StepCorrespondence(
         base_file="base-ai-review-single.yml",
         base_step="Post inline comments (renamed)",
@@ -320,7 +364,9 @@ def test_env_check_stale_base_step_name_raises(repo_dirs) -> None:
 
 def test_env_check_stale_wrapper_step_name_raises(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
     bad = StepCorrespondence(
         base_file="base-ai-review-single.yml",
         base_step="Post inline comments",
@@ -338,10 +384,15 @@ def test_env_check_unmapped_base_step_is_a_finding(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
     _write(
         base_dir / "base-ai-review-single.yml",
-        _BASE_SINGLE_YML.rstrip(" ") + "          - name: Brand new base step\n            env:\n              NEW_KEY: x\n",
+        _BASE_SINGLE_YML.rstrip(" ")
+        + "          - name: Brand new base step\n            env:\n              NEW_KEY: x\n",
     )
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
-    findings, _ = check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty())
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
+    findings, _ = check_env_keys(
+        base_dir, wrapper_dir, _config(_POST_INLINE), Exceptions.empty()
+    )
     assert findings == [
         "unmapped base step: base-ai-review-single.yml:'Brand new base step' sets env keys "
         "but has no correspondence entry (map it to wrapper step(s), or declare it as "
@@ -353,9 +404,12 @@ def test_env_check_structural_exception_is_noted_not_failed(repo_dirs) -> None:
     base_dir, wrapper_dir = repo_dirs
     _write(
         base_dir / "base-ai-review-single.yml",
-        _BASE_SINGLE_YML.rstrip(" ") + "          - name: Confirm the tree matches the diff\n            env:\n              HEAD_SHA: x\n",
+        _BASE_SINGLE_YML.rstrip(" ")
+        + "          - name: Confirm the tree matches the diff\n            env:\n              HEAD_SHA: x\n",
     )
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
     structural = StepCorrespondence(
         base_file="base-ai-review-single.yml",
         base_step="Confirm the tree matches the diff",
@@ -373,10 +427,14 @@ def test_env_check_structural_exception_is_noted_not_failed(repo_dirs) -> None:
     ]
 
 
-def test_env_check_structural_exception_still_requires_the_base_step_to_exist(repo_dirs) -> None:
+def test_env_check_structural_exception_still_requires_the_base_step_to_exist(
+    repo_dirs,
+) -> None:
     """A reason for a step that no longer exists is a stale config, not a pass."""
     base_dir, wrapper_dir = repo_dirs
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
     gone = StepCorrespondence(
         base_file="base-ai-review-single.yml",
         base_step="Removed long ago",
@@ -385,7 +443,9 @@ def test_env_check_structural_exception_still_requires_the_base_step_to_exist(re
         reason="was structural once",
     )
     with pytest.raises(StepNotFoundError):
-        check_env_keys(base_dir, wrapper_dir, _config(_POST_INLINE, gone), Exceptions.empty())
+        check_env_keys(
+            base_dir, wrapper_dir, _config(_POST_INLINE, gone), Exceptions.empty()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +462,9 @@ def _vars_dirs(tmp_path: Path, base_text: str, wrapper_text: str) -> tuple[Path,
     return base_dir, wrapper_dir
 
 
-_VARS_CONFIG = DriftConfig(base_files=("orchestrator.yml",), wrapper_files=("wrapper.yml",), steps=())
+_VARS_CONFIG = DriftConfig(
+    base_files=("orchestrator.yml",), wrapper_files=("wrapper.yml",), steps=()
+)
 
 
 def test_vars_check_catches_a_base_only_variable(tmp_path: Path) -> None:
@@ -411,7 +473,9 @@ def test_vars_check_catches_a_base_only_variable(tmp_path: Path) -> None:
         "if: vars.REVIEW_MODE == 'sequential' && vars.JACCARD_THRESHOLD\n",
         "env:\n  X: ${{ vars.JACCARD_THRESHOLD }}\n",
     )
-    findings, notes, info = check_vars_consumed(base_dir, wrapper_dir, _VARS_CONFIG, Exceptions.empty())
+    findings, notes, info = check_vars_consumed(
+        base_dir, wrapper_dir, _VARS_CONFIG, Exceptions.empty()
+    )
     assert any("REVIEW_MODE" in f for f in findings)
     assert not any("JACCARD_THRESHOLD" in f for f in findings)
     assert notes == []
@@ -419,16 +483,26 @@ def test_vars_check_catches_a_base_only_variable(tmp_path: Path) -> None:
 
 
 def test_vars_check_excepted_variable_is_noted(tmp_path: Path) -> None:
-    base_dir, wrapper_dir = _vars_dirs(tmp_path, "if: vars.REVIEW_MODE == 'sequential'\n", "env:\n  X: y\n")
-    exceptions = Exceptions(vars={"REVIEW_MODE": "single job, nothing to fan out; see AT-2105"}, env={})
-    findings, notes, info = check_vars_consumed(base_dir, wrapper_dir, _VARS_CONFIG, exceptions)
+    base_dir, wrapper_dir = _vars_dirs(
+        tmp_path, "if: vars.REVIEW_MODE == 'sequential'\n", "env:\n  X: y\n"
+    )
+    exceptions = Exceptions(
+        vars={"REVIEW_MODE": "single job, nothing to fan out; see AT-2105"}, env={}
+    )
+    findings, notes, info = check_vars_consumed(
+        base_dir, wrapper_dir, _VARS_CONFIG, exceptions
+    )
     assert findings == []
     assert notes == ["  vars.REVIEW_MODE: single job, nothing to fan out; see AT-2105"]
 
 
 def test_vars_check_wrapper_only_variable_is_informational(tmp_path: Path) -> None:
-    base_dir, wrapper_dir = _vars_dirs(tmp_path, "env:\n  X: y\n", "env:\n  Y: ${{ vars.WRAPPER_ONLY_THING }}\n")
-    findings, notes, info = check_vars_consumed(base_dir, wrapper_dir, _VARS_CONFIG, Exceptions.empty())
+    base_dir, wrapper_dir = _vars_dirs(
+        tmp_path, "env:\n  X: y\n", "env:\n  Y: ${{ vars.WRAPPER_ONLY_THING }}\n"
+    )
+    findings, notes, info = check_vars_consumed(
+        base_dir, wrapper_dir, _VARS_CONFIG, Exceptions.empty()
+    )
     assert findings == []
     assert notes == []
     assert info == ["  vars.WRAPPER_ONLY_THING (wrapper-only, not a drift)"]
@@ -439,7 +513,11 @@ def test_vars_check_wrapper_only_variable_is_informational(tmp_path: Path) -> No
 # declares and the wrapper never does, which neither axis above can see
 # ---------------------------------------------------------------------------
 
-_ROSTER_KEYS = ("reviewer_roster", "reviewers_expected_count", "reviewers_responded_count")
+_ROSTER_KEYS = (
+    "reviewer_roster",
+    "reviewers_expected_count",
+    "reviewers_responded_count",
+)
 
 
 def _outputs_yml(*names: str) -> str:
@@ -453,11 +531,15 @@ def _outputs_yml(*names: str) -> str:
     return "\n".join(lines) + "\njobs:\n  j:\n    steps: []\n"
 
 
-def _outputs_dirs(tmp_path: Path, base_text: str, wrapper_text: str) -> tuple[Path, Path]:
+def _outputs_dirs(
+    tmp_path: Path, base_text: str, wrapper_text: str
+) -> tuple[Path, Path]:
     base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
     base_dir.mkdir()
     wrapper_dir.mkdir()
-    (base_dir / "base-ai-review-orchestrator.yml").write_text(base_text, encoding="utf-8")
+    (base_dir / "base-ai-review-orchestrator.yml").write_text(
+        base_text, encoding="utf-8"
+    )
     (wrapper_dir / "wrapper.yml").write_text(wrapper_text, encoding="utf-8")
     return base_dir, wrapper_dir
 
@@ -486,7 +568,9 @@ def test_workflow_call_outputs_reads_the_unquoted_on_key() -> None:
 
 
 def test_workflow_call_outputs_reads_the_quoted_on_key() -> None:
-    assert workflow_call_outputs(_parse('"on":\n  workflow_call:\n    outputs:\n      a: {value: x}\n')) == {"a"}
+    assert workflow_call_outputs(
+        _parse('"on":\n  workflow_call:\n    outputs:\n      a: {value: x}\n')
+    ) == {"a"}
 
 
 @pytest.mark.parametrize(
@@ -505,7 +589,9 @@ def test_outputs_check_catches_the_at_2511_shape(tmp_path: Path) -> None:
     """The finding the reviewer asked for: base declares the roster, the
     wrapper declares nothing, and axes 1 and 2 stay silent because a
     workflow output is neither an env key nor a vars.* token."""
-    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml(*_ROSTER_KEYS), _outputs_yml())
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml(*_ROSTER_KEYS), _outputs_yml()
+    )
     findings, notes = check_workflow_outputs(
         base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), Exceptions.empty()
     )
@@ -544,7 +630,9 @@ def test_outputs_check_wrapper_only_output_is_not_a_finding(tmp_path: Path) -> N
     """Same direction as the other two axes: a wrapper-only output is
     scaffolding its shape needs, not a swallowed base feature."""
     base_dir, wrapper_dir = _outputs_dirs(
-        tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml("reviewer_roster", "wrapper_only")
+        tmp_path,
+        _outputs_yml("reviewer_roster"),
+        _outputs_yml("reviewer_roster", "wrapper_only"),
     )
     findings, notes = check_workflow_outputs(
         base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), Exceptions.empty()
@@ -554,25 +642,35 @@ def test_outputs_check_wrapper_only_output_is_not_a_finding(tmp_path: Path) -> N
 
 
 def test_outputs_check_excepted_key_is_noted_not_failed(tmp_path: Path) -> None:
-    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml())
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml()
+    )
     exceptions = Exceptions(
         vars={},
         env={},
-        outputs={"base-ai-review-orchestrator.yml": {"reviewer_roster": "tracked in AT-9999"}},
+        outputs={
+            "base-ai-review-orchestrator.yml": {"reviewer_roster": "tracked in AT-9999"}
+        },
     )
     findings, notes = check_workflow_outputs(
         base_dir, wrapper_dir, _outputs_config(_MAPPED_ORCHESTRATOR), exceptions
     )
     assert findings == []
-    assert notes == ["  outputs base-ai-review-orchestrator.yml key reviewer_roster: tracked in AT-9999"]
+    assert notes == [
+        "  outputs base-ai-review-orchestrator.yml key reviewer_roster: tracked in AT-9999"
+    ]
 
 
 def test_outputs_check_structural_exception_is_noted_not_failed(tmp_path: Path) -> None:
     """prepare.yml's shape: outputs that exist only for the next job, which
     the single-job wrapper has no surface to declare."""
-    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml("head_sha", "skip"), _outputs_yml())
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml("head_sha", "skip"), _outputs_yml()
+    )
     entry = OutputCorrespondence(
-        base_file="base-ai-review-orchestrator.yml", wrapper_files=(), reason="inter-job plumbing"
+        base_file="base-ai-review-orchestrator.yml",
+        wrapper_files=(),
+        reason="inter-job plumbing",
     )
     findings, notes = check_workflow_outputs(
         base_dir, wrapper_dir, _outputs_config(entry), Exceptions.empty()
@@ -587,7 +685,9 @@ def test_outputs_check_unmapped_base_file_is_a_finding(tmp_path: Path) -> None:
     """Completeness, the same rule axis 1 applies to a new env-bearing step:
     a base workflow that becomes callable with outputs must not be invisible
     here the way a new output name used to be."""
-    base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml())
+    base_dir, wrapper_dir = _outputs_dirs(
+        tmp_path, _outputs_yml("reviewer_roster"), _outputs_yml()
+    )
     findings, notes = check_workflow_outputs(
         base_dir, wrapper_dir, _outputs_config(), Exceptions.empty()
     )
@@ -600,7 +700,9 @@ def test_outputs_check_unmapped_base_file_is_a_finding(tmp_path: Path) -> None:
     assert notes == []
 
 
-def test_outputs_check_base_file_declaring_nothing_needs_no_entry(tmp_path: Path) -> None:
+def test_outputs_check_base_file_declaring_nothing_needs_no_entry(
+    tmp_path: Path,
+) -> None:
     base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml(), _outputs_yml())
     findings, notes = check_workflow_outputs(
         base_dir, wrapper_dir, _outputs_config(), Exceptions.empty()
@@ -615,7 +717,9 @@ def test_outputs_check_stale_base_file_name_raises(tmp_path: Path) -> None:
     base_dir, wrapper_dir = _outputs_dirs(tmp_path, _outputs_yml(), _outputs_yml())
     entry = OutputCorrespondence(base_file="gone.yml", wrapper_files=("wrapper.yml",))
     with pytest.raises(FileNotFoundError):
-        check_workflow_outputs(base_dir, wrapper_dir, _outputs_config(entry), Exceptions.empty())
+        check_workflow_outputs(
+            base_dir, wrapper_dir, _outputs_config(entry), Exceptions.empty()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +727,9 @@ def test_outputs_check_stale_base_file_name_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_load_correspondence_reads_mapped_and_structural_entries(tmp_path: Path) -> None:
+def test_load_correspondence_reads_mapped_and_structural_entries(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
     _write(
         path,
@@ -652,10 +758,17 @@ def test_load_correspondence_reads_mapped_and_structural_entries(tmp_path: Path)
 
 
 @pytest.mark.parametrize("field", ["base_file", "base_step", "wrapper_file"])
-def test_load_correspondence_rejects_an_entry_missing_a_required_field(tmp_path: Path, field: str) -> None:
+def test_load_correspondence_rejects_an_entry_missing_a_required_field(
+    tmp_path: Path, field: str
+) -> None:
     """A missing required key is a malformed config, reported through the
     same MalformedConfigError path as a missing reason -- not a KeyError."""
-    entry = {"base_file": "a.yml", "base_step": "One", "wrapper_file": "wrapper.yml", "wrapper_steps": ["One"]}
+    entry = {
+        "base_file": "a.yml",
+        "base_step": "One",
+        "wrapper_file": "wrapper.yml",
+        "wrapper_steps": ["One"],
+    }
     del entry[field]
     path = tmp_path / "correspondence.yml"
     lines = ["steps:", "  - " + "\n    ".join(f"{k}: {v}" for k, v in entry.items())]
@@ -664,7 +777,9 @@ def test_load_correspondence_rejects_an_entry_missing_a_required_field(tmp_path:
         load_correspondence(path)
 
 
-def test_load_correspondence_rejects_no_counterpart_without_reason(tmp_path: Path) -> None:
+def test_load_correspondence_rejects_no_counterpart_without_reason(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
     _write(
         path,
@@ -737,7 +852,9 @@ def test_load_exceptions_env_entry_requires_a_reason(tmp_path: Path) -> None:
         load_exceptions(path)
 
 
-def test_load_correspondence_reads_mapped_and_structural_output_entries(tmp_path: Path) -> None:
+def test_load_correspondence_reads_mapped_and_structural_output_entries(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
     _write(
         path,
@@ -756,24 +873,32 @@ def test_load_correspondence_reads_mapped_and_structural_output_entries(tmp_path
     config = load_correspondence(path)
     assert config.outputs == (
         OutputCorrespondence(base_file="a.yml", wrapper_files=("wrapper.yml",)),
-        OutputCorrespondence(base_file="b.yml", wrapper_files=(), reason="inter-job plumbing only"),
+        OutputCorrespondence(
+            base_file="b.yml", wrapper_files=(), reason="inter-job plumbing only"
+        ),
     )
 
 
-def test_load_correspondence_outputs_default_to_empty_when_absent(tmp_path: Path) -> None:
+def test_load_correspondence_outputs_default_to_empty_when_absent(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
     _write(path, "base_files: [a.yml]\nwrapper_files: [wrapper.yml]\nsteps: []\n")
     assert load_correspondence(path).outputs == ()
 
 
-def test_load_correspondence_rejects_an_outputs_entry_missing_base_file(tmp_path: Path) -> None:
+def test_load_correspondence_rejects_an_outputs_entry_missing_base_file(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
     _write(path, "outputs:\n  - wrapper_files: [wrapper.yml]\n")
     with pytest.raises(MalformedConfigError, match="missing 'base_file'"):
         load_correspondence(path)
 
 
-def test_load_correspondence_rejects_an_unmapped_outputs_entry_without_reason(tmp_path: Path) -> None:
+def test_load_correspondence_rejects_an_unmapped_outputs_entry_without_reason(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
     _write(path, "outputs:\n  - base_file: a.yml\n    wrapper_files: []\n")
     with pytest.raises(MalformedConfigError, match="no wrapper_files and no reason"):
@@ -782,22 +907,34 @@ def test_load_correspondence_rejects_an_unmapped_outputs_entry_without_reason(tm
 
 def test_load_correspondence_rejects_a_blank_outputs_reason(tmp_path: Path) -> None:
     path = tmp_path / "correspondence.yml"
-    _write(path, "outputs:\n  - base_file: a.yml\n    wrapper_files: []\n    reason: '   '\n")
+    _write(
+        path,
+        "outputs:\n  - base_file: a.yml\n    wrapper_files: []\n    reason: '   '\n",
+    )
     with pytest.raises(MalformedConfigError, match="no wrapper_files and no reason"):
         load_correspondence(path)
 
 
-def test_load_correspondence_rejects_a_reason_on_a_mapped_outputs_entry(tmp_path: Path) -> None:
+def test_load_correspondence_rejects_a_reason_on_a_mapped_outputs_entry(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "correspondence.yml"
-    _write(path, "outputs:\n  - base_file: a.yml\n    wrapper_files: [wrapper.yml]\n    reason: why\n")
-    with pytest.raises(MalformedConfigError, match="maps wrapper files and also carries"):
+    _write(
+        path,
+        "outputs:\n  - base_file: a.yml\n    wrapper_files: [wrapper.yml]\n    reason: why\n",
+    )
+    with pytest.raises(
+        MalformedConfigError, match="maps wrapper files and also carries"
+    ):
         load_correspondence(path)
 
 
 def test_load_exceptions_outputs_entry_requires_a_reason(tmp_path: Path) -> None:
     path = tmp_path / "exceptions.yml"
     _write(path, "outputs:\n  a.yml:\n    reviewer_roster: {}\n")
-    with pytest.raises(MalformedConfigError, match="outputs a.yml reviewer_roster has no reason"):
+    with pytest.raises(
+        MalformedConfigError, match="outputs a.yml reviewer_roster has no reason"
+    ):
         load_exceptions(path)
 
 
@@ -849,12 +986,19 @@ def _write_correspondence(path: Path) -> None:
     )
 
 
-def _run_dirs(tmp_path: Path, *, with_round_cutoff: bool, exceptions_text: str = "vars: {}\nenv: {}\n") -> int:
+def _run_dirs(
+    tmp_path: Path,
+    *,
+    with_round_cutoff: bool,
+    exceptions_text: str = "vars: {}\nenv: {}\n",
+) -> int:
     base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
     base_dir.mkdir()
     wrapper_dir.mkdir()
     _write(base_dir / "base-ai-review-single.yml", _BASE_SINGLE_YML)
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=with_round_cutoff), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=with_round_cutoff), encoding="utf-8"
+    )
     correspondence = tmp_path / "correspondence.yml"
     _write_correspondence(correspondence)
     exceptions = tmp_path / "exceptions.yml"
@@ -871,7 +1015,9 @@ def test_run_exits_one_on_the_at_2120_shape(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("missing", ["base", "wrapper"])
-def test_run_exits_one_when_a_configured_file_is_missing(tmp_path: Path, missing: str, capsys) -> None:
+def test_run_exits_one_when_a_configured_file_is_missing(
+    tmp_path: Path, missing: str, capsys
+) -> None:
     """A renamed or removed workflow file must fail the check like a renamed
     step does -- a file compared against nothing is neither a skip nor a pass."""
     base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
@@ -880,7 +1026,9 @@ def test_run_exits_one_when_a_configured_file_is_missing(tmp_path: Path, missing
     if missing != "base":
         _write(base_dir / "base-ai-review-single.yml", _BASE_SINGLE_YML)
     if missing != "wrapper":
-        (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
+        (wrapper_dir / "wrapper.yml").write_text(
+            _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+        )
     correspondence = tmp_path / "correspondence.yml"
     _write_correspondence(correspondence)
     exceptions = tmp_path / "exceptions.yml"
@@ -907,7 +1055,10 @@ def _run_with_wrapper_text(tmp_path: Path, wrapper_text: str) -> int:
 def test_run_exits_one_on_an_unparsable_workflow_file(tmp_path: Path, capsys) -> None:
     """The wrapper file comes from another repository's main; a transient
     syntax error there must fail the check cleanly, not traceback."""
-    assert _run_with_wrapper_text(tmp_path, "jobs:\n  review:\n    steps: [unclosed\n") == 1
+    assert (
+        _run_with_wrapper_text(tmp_path, "jobs:\n  review:\n    steps: [unclosed\n")
+        == 1
+    )
     out = capsys.readouterr().out
     assert "cannot be read as a workflow" in out
     assert "not valid YAML" in out
@@ -917,7 +1068,12 @@ def test_run_exits_one_on_an_unparsable_workflow_file(tmp_path: Path, capsys) ->
 def test_run_exits_one_on_a_non_mapping_workflow_file(tmp_path: Path, capsys) -> None:
     """A file whose top level is a list parses fine and has no jobs, no
     steps and no vars -- it must not pass as 'nothing to compare'."""
-    assert _run_with_wrapper_text(tmp_path, "- Post Claude inline comments\n- Post Codex inline comments\n") == 1
+    assert (
+        _run_with_wrapper_text(
+            tmp_path, "- Post Claude inline comments\n- Post Codex inline comments\n"
+        )
+        == 1
+    )
     out = capsys.readouterr().out
     assert "cannot be read as a workflow" in out
     assert "top level is list, not a mapping" in out
@@ -928,7 +1084,9 @@ def test_run_exits_one_on_an_unparsable_config_file(tmp_path: Path, capsys) -> N
     base_dir.mkdir()
     wrapper_dir.mkdir()
     _write(base_dir / "base-ai-review-single.yml", _BASE_SINGLE_YML)
-    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=True), encoding="utf-8")
+    (wrapper_dir / "wrapper.yml").write_text(
+        _wrapper_yml(with_round_cutoff=True), encoding="utf-8"
+    )
     correspondence = tmp_path / "correspondence.yml"
     correspondence.write_text("steps: [unclosed\n", encoding="utf-8")
     exceptions = tmp_path / "exceptions.yml"
@@ -974,11 +1132,25 @@ def test_run_exits_zero_once_the_output_is_ported(tmp_path: Path) -> None:
 
 
 def test_run_exits_one_on_a_malformed_outputs_exception(tmp_path: Path) -> None:
-    assert _run_dirs(tmp_path, with_round_cutoff=True, exceptions_text="outputs:\n  a.yml:\n    x: {}\n") == 1
+    assert (
+        _run_dirs(
+            tmp_path,
+            with_round_cutoff=True,
+            exceptions_text="outputs:\n  a.yml:\n    x: {}\n",
+        )
+        == 1
+    )
 
 
 def test_run_exits_one_on_a_malformed_exceptions_file(tmp_path: Path) -> None:
-    assert _run_dirs(tmp_path, with_round_cutoff=True, exceptions_text="vars:\n  SOMETHING: {}\nenv: {}\n") == 1
+    assert (
+        _run_dirs(
+            tmp_path,
+            with_round_cutoff=True,
+            exceptions_text="vars:\n  SOMETHING: {}\nenv: {}\n",
+        )
+        == 1
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1006,13 +1178,17 @@ def test_live_correspondence_maps_every_env_bearing_base_step() -> None:
         for name in steps_with_env(_load_yaml(LIVE_WORKFLOWS / base_file))
         if name is None or (base_file, name) not in mapped
     ]
-    assert unmapped == [], "add a correspondence entry (or a no-counterpart reason) for each"
+    assert unmapped == [], (
+        "add a correspondence entry (or a no-counterpart reason) for each"
+    )
 
 
 def test_live_correspondence_names_only_existing_base_steps() -> None:
     config = load_correspondence(LIVE_CORRESPONDENCE)
     for entry in config.steps:
-        find_step_env_keys(_load_yaml(LIVE_WORKFLOWS / entry.base_file), entry.base_step)
+        find_step_env_keys(
+            _load_yaml(LIVE_WORKFLOWS / entry.base_file), entry.base_step
+        )
 
 
 def test_live_exceptions_name_only_mapped_steps() -> None:
@@ -1032,9 +1208,12 @@ def test_live_correspondence_maps_every_output_bearing_base_file() -> None:
     unmapped = [
         base_file
         for base_file in config.base_files
-        if workflow_call_outputs(_load_yaml(LIVE_WORKFLOWS / base_file)) and base_file not in mapped
+        if workflow_call_outputs(_load_yaml(LIVE_WORKFLOWS / base_file))
+        and base_file not in mapped
     ]
-    assert unmapped == [], "add an 'outputs' correspondence entry (or a no-counterpart reason) for each"
+    assert unmapped == [], (
+        "add an 'outputs' correspondence entry (or a no-counterpart reason) for each"
+    )
 
 
 def test_live_outputs_correspondence_names_only_existing_base_files() -> None:
@@ -1047,7 +1226,9 @@ def test_live_outputs_exceptions_name_only_mapped_files() -> None:
     """Same rule as the env exceptions: an entry for a file the
     correspondence does not map would never be consulted."""
     config = load_correspondence(LIVE_CORRESPONDENCE)
-    mapped = {entry.base_file for entry in config.outputs if not entry.has_no_counterpart}
+    mapped = {
+        entry.base_file for entry in config.outputs if not entry.has_no_counterpart
+    }
     assert set(load_exceptions(LIVE_EXCEPTIONS).outputs) <= mapped
 
 
@@ -1065,12 +1246,17 @@ def test_live_roster_outputs_are_on_the_axis(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     findings, _ = check_workflow_outputs(
-        LIVE_WORKFLOWS, wrapper_dir, load_correspondence(LIVE_CORRESPONDENCE), load_exceptions(LIVE_EXCEPTIONS)
+        LIVE_WORKFLOWS,
+        wrapper_dir,
+        load_correspondence(LIVE_CORRESPONDENCE),
+        load_exceptions(LIVE_EXCEPTIONS),
     )
     for key in _ROSTER_KEYS:
-        assert any(f"base-ai-review-orchestrator.yml declares workflow_call output {key!r}" in f for f in findings), (
-            f"{key} is declared on the orchestrator but axis 3 does not compare it"
-        )
+        assert any(
+            f"base-ai-review-orchestrator.yml declares workflow_call output {key!r}"
+            in f
+            for f in findings
+        ), f"{key} is declared on the orchestrator but axis 3 does not compare it"
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1265,9 @@ def test_live_roster_outputs_are_on_the_axis(tmp_path: Path) -> None:
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
+    )
 
 
 @pytest.fixture(scope="module")
@@ -1095,12 +1283,16 @@ def base_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if probe.returncode != 0:
         fetched = _git("fetch", "--depth=1", "origin", BASE_PIN, cwd=REPO_ROOT)
         if fetched.returncode != 0:
-            pytest.fail(f"base pin {BASE_PIN} is not in this checkout and could not be fetched: {fetched.stderr}")
+            pytest.fail(
+                f"base pin {BASE_PIN} is not in this checkout and could not be fetched: {fetched.stderr}"
+            )
     out = tmp_path_factory.mktemp("base")
     for name in BASE_FILES:
         shown = _git("show", f"{BASE_PIN}:.github/workflows/{name}", cwd=REPO_ROOT)
         if shown.returncode != 0:
-            pytest.fail(f"git show {BASE_PIN}:.github/workflows/{name} failed: {shown.stderr}")
+            pytest.fail(
+                f"git show {BASE_PIN}:.github/workflows/{name} failed: {shown.stderr}"
+            )
         (out / name).write_text(shown.stdout, encoding="utf-8")
     return out
 
@@ -1129,7 +1321,9 @@ def wrapper_pre(tmp_path_factory: pytest.TempPathFactory) -> Path:
     pre_lines = (workflows / "wrapper.yml").read_text(encoding="utf-8").splitlines()
     removed = [line for line in post_lines if "ROUND_CUTOFF" in line]
     assert [line for line in post_lines if "ROUND_CUTOFF" not in line] == pre_lines
-    assert sorted(line.split(":")[0].strip() for line in removed) == sorted(AT_2120_KEYS * 3)
+    assert sorted(line.split(":")[0].strip() for line in removed) == sorted(
+        AT_2120_KEYS * 3
+    )
     assert not any("ROUND_CUTOFF" in line for line in pre_lines)
     return workflows
 
@@ -1159,7 +1353,10 @@ def vendored_exceptions(live_exceptions: Exceptions) -> Exceptions:
         vars=live_exceptions.vars,
         env={
             **live_exceptions.env,
-            AGGREGATE_STEP: {**live_exceptions.env.get(AGGREGATE_STEP, {}), "HEAD_SHA": VENDORED_HEAD_SHA_REASON},
+            AGGREGATE_STEP: {
+                **live_exceptions.env.get(AGGREGATE_STEP, {}),
+                "HEAD_SHA": VENDORED_HEAD_SHA_REASON,
+            },
         },
     )
 
@@ -1170,9 +1367,9 @@ def vendored_exceptions_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
     import yaml
 
     data = _load_yaml(LIVE_EXCEPTIONS)
-    data.setdefault("env", {}).setdefault(AGGREGATE_STEP[0], {}).setdefault(AGGREGATE_STEP[1], {})["HEAD_SHA"] = {
-        "reason": VENDORED_HEAD_SHA_REASON
-    }
+    data.setdefault("env", {}).setdefault(AGGREGATE_STEP[0], {}).setdefault(
+        AGGREGATE_STEP[1], {}
+    )["HEAD_SHA"] = {"reason": VENDORED_HEAD_SHA_REASON}
     path = tmp_path_factory.mktemp("exceptions") / "exceptions.yml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
@@ -1196,7 +1393,9 @@ def vendored_config(live_config: DriftConfig) -> DriftConfig:
     return DriftConfig(
         base_files=live_config.base_files,
         wrapper_files=live_config.wrapper_files,
-        steps=tuple(entry for entry in live_config.steps if entry.key not in POST_PIN_STEPS),
+        steps=tuple(
+            entry for entry in live_config.steps if entry.key not in POST_PIN_STEPS
+        ),
     )
 
 
@@ -1207,20 +1406,26 @@ def vendored_correspondence_file(tmp_path_factory: pytest.TempPathFactory) -> Pa
 
     data = _load_yaml(LIVE_CORRESPONDENCE)
     data["steps"] = [
-        step for step in data["steps"] if (step["base_file"], step["base_step"]) not in POST_PIN_STEPS
+        step
+        for step in data["steps"]
+        if (step["base_file"], step["base_step"]) not in POST_PIN_STEPS
     ]
     path = tmp_path_factory.mktemp("correspondence") / "correspondence.yml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
 
 
-def test_post_pin_steps_are_live_entries_absent_at_the_pin(base_tree: Path, live_config) -> None:
+def test_post_pin_steps_are_live_entries_absent_at_the_pin(
+    base_tree: Path, live_config
+) -> None:
     """The set must stay honest in both directions: every listed step is a
     real live entry, and none exists at the pin -- once the pin moves past a
     step, dropping it would silently narrow the proof."""
     live_keys = {entry.key for entry in live_config.steps}
     for base_file, step in POST_PIN_STEPS:
-        assert (base_file, step) in live_keys, f"{step!r} is not in the live correspondence"
+        assert (base_file, step) in live_keys, (
+            f"{step!r} is not in the live correspondence"
+        )
         with pytest.raises(StepNotFoundError):
             find_step_env_keys(_load_yaml(base_tree / base_file), step)
 
@@ -1229,16 +1434,25 @@ def test_regression_fixture_is_the_at_2120_fix_commit() -> None:
     """The patch must be the fix itself, not a hand-written lookalike."""
     header = AT_2120_FIX_PATCH.read_text(encoding="utf-8").splitlines()[:5]
     assert header[0].startswith("From 82d261d08ea1449d8db8f70756b894fd51eecc38 ")
-    assert any("fix(AT-2120): wire round-cutoff vars into wrapper inline" in line for line in header)
+    assert any(
+        "fix(AT-2120): wire round-cutoff vars into wrapper inline" in line
+        for line in header
+    )
     # The provenance record beside the fixtures must name the same commit.
-    assert "82d261d08ea1449d8db8f70756b894fd51eecc38" in (FIXTURES / "SOURCE").read_text(encoding="utf-8")
+    assert "82d261d08ea1449d8db8f70756b894fd51eecc38" in (
+        FIXTURES / "SOURCE"
+    ).read_text(encoding="utf-8")
 
 
 def test_regression_at_2120_pre_fix_tree_fails_on_exactly_the_incident(
     base_tree: Path, wrapper_pre: Path, vendored_config, vendored_exceptions
 ) -> None:
-    env_findings, _ = check_env_keys(base_tree, wrapper_pre, vendored_config, vendored_exceptions)
-    vars_findings, _, _ = check_vars_consumed(base_tree, wrapper_pre, vendored_config, vendored_exceptions)
+    env_findings, _ = check_env_keys(
+        base_tree, wrapper_pre, vendored_config, vendored_exceptions
+    )
+    vars_findings, _, _ = check_vars_consumed(
+        base_tree, wrapper_pre, vendored_config, vendored_exceptions
+    )
     assert env_findings == [
         "env drift: base step base-ai-review-single.yml:'Post inline comments' sets "
         f"{key!r}, which none of wrapper's ['Post Claude inline comments', "
@@ -1252,18 +1466,43 @@ def test_regression_at_2120_pre_fix_tree_fails_on_exactly_the_incident(
     ]
 
 
-def test_regression_at_2120_post_fix_tree_passes(base_tree: Path, vendored_config, vendored_exceptions) -> None:
-    env_findings, _ = check_env_keys(base_tree, WRAPPER_POST, vendored_config, vendored_exceptions)
-    vars_findings, _, _ = check_vars_consumed(base_tree, WRAPPER_POST, vendored_config, vendored_exceptions)
+def test_regression_at_2120_post_fix_tree_passes(
+    base_tree: Path, vendored_config, vendored_exceptions
+) -> None:
+    env_findings, _ = check_env_keys(
+        base_tree, WRAPPER_POST, vendored_config, vendored_exceptions
+    )
+    vars_findings, _, _ = check_vars_consumed(
+        base_tree, WRAPPER_POST, vendored_config, vendored_exceptions
+    )
     assert env_findings == []
     assert vars_findings == []
 
 
 def test_regression_at_2120_end_to_end_exit_codes(
-    base_tree: Path, wrapper_pre: Path, vendored_correspondence_file: Path, vendored_exceptions_file: Path
+    base_tree: Path,
+    wrapper_pre: Path,
+    vendored_correspondence_file: Path,
+    vendored_exceptions_file: Path,
 ) -> None:
-    assert run(base_tree, wrapper_pre, vendored_correspondence_file, vendored_exceptions_file) == 1
-    assert run(base_tree, WRAPPER_POST, vendored_correspondence_file, vendored_exceptions_file) == 0
+    assert (
+        run(
+            base_tree,
+            wrapper_pre,
+            vendored_correspondence_file,
+            vendored_exceptions_file,
+        )
+        == 1
+    )
+    assert (
+        run(
+            base_tree,
+            WRAPPER_POST,
+            vendored_correspondence_file,
+            vendored_exceptions_file,
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize("tree", ["pre", "post"])
@@ -1278,7 +1517,9 @@ def test_regression_at_2117_head_sha_is_caught_against_the_vendored_wrapper(
         "exceptions.yml lists HEAD_SHA again; the AT-2117 port is in the wrapper, so this is a regression"
     )
     wrapper_dir = wrapper_pre if tree == "pre" else WRAPPER_POST
-    findings, _ = check_env_keys(base_tree, wrapper_dir, vendored_config, live_exceptions)
+    findings, _ = check_env_keys(
+        base_tree, wrapper_dir, vendored_config, live_exceptions
+    )
     expected = (
         "env drift: base step base-ai-review-aggregate.yml:'Aggregate and post verdict' sets "
         "'HEAD_SHA', which none of wrapper's ['Aggregate and post verdict'] (wrapper.yml) set"

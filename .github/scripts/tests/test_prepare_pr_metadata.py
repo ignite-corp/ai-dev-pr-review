@@ -35,9 +35,7 @@ import pytest
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
-WORKFLOW = (
-    SCRIPT_DIR.parents[0] / "workflows" / "base-ai-review-prepare.yml"
-)
+WORKFLOW = SCRIPT_DIR.parents[0] / "workflows" / "base-ai-review-prepare.yml"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -335,8 +333,15 @@ class TestDispatchPath:
 class TestMergeState:
     """The diff step learns that a PR is merged, and only then which commit landed (AT-2201)."""
 
-    def test_dispatch_on_a_merged_pr_exports_the_merge_commit(self, tmp_path: Path) -> None:
-        rest = {**_DEPENDABOT_REST, "merged": True, "merge_commit_sha": _MERGE_SHA, "commits": 3}
+    def test_dispatch_on_a_merged_pr_exports_the_merge_commit(
+        self, tmp_path: Path
+    ) -> None:
+        rest = {
+            **_DEPENDABOT_REST,
+            "merged": True,
+            "merge_commit_sha": _MERGE_SHA,
+            "commits": 3,
+        }
         outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
         assert outputs["pr_merged"] == "true"
         assert outputs["merge_commit_sha"] == _MERGE_SHA
@@ -349,7 +354,11 @@ class TestMergeState:
     ) -> None:
         # An open PR's merge_commit_sha is GitHub's test merge. Diffing it
         # against its parent would review a commit that never landed.
-        rest = {**_DEPENDABOT_REST, "merged": False, "merge_commit_sha": _TEST_MERGE_SHA}
+        rest = {
+            **_DEPENDABOT_REST,
+            "merged": False,
+            "merge_commit_sha": _TEST_MERGE_SHA,
+        }
         outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
         assert outputs["pr_merged"] == "false"
         assert outputs["merge_commit_sha"] == ""
@@ -416,7 +425,9 @@ class TestLabels:
         outputs, _ = _run_refs_step(tmp_path, context=context)
         assert outputs["labels"] == "alpha, zeta"
 
-    def test_dispatch_path_labels_present_via_rest_fixture(self, tmp_path: Path) -> None:
+    def test_dispatch_path_labels_present_via_rest_fixture(
+        self, tmp_path: Path
+    ) -> None:
         rest = {**_DEPENDABOT_REST, "labels": [{"name": "zeta"}, {"name": "alpha"}]}
         outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
         assert outputs["labels"] == "alpha, zeta"
@@ -436,15 +447,19 @@ class TestLabels:
         # Spaces, quotes, a newline, a backtick, and a non-ASCII character in
         # one name -- proving the wiring escapes through the real shell step,
         # not just the pure function in isolation.
-        weird = "a`b\nc \"d\" caf\u00e9"
-        outputs, _ = _run_refs_step(tmp_path, context=_pull_request_context(labels=[weird]))
+        weird = 'a`b\nc "d" caf\u00e9'
+        outputs, _ = _run_refs_step(
+            tmp_path, context=_pull_request_context(labels=[weird])
+        )
         assert outputs["labels"] == format_labels([weird])
         assert "\n" not in outputs["labels"]
         assert "`" not in outputs["labels"]
 
     def test_more_than_20_labels_is_capped_end_to_end(self, tmp_path: Path) -> None:
         names = [f"label-{i:02d}" for i in range(25)]
-        outputs, _ = _run_refs_step(tmp_path, context=_pull_request_context(labels=names))
+        outputs, _ = _run_refs_step(
+            tmp_path, context=_pull_request_context(labels=names)
+        )
         kept = outputs["labels"].split(", ")
         assert len(kept) == 20
         assert kept == sorted(names)[:20]
@@ -539,7 +554,9 @@ def _make_metadata_repo(tmp_path: Path) -> tuple[Path, str]:
 
     pinned_scripts = work / ".ai-dev-pr-review" / ".github" / "scripts"
     pinned_scripts.mkdir(parents=True)
-    shutil.copy(SCRIPT_DIR / "github_pr_support.py", pinned_scripts / "github_pr_support.py")
+    shutil.copy(
+        SCRIPT_DIR / "github_pr_support.py", pinned_scripts / "github_pr_support.py"
+    )
 
     return work, head_sha
 

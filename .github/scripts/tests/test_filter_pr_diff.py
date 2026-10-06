@@ -467,15 +467,21 @@ class TestFilterDiff:
         assert len(excluded) == len(ALL_ENTRIES)
 
     def test_negation_reinstates_an_entry(self) -> None:
-        kept, excluded = filter_diff(MODIFY + NEW_FILE, parse_rules("*\n!secrets/key.pem\n"))
+        kept, excluded = filter_diff(
+            MODIFY + NEW_FILE, parse_rules("*\n!secrets/key.pem\n")
+        )
         assert kept == NEW_FILE
         assert excluded == ["src/app.py"]
 
-    @pytest.mark.parametrize("rule", ["*", ".github/**", "/.github/lens-ignore", "lens-ignore"])
+    @pytest.mark.parametrize(
+        "rule", ["*", ".github/**", "/.github/lens-ignore", "lens-ignore"]
+    )
     def test_the_rule_file_is_never_excluded(
         self, rule: str, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        kept, excluded = filter_diff(LENS_IGNORE_ENTRY + MODIFY, parse_rules(rule + "\n"))
+        kept, excluded = filter_diff(
+            LENS_IGNORE_ENTRY + MODIFY, parse_rules(rule + "\n")
+        )
         assert kept.startswith(LENS_IGNORE_ENTRY)
         assert ".github/lens-ignore" not in excluded
         assert ".github/lens-ignore matches its own rules" in capsys.readouterr().err
@@ -631,7 +637,9 @@ class TestMain:
     def test_rules_without_a_match_leave_the_diff_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        root = _workdir(tmp_path, monkeypatch, diff=MODIFY + NEW_FILE, rules="*.nomatch\n")
+        root = _workdir(
+            tmp_path, monkeypatch, diff=MODIFY + NEW_FILE, rules="*.nomatch\n"
+        )
         filter_pr_diff.main()
         assert (root / "pr.diff").read_text(encoding="utf-8") == MODIFY + NEW_FILE
         assert (root / "context.md").read_text(encoding="utf-8") == "## PR Metadata\n"
@@ -649,14 +657,20 @@ class TestMain:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = _workdir(
-            tmp_path, monkeypatch, diff=MODIFY + NEW_FILE + RENAME, rules="*.pem\nconfig/\n"
+            tmp_path,
+            monkeypatch,
+            diff=MODIFY + NEW_FILE + RENAME,
+            rules="*.pem\nconfig/\n",
         )
         filter_pr_diff.main()
         assert (root / "pr.diff").read_text(encoding="utf-8") == MODIFY
         outputs = _outputs(root)
         assert outputs["policy_skipped"] == "false"
         assert outputs["excluded_count"] == "2"
-        assert outputs["excluded_paths"] == "secrets/key.pem\nconfig/prod.env -> config/live.env"
+        assert (
+            outputs["excluded_paths"]
+            == "secrets/key.pem\nconfig/prod.env -> config/live.env"
+        )
         assert _result(root)["excluded_paths"] == [
             "secrets/key.pem",
             "config/prod.env -> config/live.env",
@@ -679,7 +693,9 @@ class TestMain:
     def test_all_excluded_sets_policy_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        root = _workdir(tmp_path, monkeypatch, diff=NEW_FILE + BINARY, rules="*.pem\n*.png\n")
+        root = _workdir(
+            tmp_path, monkeypatch, diff=NEW_FILE + BINARY, rules="*.pem\n*.png\n"
+        )
         filter_pr_diff.main()
         outputs = _outputs(root)
         assert outputs["policy_skipped"] == "true"
@@ -690,7 +706,9 @@ class TestMain:
     def test_the_rule_file_change_is_kept_even_under_a_catch_all(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        root = _workdir(tmp_path, monkeypatch, diff=LENS_IGNORE_ENTRY + NEW_FILE, rules="*\n")
+        root = _workdir(
+            tmp_path, monkeypatch, diff=LENS_IGNORE_ENTRY + NEW_FILE, rules="*\n"
+        )
         filter_pr_diff.main()
         assert (root / "pr.diff").read_text(encoding="utf-8") == LENS_IGNORE_ENTRY
         assert _outputs(root)["policy_skipped"] == "false"
@@ -710,7 +728,10 @@ class TestMain:
         filter_pr_diff.main()
         assert (tmp_path / "other.diff").read_text(encoding="utf-8") == ""
         assert "(rules.txt)" in (tmp_path / "ctx.md").read_text(encoding="utf-8")
-        assert json.loads((tmp_path / "out" / "result.json").read_text())["rule_file"] == "rules.txt"
+        assert (
+            json.loads((tmp_path / "out" / "result.json").read_text())["rule_file"]
+            == "rules.txt"
+        )
 
     def test_missing_diff_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -783,7 +804,9 @@ class TestPrepareStep:
         names = [s.get("name") or s.get("uses", "") for s in _steps(PREPARE)]
         extract = names.index("Extract diff and context")
         policy = names.index(STEP_NAME)
-        setup = next(i for i, n in enumerate(names) if n.startswith("actions/setup-python"))
+        setup = next(
+            i for i, n in enumerate(names) if n.startswith("actions/setup-python")
+        )
         assert extract < policy < setup
 
     def test_step_is_gated_on_the_size_check_only(self) -> None:
@@ -794,7 +817,10 @@ class TestPrepareStep:
     def test_step_env_covers_the_skip_comment(self) -> None:
         env = _step(STEP_NAME)["env"]
         assert env["GH_TOKEN"] == "${{ github.token }}"
-        assert env["PR_NUMBER"] == "${{ inputs.pr_number || github.event.pull_request.number }}"
+        assert (
+            env["PR_NUMBER"]
+            == "${{ inputs.pr_number || github.event.pull_request.number }}"
+        )
         assert env["GITHUB_REPOSITORY"] == "${{ github.repository }}"
 
     def test_guard_mirrors_the_extract_step(self) -> None:
@@ -834,8 +860,16 @@ class TestPrepareStep:
 
     def test_workflow_call_exposes_every_output(self) -> None:
         exposed = _prepare_workflow()[True]["workflow_call"]["outputs"]
-        for key in ("skip", "size_skipped", "policy_skipped", "excluded_count", "excluded_paths"):
-            assert exposed[key]["value"] == f"${{{{ jobs.prepare.outputs.{key} }}}}", key
+        for key in (
+            "skip",
+            "size_skipped",
+            "policy_skipped",
+            "excluded_count",
+            "excluded_paths",
+        ):
+            assert exposed[key]["value"] == f"${{{{ jobs.prepare.outputs.{key} }}}}", (
+                key
+            )
             assert exposed[key]["description"]
 
 
@@ -905,23 +939,37 @@ def _run_step(
 class TestPrepareStepExecution:
     """The step as it runs: guard, script, comment, outputs."""
 
-    def test_pin_without_the_script_fails_when_rules_exist(self, tmp_path: Path) -> None:
-        result, outputs, calls = _run_step(tmp_path, pinned_script=False, rules="*.pem\n")
+    def test_pin_without_the_script_fails_when_rules_exist(
+        self, tmp_path: Path
+    ) -> None:
+        result, outputs, calls = _run_step(
+            tmp_path, pinned_script=False, rules="*.pem\n"
+        )
         assert result.returncode == 1
         assert "::error title=Pinned checkout predates lens-ignore::" in result.stdout
         assert outputs == {}
         assert calls == []
 
-    def test_pin_without_the_script_reports_no_skip_without_rules(self, tmp_path: Path) -> None:
+    def test_pin_without_the_script_reports_no_skip_without_rules(
+        self, tmp_path: Path
+    ) -> None:
         result, outputs, calls = _run_step(tmp_path, pinned_script=False, rules=None)
         assert result.returncode == 0, result.stderr
         assert "::warning::filter_pr_diff.py not in pinned checkout" in result.stdout
-        assert outputs == {"policy_skipped": "false", "excluded_count": "0", "excluded_paths": ""}
+        assert outputs == {
+            "policy_skipped": "false",
+            "excluded_count": "0",
+            "excluded_paths": "",
+        }
         assert calls == []
-        assert (tmp_path / "work" / "pr.diff").read_text(encoding="utf-8") == MODIFY + NEW_FILE
+        assert (tmp_path / "work" / "pr.diff").read_text(
+            encoding="utf-8"
+        ) == MODIFY + NEW_FILE
 
     def test_partial_exclusion_posts_no_comment(self, tmp_path: Path) -> None:
-        result, outputs, calls = _run_step(tmp_path, pinned_script=True, rules="*.pem\n")
+        result, outputs, calls = _run_step(
+            tmp_path, pinned_script=True, rules="*.pem\n"
+        )
         assert result.returncode == 0, result.stderr
         assert outputs["policy_skipped"] == "false"
         assert outputs["excluded_paths"] == "secrets/key.pem"
@@ -952,7 +1000,9 @@ class TestPrepareStepExecution:
         assert result.returncode == 0, result.stderr
         assert outputs["policy_skipped"] == "false"
         assert calls == []
-        assert (tmp_path / "work" / "pr.diff").read_text(encoding="utf-8") == MODIFY + NEW_FILE
+        assert (tmp_path / "work" / "pr.diff").read_text(
+            encoding="utf-8"
+        ) == MODIFY + NEW_FILE
 
 
 class TestPipelineWiring:
@@ -970,7 +1020,9 @@ class TestPipelineWiring:
         reviewers = [n for n in jobs if n.startswith("review-")]
         assert reviewers
         for name in reviewers:
-            assert "needs.prepare.outputs.skip == 'false'" in str(jobs[name]["if"]), name
+            assert "needs.prepare.outputs.skip == 'false'" in str(jobs[name]["if"]), (
+                name
+            )
 
     def test_aggregate_accepts_and_forwards_the_policy_inputs(self) -> None:
         workflow = yaml.safe_load(AGGREGATE.read_text(encoding="utf-8"))
@@ -978,12 +1030,18 @@ class TestPipelineWiring:
         assert inputs["policy_skipped"]["default"] == "false"
         assert inputs["excluded_count"]["default"] == ""
         assert inputs["excluded_paths"]["default"] == ""
-        step = next(s for s in _steps(AGGREGATE) if s.get("name") == "Aggregate and post verdict")
+        step = next(
+            s
+            for s in _steps(AGGREGATE)
+            if s.get("name") == "Aggregate and post verdict"
+        )
         assert step["env"]["POLICY_SKIPPED"] == "${{ inputs.policy_skipped }}"
         assert step["env"]["EXCLUDED_COUNT"] == "${{ inputs.excluded_count }}"
         assert step["env"]["EXCLUDED_PATHS"] == "${{ inputs.excluded_paths }}"
 
-    def test_drift_correspondence_maps_the_step_to_a_same_named_wrapper_step(self) -> None:
+    def test_drift_correspondence_maps_the_step_to_a_same_named_wrapper_step(
+        self,
+    ) -> None:
         entries = yaml.safe_load(CORRESPONDENCE.read_text(encoding="utf-8"))["steps"]
         entry = next(e for e in entries if e["base_step"] == STEP_NAME)
         assert entry["base_file"] == PREPARE.name

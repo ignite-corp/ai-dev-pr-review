@@ -150,7 +150,9 @@ class TestCorpHealthOutputs:
         payload["data"]["repository"]["pullRequests"]["nodes"].append(
             {
                 "reviews": {"nodes": []},
-                "comments": {"nodes": [{"body": 123, "createdAt": "2026-01-01T00:00:00Z"}]},
+                "comments": {
+                    "nodes": [{"body": 123, "createdAt": "2026-01-01T00:00:00Z"}]
+                },
             }
         )
         code, log = run_health_tail(

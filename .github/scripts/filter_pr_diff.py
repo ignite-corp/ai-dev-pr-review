@@ -128,7 +128,12 @@ def _glob_to_regex(pattern: str, *, anchored: bool, dir_only: bool) -> str:
                 out.append("(?:.*/)?")
                 i += 3
                 continue
-            if pattern.startswith("**", i) and i + 2 == n and i > 0 and pattern[i - 1] == "/":
+            if (
+                pattern.startswith("**", i)
+                and i + 2 == n
+                and i > 0
+                and pattern[i - 1] == "/"
+            ):
                 out.append(".*")
                 i += 2
                 continue
@@ -258,7 +263,11 @@ def _unquote(path: str) -> str:
     if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
         try:
             raw = path[1:-1].encode("latin-1", "surrogateescape")
-            return raw.decode("unicode_escape").encode("latin-1").decode("utf-8", "replace")
+            return (
+                raw.decode("unicode_escape")
+                .encode("latin-1")
+                .decode("utf-8", "replace")
+            )
         except (UnicodeDecodeError, UnicodeEncodeError):
             return _clean(path[1:-1])
     return _clean(path)
@@ -268,7 +277,7 @@ def _strip_prefix(path: str, prefix: str) -> str | None:
     path = _unquote(path)
     if path == _DEV_NULL:
         return None
-    return path[len(prefix):] if path.startswith(prefix) else path
+    return path[len(prefix) :] if path.startswith(prefix) else path
 
 
 def _paths_from_header(header: str) -> tuple[str | None, str | None]:
@@ -278,7 +287,7 @@ def _paths_from_header(header: str) -> tuple[str | None, str | None]:
     `---`/`+++` and `rename`/`copy` lines are preferred when an entry has
     them; this is the fallback for entries that do not (mode-only, binary).
     """
-    rest = header[len(_DIFF_HEADER):].rstrip("\r\n")
+    rest = header[len(_DIFF_HEADER) :].rstrip("\r\n")
     if rest.startswith('"'):
         parts = re.findall(r'"(?:[^"\\]|\\.)*"|\S+', rest)
         if len(parts) == 2:
@@ -287,12 +296,12 @@ def _paths_from_header(header: str) -> tuple[str | None, str | None]:
     # even when the path itself contains ` b/`.
     if rest.startswith("a/"):
         for i in range(2, len(rest)):
-            if rest.startswith(" b/", i) and rest[2:i] == rest[i + 3:]:
+            if rest.startswith(" b/", i) and rest[2:i] == rest[i + 3 :]:
                 return _clean(rest[2:i]), _clean(rest[2:i])
     split = rest.find(" b/")
     if split == -1:
         return None, None
-    return _strip_prefix(rest[:split], "a/"), _strip_prefix(rest[split + 1:], "b/")
+    return _strip_prefix(rest[:split], "a/"), _strip_prefix(rest[split + 1 :], "b/")
 
 
 def _entry_paths(lines: list[str]) -> tuple[str | None, str | None]:
@@ -433,7 +442,9 @@ def main() -> None:
     try:
         # surrogateescape round-trips bytes that are not UTF-8, so a kept
         # entry is written back exactly as it was read.
-        diff_text = Path(diff_path).read_text(encoding="utf-8", errors="surrogateescape")
+        diff_text = Path(diff_path).read_text(
+            encoding="utf-8", errors="surrogateescape"
+        )
     except OSError as exc:
         print(f"::error::cannot read {diff_path}: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -445,7 +456,9 @@ def main() -> None:
     policy_skipped = total > 0 and kept_count == 0
 
     if excluded:
-        Path(diff_path).write_text(kept_text, encoding="utf-8", errors="surrogateescape")
+        Path(diff_path).write_text(
+            kept_text, encoding="utf-8", errors="surrogateescape"
+        )
         with open(context_path, "a", encoding="utf-8", errors="replace") as fh:
             fh.write(context_section(excluded, rule_path))
         print(

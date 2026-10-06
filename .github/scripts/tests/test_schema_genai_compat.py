@@ -31,7 +31,7 @@ def test_review_schema_has_no_type_unions() -> None:
             if isinstance(node.get("type"), list):
                 raise AssertionError(
                     f"Type union found at {path}: {node['type']!r}. "
-                    "Use \"nullable\": true instead."
+                    'Use "nullable": true instead.'
                 )
             for key, value in node.items():
                 _check(value, f"{path}.{key}")

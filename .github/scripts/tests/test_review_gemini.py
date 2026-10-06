@@ -147,8 +147,20 @@ def test_existing_threads_prefix_caps_each_body(monkeypatch):
     long_body = "x" * 300
     short_body = "y" * 50
     threads = [
-        {"author": "claude", "path": "a.py", "line": 1, "status": "unresolved", "body": long_body},
-        {"author": "codex", "path": "b.py", "line": 2, "status": "resolved", "body": short_body},
+        {
+            "author": "claude",
+            "path": "a.py",
+            "line": 1,
+            "status": "unresolved",
+            "body": long_body,
+        },
+        {
+            "author": "codex",
+            "path": "b.py",
+            "line": 2,
+            "status": "resolved",
+            "body": short_body,
+        },
     ]
     monkeypatch.setenv("EXISTING_COMMENTS", json.dumps(threads))
     monkeypatch.setenv("THREAD_COUNT", "2")
@@ -213,9 +225,7 @@ def test_main_raises_on_max_tokens_finish_reason(tmp_path, monkeypatch, capsys):
 
     fake_client = MagicMock()
     fake_client.models = MagicMock()
-    monkeypatch.setattr(
-        review_gemini.genai, "Client", lambda api_key=None: fake_client
-    )
+    monkeypatch.setattr(review_gemini.genai, "Client", lambda api_key=None: fake_client)
 
     review_gemini.main()
 
