@@ -1166,16 +1166,17 @@ class TestMajorCountIsOneComputation:
 
         reviews = _two_majors_no_consensus()
 
-        # format_summary and post_verdict are the only paths out of main()
-        # that shell out, and both are mocked here, so this route makes no
-        # subprocess call at all -- measured, with the recorder confirmed
-        # against a run where post_verdict is left real.
+        # Keep fold evidence offline too; these findings have no current
+        # posts, so their fold count is unknown, without changing the major count.
         with (
             patch("aggregate_reviews.load_reviews", return_value=reviews),
             patch(
                 "aggregate_reviews.format_summary", return_value="body"
             ) as mock_summary,
             patch("aggregate_reviews.post_verdict") as mock_post,
+            patch("aggregate_reviews.fetch_round_count", return_value=0),
+            patch("aggregate_reviews._fetch_fold_comments", return_value=[]),
+            patch("aggregate_reviews._fetch_inline_posts", return_value=[]),
         ):
             main()
 

@@ -33,6 +33,9 @@ def result_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
     monkeypatch.setattr(aggregate, "_head_is_stale", lambda: False)
     monkeypatch.setattr(aggregate, "post_verdict", lambda *args, **kwargs: True)
+    monkeypatch.setattr(aggregate, "fetch_round_count", lambda *args: 0)
+    monkeypatch.setattr(aggregate, "_fetch_fold_comments", lambda *args: [])
+    monkeypatch.setattr(aggregate, "_fetch_inline_posts", lambda *args: [])
     monkeypatch.setattr(
         aggregate.subprocess,
         "run",

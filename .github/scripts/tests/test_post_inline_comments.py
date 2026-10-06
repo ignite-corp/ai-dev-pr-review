@@ -479,7 +479,11 @@ class TestPostCutoffSummary:
 
         def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
             if cmd[:2] == ["gh", "api"]:
-                return SimpleNamespace(returncode=0, stdout="1", stderr="")
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(["github-actions[bot]", "<!-- round-cutoff-claude-r6 -->\n<!-- fold-count: 2 -->"]),
+                    stderr="",
+                )
             posted.append(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -504,6 +508,9 @@ class TestMainRoundCutoff:
         monkeypatch.setattr(
             post_inline_comments, "fetch_existing_threads", lambda repo, pr: []
         )
+        # The cutoff route looks the head up for its fold comment; never a
+        # real `gh pr view` from a test.
+        monkeypatch.setattr(post_inline_comments, "get_pr_head_sha", lambda pr: "abc")
         monkeypatch.setattr(
             sys,
             "argv",
@@ -534,6 +541,7 @@ class TestMainRoundCutoff:
             reviewer: str,
             round_number: int,
             comments: list[dict[str, Any]],
+            head: str | None = None,
         ) -> None:
             folded.update(round_number=round_number, comments=comments)
 

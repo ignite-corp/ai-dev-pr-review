@@ -72,7 +72,7 @@ on:
         description: "Versioned aggregate outcome JSON for target check reporting; missing means unknown, never success (AT-2520)"
         value: ${{ jobs.aggregate.outputs.review_result }}
       reviewer_roster:
-        description: "JSON {expected, responded, missing{name: reason}} for this round; see README 'Output contract reference' for which missing reasons are benign"
+        description: "JSON {expected, responded, missing{name: reason}, folded{name: count}} for this round; see README 'Output contract reference' for which missing reasons are benign"
         value: ${{ jobs.aggregate.outputs.reviewer_roster }}
       reviewers_expected_count:
         description: "How many reviewers were configured for this round"
@@ -80,6 +80,9 @@ on:
       reviewers_responded_count:
         description: "How many of them produced a usable verdict. A benign round can report fewer than expected, so a gate must read reviewer_roster.missing rather than compare the counts alone"
         value: ${{ jobs.aggregate.outputs.reviewers_responded_count }}
+      folded_findings_count:
+        description: "How many findings the responding reviewers put in one PR comment instead of inline threads this round -- a Round Cutoff Summary, or the inline fallback used when no inline post could be made (the head-SHA lookup or the Reviews API call failed). Read back from the fold comments the posting step wrote, by author and marker, never from the verdict file. 0 when none; empty when a responding reviewer reported findings and left neither a fold comment nor inline comments on this head, which a gate must read as unknown, never as 0"
+        value: ${{ jobs.aggregate.outputs.folded_findings_count }}
 
 # The group names the repository the PR belongs to as well as the PR number:
 # one caller reviewing PR #12 of two different targets must not have the

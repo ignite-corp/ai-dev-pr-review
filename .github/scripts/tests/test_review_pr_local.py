@@ -92,11 +92,12 @@ MAIN_ALLOWED = {
     "aggregate_env(args.repo, args.pr_number, config, bot_login=outcome.bot_login,"
     " head_sha=outcome.head_sha, pr_author=outcome.pr_author, size=outcome.size,"
     " policy=outcome.policy, conclusions=outcome.conclusions,"
-    " prepare_result=outcome.prepare_result)",
+    " prepare_result=outcome.prepare_result, inline_run_id=outcome.inline_run_id)",
     "aggregate(outcome.cwd or run_dir, aggregate_env(args.repo, args.pr_number,"
     " config, bot_login=outcome.bot_login, head_sha=outcome.head_sha,"
     " pr_author=outcome.pr_author, size=outcome.size, policy=outcome.policy,"
-    " conclusions=outcome.conclusions, prepare_result=outcome.prepare_result))",
+    " conclusions=outcome.conclusions, prepare_result=outcome.prepare_result,"
+    " inline_run_id=outcome.inline_run_id))",
 }
 
 
@@ -1547,7 +1548,7 @@ def test_a_malformed_description_does_not_cost_the_others_their_comments(
                         lambda *args: posted.append(args))
 
     driver.run_review_stage(
-        tmp_path, LocalConfig.load(), driver.parse_args(["o/r", "1"]), {}
+        tmp_path, LocalConfig.load(), driver.parse_args(["o/r", "1"]), {}, "operator"
     )
 
     assert posted, "the well-formed reviewer lost its inline comments too"
@@ -1609,7 +1610,7 @@ def test_a_malformed_coordinate_does_not_cost_the_others_their_comments(
                         lambda *args: posted.append(args))
 
     driver.run_review_stage(
-        tmp_path, LocalConfig.load(), driver.parse_args(["o/r", "1"]), {}
+        tmp_path, LocalConfig.load(), driver.parse_args(["o/r", "1"]), {}, "operator"
     )
 
     assert posted, f"{label} cost the well-formed reviewer its comments"
@@ -2116,7 +2117,7 @@ def test_the_coordinate_screen_and_the_comments_stop_with_the_round(
     monkeypatch.setattr(driver, "post_inline_comments", lambda *a: reached.append("post"))
     args = argparse.Namespace(repo="o/r", pr_number="1")
 
-    driver.run_review_stage(tmp_path, LocalConfig.load(), args, {})
+    driver.run_review_stage(tmp_path, LocalConfig.load(), args, {}, "operator")
 
     assert reached == []
     assert "Skipping the coordinate screen" in capsys.readouterr().out
