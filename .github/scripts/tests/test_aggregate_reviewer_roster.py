@@ -90,13 +90,22 @@ def _emit(
     reviews: dict[str, dict[str, Any] | None],
     conclusions: dict[str, str],
     output_path: Path,
+    folded: dict[str, int | None] | None = None,
 ) -> dict[str, Any]:
-    """Run the emit path and parse back what the workflow would read."""
+    """Run the emit path and parse back what the workflow would read.
+
+    ``folded`` is the fold map main() computes from the PR (AT-2553); the
+    tests here are about the roster, so they pass one in -- every responded
+    reviewer at 0 when none is given.
+    """
     available = _get_available(reviews)
+    if folded is None:
+        folded = {name: 0 for name in available}
     with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_path)}):
         write_reviewer_roster(
             available,
             _missing_reviewer_reasons(reviews, available, conclusions),
+            folded,
         )
     return _read_back(output_path)
 
@@ -110,9 +119,11 @@ class TestReviewerRoster:
             "expected": list(REVIEWER_NAMES),
             "responded": list(REVIEWER_NAMES),
             "missing": {},
+            "folded": {name: 0 for name in REVIEWER_NAMES},
         }
         assert out["reviewers_expected_count"] == "3"
         assert out["reviewers_responded_count"] == "3"
+        assert out["folded_findings_count"] == "0"
 
     def test_missing_reviewer_named_with_its_job_conclusion(
         self, tmp_path: Path
@@ -184,7 +195,7 @@ class TestReviewerRoster:
         output_path = tmp_path / "o"
         out = _emit(reviews, {n: "success" for n in REVIEWER_NAMES}, output_path)
         assert out["reviewers_responded_count"] == "2"
-        assert len(output_path.read_text(encoding="utf-8").splitlines()) == 3
+        assert len(output_path.read_text(encoding="utf-8").splitlines()) == 4
         assert "\n" in out["roster"]["missing"]["codex"]
 
     def test_an_unwritable_github_output_degrades_to_a_warning(
@@ -288,8 +299,11 @@ class TestReviewerRoster:
         )
         assert emitted["reviewers_responded_count"] == "0"
         assert emitted["reviewers_expected_count"] == "3"
+        # No reviewer ran, so nothing was folded: a real 0, not an unknown.
+        assert emitted["folded_findings_count"] == "0"
         roster = json.loads(emitted["reviewer_roster"])
         assert roster["responded"] == []
+        assert roster["folded"] == {}
         # Named apart from a REVIEW_MODE-excluded job's bare "skipped": zero
         # responded is only benign because no round was asked for.
         assert roster["missing"] == {n: "skipped (policy)" for n in REVIEWER_NAMES}
@@ -659,6 +673,7 @@ class TestAggregateWorkflowSurfacesTheRoster:
         "reviewer_roster",
         "reviewers_expected_count",
         "reviewers_responded_count",
+        "folded_findings_count",
     )
 
     # Not dict[str, Any]: `on:` is YAML 1.1, so PyYAML hands back the key as
@@ -711,6 +726,7 @@ _OUTPUT_TO_ENV = {
     "reviewer_roster": "ROSTER",
     "reviewers_expected_count": "EXPECTED",
     "reviewers_responded_count": "RESPONDED",
+    "folded_findings_count": "FOLDED",
 }
 
 
@@ -766,6 +782,7 @@ def _gate_env_from_roster(
     available: dict[str, dict[str, Any]],
     missing: dict[str, str],
     output_path: Path,
+    folded: dict[str, int | None] | None = None,
 ) -> dict[str, str]:
     """Gate inputs written by the real emit path, from a chosen roster.
 
@@ -774,8 +791,10 @@ def _gate_env_from_roster(
     in ``missing`` still gets the shipped serialization rather than a
     hand-built approximation of it.
     """
+    if folded is None:
+        folded = {name: 0 for name in available}
     with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output_path)}):
-        write_reviewer_roster(available, missing)
+        write_reviewer_roster(available, missing, folded)
     emitted = _read_back(output_path)
     return {name: str(emitted[key]) for key, name in _OUTPUT_TO_ENV.items()}
 
@@ -784,6 +803,7 @@ def _emitted_gate_env(
     reviews: dict[str, dict[str, Any] | None],
     conclusions: dict[str, str],
     output_path: Path,
+    folded: dict[str, int | None] | None = None,
     **flags: bool,
 ) -> dict[str, str]:
     """Gate inputs as the emit path produces them, not hand-written."""
@@ -792,6 +812,7 @@ def _emitted_gate_env(
         available,
         _missing_reviewer_reasons(reviews, available, conclusions, **flags),
         output_path,
+        folded,
     )
 
 
@@ -908,10 +929,15 @@ class TestDocumentedGateSnippet:
         # The regression the emptiness guard exists for.
         # ``write_reviewer_roster`` degrades an unset or unwritable
         # $GITHUB_OUTPUT to a ``::warning::`` and lets ``main`` go on to
-        # post the verdict, so the run ends green with all three absent --
+        # post the verdict, so the run ends green with all four absent --
         # and two empty strings compare equal, which without the guard is
         # indistinguishable from 3/3.
-        assert _run_gate(readme, {"ROSTER": "", "EXPECTED": "", "RESPONDED": ""}) == 1
+        assert (
+            _run_gate(
+                readme, {"ROSTER": "", "EXPECTED": "", "RESPONDED": "", "FOLDED": ""}
+            )
+            == 1
+        )
 
     @pytest.mark.parametrize(
         ("expected", "responded"), [("3", ""), ("", "3"), ("0", "")]
@@ -931,6 +957,7 @@ class TestDocumentedGateSnippet:
                     ),
                     "EXPECTED": expected,
                     "RESPONDED": responded,
+                    "FOLDED": "0",
                 },
             )
             == 1
@@ -941,4 +968,99 @@ class TestDocumentedGateSnippet:
     ) -> None:
         # A truncated write can leave the counts readable and the roster
         # gone; the equality test alone would wave that through.
-        assert _run_gate(readme, {"ROSTER": "", "EXPECTED": "3", "RESPONDED": "3"}) == 1
+        assert (
+            _run_gate(
+                readme, {"ROSTER": "", "EXPECTED": "3", "RESPONDED": "3", "FOLDED": "0"}
+            )
+            == 1
+        )
+
+    def test_folded_findings_block_at_full_coverage(
+        self, readme: str, tmp_path: Path
+    ) -> None:
+        # The AT-2553 case as the gate sees it: every reviewer responded,
+        # the run is green, and one of them folded two findings into a
+        # summary comment instead of threads. 3/3 is true and must not be
+        # the exit.
+        env = _emitted_gate_env(
+            _all_ok(),
+            {n: "success" for n in REVIEWER_NAMES},
+            tmp_path / "o",
+            folded={"claude": 2, "codex": 0, "gemini": 0},
+        )
+        assert env["RESPONDED"] == env["EXPECTED"] == "3" and env["FOLDED"] == "2"
+        assert _run_gate(readme, env) == 1
+        # ACKED is read like the other four: unset blocks, "false" blocks.
+        assert _run_gate(readme, {**env, "ACKED": "false"}) == 1
+
+    def test_an_acknowledged_fold_passes_the_gate(
+        self, readme: str, tmp_path: Path
+    ) -> None:
+        # The consumer-honoured escape hatch: the count is recomputed per
+        # round and never drops when a human disposes of the folded items,
+        # so the label is how that disposition reaches the gate. The same
+        # env as the blocking case above, plus the label.
+        env = _emitted_gate_env(
+            _all_ok(),
+            {n: "success" for n in REVIEWER_NAMES},
+            tmp_path / "o",
+            folded={"claude": 2, "codex": 0, "gemini": 0},
+        )
+        assert env["FOLDED"] == "2"
+        assert _run_gate(readme, {**env, "ACKED": "true"}) == 0
+
+    def test_the_label_excuses_an_unknown_count_too(
+        self, readme: str, tmp_path: Path
+    ) -> None:
+        # Unknown blocks (a dead posting step is one way to get there), so
+        # without this the label could not unwedge the PR it exists for.
+        env = _emitted_gate_env(
+            _all_ok(),
+            {n: "success" for n in REVIEWER_NAMES},
+            tmp_path / "o",
+            folded={"claude": None, "codex": 0, "gemini": 0},
+        )
+        assert env["FOLDED"] == ""
+        assert _run_gate(readme, env) == 1
+        assert _run_gate(readme, {**env, "ACKED": "true"}) == 0
+
+    def test_the_label_excuses_the_fold_and_nothing_else(
+        self, readme: str, tmp_path: Path
+    ) -> None:
+        # The control: with the label on, a reviewer missing for a non-benign
+        # reason still blocks, and so does an absent roster. The label says
+        # the folded items were dispositioned; it says nothing about either.
+        reviews = _all_ok()
+        reviews["claude"] = None
+        conclusions = {n: "success" for n in REVIEWER_NAMES}
+        conclusions["claude"] = "failure"
+        env = _emitted_gate_env(reviews, conclusions, tmp_path / "o")
+        assert _run_gate(readme, {**env, "ACKED": "true"}) == 1
+        assert (
+            _run_gate(
+                readme,
+                {
+                    "ROSTER": "",
+                    "EXPECTED": "3",
+                    "RESPONDED": "3",
+                    "FOLDED": "0",
+                    "ACKED": "true",
+                },
+            )
+            == 1
+        )
+
+    def test_an_unknown_fold_count_blocks_at_full_coverage(
+        self, readme: str, tmp_path: Path
+    ) -> None:
+        # A responding reviewer the aggregate could not count for: it
+        # emits an empty count, and empty is unknown, never 0.
+        env = _emitted_gate_env(
+            _all_ok(),
+            {n: "success" for n in REVIEWER_NAMES},
+            tmp_path / "o",
+            folded={"claude": 0, "codex": None, "gemini": 0},
+        )
+        assert env["RESPONDED"] == env["EXPECTED"] == "3" and env["FOLDED"] == ""
+        assert json.loads(env["ROSTER"])["folded"]["codex"] is None
+        assert _run_gate(readme, env) == 1

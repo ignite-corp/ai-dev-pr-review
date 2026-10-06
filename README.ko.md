@@ -210,15 +210,16 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 ## 출력 계약 레퍼런스
 
-thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml`은 `workflow_call` 출력 세 개를 반환합니다. 잡의 conclusion은 리뷰어 전원이 판정을 냈든 셋 중 하나만 냈든 똑같이 `success`이므로, conclusion만 읽는 머지 게이트는 퇴화한(degraded) 라운드를 볼 수 없습니다. 이 출력들은 그 사실을 게이트가 읽을 수 있는 형태로 내보냅니다.
+thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml`은 `workflow_call` 출력 네 개를 반환합니다. 앞의 세 개가 있는 이유는, 잡의 conclusion은 리뷰어 전원이 판정을 냈든 셋 중 하나만 냈든 똑같이 `success`이므로 conclusion만 읽는 머지 게이트는 퇴화한(degraded) 라운드를 볼 수 없기 때문입니다. 네 번째가 있는 이유는, 인라인 스레드 대신 PR 코멘트 하나에 담긴 지적 — 라운드 컷오프(아래 `ROUND_CUTOFF_N` 참조)로 접혔거나, 인라인 게시를 아예 할 수 없어(head SHA 조회나 Reviews API 호출 실패) 게시 스텝의 폴백으로 접혔거나 — 은 리뷰 스레드가 아니라서 미해결 스레드 수를 세는 머지 게이트가 그것 역시 볼 수 없기 때문입니다: 긴 PR에서 게이트는 Approved 헤드라인 아래 스레드 0을 읽었고, 접힌 지적 두 건이 처분되지 않은 채 PR이 머지되었습니다(AT-2553).
 
 | 출력 | 타입 | 비고 |
 |---|---|---|
-| `reviewer_roster` | string (JSON) | `{"expected": [...], "responded": [...], "missing": {"<name>": "<reason>"}}`. `expected`는 구성된 전체 리뷰어, `responded`는 쓸 수 있는 판정을 낸 리뷰어, `missing`은 나머지와 각각의 사유 하나씩. `responded`와 `missing`은 `expected`를 분할합니다. |
+| `reviewer_roster` | string (JSON) | `{"expected": [...], "responded": [...], "missing": {"<name>": "<reason>"}, "folded": {"<name>": <count>}}`. `expected`는 구성된 전체 리뷰어, `responded`는 쓸 수 있는 판정을 낸 리뷰어, `missing`은 나머지와 각각의 사유 하나씩. `responded`와 `missing`은 `expected`를 분할합니다. `folded`는 `responded` 리뷰어마다 항목 하나씩: 그 리뷰어의 게시 스텝이 인라인 스레드 대신 PR 코멘트 하나에 담은 지적 수 — `Round Cutoff Summary`이거나, 인라인 게시를 아예 할 수 없을 때(head SHA 조회나 Reviews API 호출 실패) 쓰는 인라인 폴백 — 에서 읽어 온 값이며, 취합 단계가 그 리뷰어의 수를 셀 수 없었으면 `null`입니다(아래 참조). |
 | `reviewers_expected_count` | string | `expected`의 길이. |
 | `reviewers_responded_count` | string | `responded`의 길이. |
+| `folded_findings_count` | string | `folded`의 합. 아무것도 접히지 않았으면 `0` — 이는 그 두 경로로 접힌 것이 없다는 뜻이며, 모든 지적이 스레드에 올랐다는 뜻은 아닙니다: 파일/행이 없는 지적이나 diff 밖의 지적은 게시 전에 버려져 판정 코멘트 본문에만 남고 여기서 세지 않습니다(기존 동작이며 이 출력으로 바뀌지 않습니다). `folded` 항목 중 하나라도 `null`이면 — 취합 단계가 그 리뷰어의 수를 셀 수 없었던 것 — 빈 문자열이며, 빈 값은 모른다는 뜻이지 결코 0이 아닙니다. |
 
-`base-ai-review-aggregate.yml`도 같은 세 개를 선언하지만, 소비자는 orchestrator에서 읽습니다.
+`base-ai-review-aggregate.yml`도 같은 네 개를 선언하지만, 소비자는 orchestrator에서 읽습니다.
 
 **응답 수가 정족수에 못 미친다는 것 자체는 문제가 아닙니다.** 정상적으로 `reviewers_responded_count < reviewers_expected_count`로 끝나는 초록색 경로가 둘 있으므로, 게이트는 숫자만 비교하지 말고 `missing`의 사유를 읽어야 합니다:
 
@@ -231,7 +232,7 @@ thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml
 | `failed (see logs)`, `cancelled`, `no verdict (unknown)` | 잡이 완료되지 못함. | 아니오 |
 | `failed: <상세>` | 리뷰어 페이로드에서 가져온 리뷰어 자신의 실패 상세. `failed: ` 접두사는 무조건 붙고 정상 사유 중에는 이 접두사로 시작하는 것이 없으므로, PR 내용을 바탕으로 LLM이 쓴 페이로드 텍스트가 정상 사유를 통째로 흉내 내 아래 게이트를 통과하는 일은 불가능합니다. | 아니오 |
 
-게이트 예시 — 정상 사유가 아닌 이유로 리뷰어가 빠졌을 때 머지를 막습니다:
+게이트 예시 — 정상 사유가 아닌 이유로 리뷰어가 빠졌을 때, 또는 지적이 코멘트로 접혀 스레드가 아닐 때 머지를 막습니다:
 
 ```yaml
 jobs:
@@ -248,13 +249,28 @@ jobs:
           ROSTER: ${{ needs.review.outputs.reviewer_roster }}
           RESPONDED: ${{ needs.review.outputs.reviewers_responded_count }}
           EXPECTED: ${{ needs.review.outputs.reviewers_expected_count }}
+          FOLDED: ${{ needs.review.outputs.folded_findings_count }}
+          ACKED: ${{ contains(github.event.pull_request.labels.*.name, 'fold-acknowledged') }}
         run: |
-          echo "$RESPONDED/$EXPECTED reviewers responded"
+          echo "$RESPONDED/$EXPECTED reviewers responded, $FOLDED finding(s) folded"
           # 비교보다 먼저, 출력이 없으면 닫히는 쪽으로 실패시킵니다: 빈 문자열
           # 둘은 서로 같으므로, 먼저 비교하는 게이트는 사라진 커버리지를 완전한
           # 커버리지로 읽습니다. 이 블록 아래 설명을 참조하세요.
           [ -n "$ROSTER" ] && [ -n "$EXPECTED" ] && [ -n "$RESPONDED" ] \
             || { echo "::error::reviewer roster output is missing"; exit 1; }
+          # 접기 검사이며, 라벨만이 이것을 면제합니다. 로스터와 따로 가드합니다:
+          # 이 값만 홀로 비어 있을 수 있습니다 — 어느 리뷰어가 지적을 보고했는데
+          # PR에 그 리뷰어의 접기 코멘트도 이 head의 인라인 코멘트도 없는
+          # 경우입니다. 빈 값은 모른다는 뜻이지 결코 0이 아닙니다. 접힌 지적은
+          # 스레드가 아닙니다: 스레드 수 0은 그에 대해 아무것도 말해 주지
+          # 않습니다. 코멘트에서 먼저 처분하세요. 라벨은 사람이 그 처분을
+          # 마쳤다고 말하는 방법입니다.
+          if [ "$ACKED" != "true" ]; then
+            [ -n "$FOLDED" ] \
+              || { echo "::error::fold count unknown -- a reviewer reported findings and left neither a fold comment nor inline comments on this head; check its 'Post inline comments' log, or add the fold-acknowledged label once its findings are dispositioned"; exit 1; }
+            [ "$FOLDED" = "0" ] \
+              || { echo "::error::$FOLDED finding(s) folded into comments instead of threads await disposition -- see reviewer_roster.folded for whose, or add the fold-acknowledged label once they are"; exit 1; }
+          fi
           [ "$RESPONDED" = "$EXPECTED" ] && exit 0
           # 패턴 매칭이 아니라 문자열 전체 비교: 정상 사유에는 모두 괄호가
           # 들어 있어 정규식으로 읽으면 그룹으로 해석됩니다.
@@ -266,13 +282,17 @@ jobs:
             || { echo "::error::a reviewer is missing for a non-benign reason"; exit 1; }
 ```
 
-**`reviewer_roster`는 신뢰할 수 없는 입력입니다. `env:`로 받아서 읽고, `run:` 본문에 `${{ ... }}`로 직접 끼워 넣지 마세요.** `failed: <상세>` 사유에는 LLM이 PR 내용을 보고 쓴 텍스트가 실리므로, PR을 열 수 있는 사람이면 누구나 그 값에 영향을 줄 수 있습니다. 위 예시는 출력을 `ROSTER`에 바인딩하고 `"$ROSTER"`로 인용합니다. 대신 `${{ needs.review.outputs.reviewer_roster }}`를 `run:` 본문에 끼워 넣으면 소비자 자신의 워크플로우에 표현식 인젝션 통로가 생깁니다 — 셸이 스크립트를 파싱하기도 전에 그 텍스트가 스크립트 안으로 치환되어 들어가므로, 뒤에서 아무리 인용해도 되돌릴 수 없습니다. 나머지 두 출력은 이 레포가 세는 정수이지 페이로드 텍스트가 아니라 같은 위험이 없지만, 위 예시는 그것들도 `env:`로 받습니다 — 비용이 들지 않고 세 출력에 같은 규칙 하나만 남기는 쪽이기 때문입니다.
+접기 차단이 기본입니다. 이 수는 라운드마다 그 라운드가 접은 것에서 다시 계산되므로, 사람이 코멘트에서 접힌 항목을 처분해도 내려가지 않습니다. `fold-acknowledged` 라벨은 그 처분을 기록하는 방법이고, 위 예시는 접기 검사에서만 그것을 존중합니다 — 라벨이 있어도 빠진 리뷰어는 여전히 막습니다. 라벨 이름은 아무거나 괜찮습니다. 예시는 `contains(github.event.pull_request.labels.*.name, ...)`로 읽으며 이는 런 시점의 PR 라벨 집합이므로, 게이트를 통과시킬 라운드 전에 라벨을 붙이세요.
+
+**`reviewer_roster`는 신뢰할 수 없는 입력입니다. `env:`로 받아서 읽고, `run:` 본문에 `${{ ... }}`로 직접 끼워 넣지 마세요.** `failed: <상세>` 사유에는 LLM이 PR 내용을 보고 쓴 텍스트가 실리므로, PR을 열 수 있는 사람이면 누구나 그 값에 영향을 줄 수 있습니다. 위 예시는 출력을 `ROSTER`에 바인딩하고 `"$ROSTER"`로 인용합니다. 대신 `${{ needs.review.outputs.reviewer_roster }}`를 `run:` 본문에 끼워 넣으면 소비자 자신의 워크플로우에 표현식 인젝션 통로가 생깁니다 — 셸이 스크립트를 파싱하기도 전에 그 텍스트가 스크립트 안으로 치환되어 들어가므로, 뒤에서 아무리 인용해도 되돌릴 수 없습니다. 나머지 세 출력은 이 레포가 세는 정수이지 페이로드 텍스트가 아니라 같은 위험이 없지만, 위 예시는 그것들도 `env:`로 받습니다 — 비용이 들지 않고 네 출력에 같은 규칙 하나만 남기는 쪽이기 때문입니다.
 
 **초록색으로 끝난 런도 이 게이트에서 막힐 수 있으며, 0/3 라운드가 바로 그 경우입니다.** 리뷰어 전원이 `early-exit or no-output`을 보고하면 취합 단계는 여전히 approve 판정을 게시하고 런은 초록색으로 끝나지만(이 동작은 기존 그대로이며 여기서 바뀌지 않았습니다), 로스터에는 정상이 아닌 사유 세 개가 담기고 위 예시는 막습니다. 게이트를 느슨하게 할 일이 아니라 장애로 보고 확인해야 합니다(리뷰어 잡 로그와 프로바이더 자격증명부터): 이 상태는 자격증명 장애와 구분되지 않으므로, 해당 사유를 `$benign`에 넣는 것은 곧 장애 위에서 머지하는 것입니다.
 
 이 예시는 모호한 행을 엄격하게 읽어 맨 `skipped`에서 막습니다. 리뷰어를 의도적으로 제외하는 소비자(`REVIEW_MODE` 라우팅, 자체 `if:`로 잡을 차단하는 경우)는 `$benign`에 `"skipped"`를 추가하되, 그 순간부터 실행되지 않은 잡과 구분할 수 없게 된다는 점을 받아들여야 합니다.
 
-세 출력 모두 초록색으로 끝나는 모든 경로에서 나오며, 정책 스킵도 포함입니다 — 그 경우 `reviewers_responded_count`는 빈 문자열이 아니라 명시적인 `0`입니다. 초록색 경로 중 하나는 예외이고, 위 예시의 빈 값 가드는 그것 때문에 있습니다: `$GITHUB_OUTPUT`이 설정되지 않았거나 쓸 수 없을 때 취합 단계는 `::warning::`만 남기고 라운드를 실패시키는 대신 판정 게시로 넘어가므로, 세 출력이 모두 없는 채로 초록색으로 끝난 런이 게이트에 닿을 수 있습니다. 없는 출력은 `0`이 아니라 빈 문자열로 읽히고, 빈 값은 커버리지를 모른다는 뜻이지 완전하다는 뜻이 결코 아닙니다 — 가드가 비교 뒤가 아니라 앞에 오는 이유입니다.
+네 출력 모두 초록색으로 끝나는 모든 경로에서 나오며, 정책 스킵도 포함입니다 — 그 경우 `reviewers_responded_count`와 `folded_findings_count`는 빈 문자열이 아니라 명시적인 `0`입니다. 초록색 경로 중 하나는 예외이고, 위 예시의 빈 값 가드는 그것 때문에 있습니다: `$GITHUB_OUTPUT`이 설정되지 않았거나 쓸 수 없을 때 취합 단계는 `::warning::`만 남기고 라운드를 실패시키는 대신 판정 게시로 넘어가므로, 네 출력이 모두 없는 채로 초록색으로 끝난 런이 게이트에 닿을 수 있습니다. 없는 출력은 `0`이 아니라 빈 문자열로 읽히고, 빈 값은 커버리지를 모른다는 뜻이지 완전하다는 뜻이 결코 아닙니다 — 가드가 비교 뒤가 아니라 앞에 오는 이유입니다.
+
+`folded_findings_count`만 빈 채로 끝나는, 그 외에는 온전한 초록색 런도 있습니다. 이 수는 판정 파일이 아니라 PR 위로 전달됩니다: 리뷰어의 `Post inline comments` 스텝이 게시하는 모든 접기 코멘트 — `Round Cutoff Summary`이거나 인라인 폴백 — 는 마커 옆에 `<!-- fold-count: N -->` 줄을 담고, 취합 단계는 PR의 코멘트를 읽어 `BOT_LOGIN`이 작성했고 마커가 그 리뷰어와 현재 라운드를 가리키는(그리고 줄에 head가 있으면 이 런의 head인) 것만 남겨 거기서 수를 가져옵니다. 판정 파일은 리뷰어 자신의 JSON이고 PR 내용을 바탕으로 쓰인 것이라 거기 기록된 수는 거기 심어질 수도 있지만, 코멘트의 작성자는 PR이 가장할 수 없는 유일한 신원입니다. 0도 PR이 지어낼 수 없는 곳에서만 도출합니다: 그 리뷰어의 판정에 지적이 하나도 없거나, 이 head에 `BOT_LOGIN`이 쓴 그 리뷰어의 인라인 코멘트가 있는 경우입니다. 지적을 보고했는데 이 head에 접기 코멘트도 인라인 코멘트도 남기지 않은 리뷰어는 게시 스텝이 게시 전에 죽었거나, 모든 지적이 이전 라운드의 스레드와 중복으로 걸러졌거나 위치를 찾을 수 없어 버려져 아무것도 게시하지 않은 경우이며 — 취합 단계는 이것들을 구분할 수 없으므로 `folded`에서 그 리뷰어를 `null`로 보고하고 합계를 비워 두며 헤드라인에 그 리뷰어를 이름으로 적습니다(`fold count unknown (<name>)`). 스텝이 `continue-on-error`라 어느 쪽이든 잡은 초록색으로 남습니다. 위 예시는 이 값을 로스터와 따로 가드하며, 그 조건과 봐야 할 곳(그 리뷰어의 잡 로그), 그리고 사람이 확인한 뒤 통과시키는 방법(라벨)을 메시지에 적습니다 — 그런 런에서 로스터는 있고 또 정확하므로, 로스터 메시지는 엉뚱한 잡을 가리키게 됩니다.
 
 리뷰어에 닿기 전에 빨간색으로 끝나는 경로(head가 밀려난 경우, prepare 실패, `PR_SIZE_LIMIT` 초과)는 의도적으로 아무것도 내보내지 않습니다: 돌지도 않은 라운드의 로스터는 아무도 측정하지 않은 커버리지 수치를 그 PR에 대해 주장하는 셈이기 때문입니다. 이 경로들은 게이트가 따로 처리할 필요가 없습니다: 해당 런은 빨간색이라 `needs:` 게이트가 아예 실행되지 않습니다.
 
@@ -298,7 +318,7 @@ jobs:
 | `ALLOW_AUTO_APPROVE` | `false` | **모든** 정식 리뷰 이벤트를 제어하는 킬스위치. `false`일 때 "approve"와 "request_changes" 판정 모두 일반 코멘트로 게시됨(`gh pr review --approve` 및 `--request-changes` 미제출). `true`로 전환하면 실제 `gh pr review --approve` 및 `--request-changes`(Changes Requested) 이벤트 활성화. |
 | `REVIEWER_APP_ID` | _(미설정)_ | 전용 리뷰어 GitHub App의 App ID. 설정 시(그리고 `REVIEWER_APP_PRIVATE_KEY` 시크릿 구성 시) 취합 단계가 App 설치 토큰을 발급해 `approve` 판정에 실제 APPROVED 리뷰를 제출함. `github-actions[bot]`은 PR을 승인할 수 없으므로, 미설정 시 `approve` 판정은 일반 코멘트로 폴백됨 — 현재 기본 동작. 선택 사항이며 완전한 하위 호환. |
 | `CLAUDE_FORCE_API` | _(미설정)_ | Claude 리뷰어를 OAuth 구독 경로에서 과금되는 `ANTHROPIC_API_KEY` 경로로 전환하는 스위치. 전환되면 composite가 API 키 **시크릿**을 전달하면서 `CLAUDE_CODE_OAUTH_TOKEN`을 **비워** CLI가 OAuth를 우선하지 못하게 함. **허용 값:** `true`이면 경로가 전환됩니다(GitHub의 `==`는 대소문자를 무시하므로 `True`, `TRUE`도 동일). `false`는 특별한 값이 아닙니다 — `false`를 포함해 `true`가 아닌 모든 값은 변수가 존재하지 않는 것과 구분되지 않으며 전부 OAuth 기본 경로를 뜻합니다. 그래서 운영 측 복구도 `false`로 바꾸는 대신 변수를 삭제합니다. 변수가 담는 것은 이 플래그뿐이고, 키는 `ANTHROPIC_API_KEY` 시크릿에 그대로 있으며(위 시크릿 표 참고) 변수로 복사되지 않습니다. 설정되어 있는 동안 Claude 리뷰는 Pro/Max 구독이 아니라 Anthropic API 계정에 과금되며, `CLAUDE_CODE_OAUTH_TOKEN`만 구성한 레포는 이 경로에서 쓸 자격증명이 남지 않습니다 — Claude 리뷰어를 쓴다면 `ANTHROPIC_API_KEY`를 함께 구성해 두세요. 운영(ops)이 관리하며 평소에는 존재하지 않음: `.github/scripts/switch_claude_auth.py`가 Claude 구독 사용량 한도를 감지하면 `ignite-corp` 조직 변수(visibility `all`)로 설정하고, 한도가 초기화되면 `CLAUDE_FORCE_API_UNTIL`과 함께 삭제함. 부재가 정상 상태이므로 소비자가 직접 설정하지 마세요. |
-| `ROUND_CUTOFF_N` | `5` | 수렴 백스톱. 이 리뷰 라운드부터 해당 리뷰어의 발견은 개별 인라인 스레드 대신 `Round Cutoff Summary (R<n>)` 코멘트 하나로 접힘. 라운드 번호는 PR에 이미 게시된 봇 판정 수에 진행 중인 라운드 1을 더한 값. 접기가 발동하려면 세 조건이 **모두** 성립해야 함 — 게이트가 켜져 있을 것, 라운드 번호가 이 값에 도달했을 것, **그리고** 그 리뷰어 payload의 발견이 전부 `minor` 또는 `suggestion`일 것. `critical`이나 `major`가 하나라도 있으면 배치 전체가 평소대로 인라인 게시되며, severity가 없거나 알 수 없는 값인 발견도 마찬가지임 — 알 수 없는 severity는 blocking으로 세어 예상 밖 payload에서 fail-open함. 리뷰어별·라운드별로 판정하므로 한 리뷰어만 접히고 다른 리뷰어는 인라인 게시할 수 있음. 판정에는 영향 없음 — 자동 병합도, 후속 티켓 생성도 하지 않음. 정수가 아닌 값은 `5`로 폴백. |
+| `ROUND_CUTOFF_N` | `5` | 수렴 백스톱. 이 리뷰 라운드부터 해당 리뷰어의 발견은 개별 인라인 스레드 대신 `Round Cutoff Summary (R<n>)` 코멘트 하나로 접힘. 라운드 번호는 PR에 이미 게시된 봇 판정 수에 진행 중인 라운드 1을 더한 값. 접기가 발동하려면 세 조건이 **모두** 성립해야 함 — 게이트가 켜져 있을 것, 라운드 번호가 이 값에 도달했을 것, **그리고** 그 리뷰어 payload의 발견이 전부 `minor` 또는 `suggestion`일 것. `critical`이나 `major`가 하나라도 있으면 배치 전체가 평소대로 인라인 게시되며, severity가 없거나 알 수 없는 값인 발견도 마찬가지임 — 알 수 없는 severity는 blocking으로 세어 예상 밖 payload에서 fail-open함. 리뷰어별·라운드별로 판정하므로 한 리뷰어만 접히고 다른 리뷰어는 인라인 게시할 수 있음. 판정어에는 영향 없음 — 자동 병합도, 후속 티켓 생성도 하지 않음 — 그러나 접기는 조용히 일어나지 않음: 접힌 지적은 리뷰 스레드가 아니라서 미해결 스레드를 세는 머지 게이트가 볼 수 없으므로(AT-2553), 그 수는 게이트가 읽을 수 있는 곳으로 감. 요약 코멘트 자체가 그 수를 담으며(`<!-- fold-count: N -->`) — 배치를 같은 방식으로 코멘트 하나에 접는 인라인 폴백도 마찬가지 — 취합 단계가 작성자와 마커로 코멘트에서 그 수를 읽어 오고, 헤드라인이 그 수와 리뷰어를 적으며(`Approved \| 3/3 reviewers \| 2 finding(s) folded into comments (claude 2)`), 취합 단계가 `folded_findings_count`로, 그리고 리뷰어별로는 `reviewer_roster.folded`로 내보냄("출력 계약 레퍼런스" 참조). 정수가 아닌 값은 `5`로 폴백. |
 | `ROUND_CUTOFF_ENABLED` | `true` | `ROUND_CUTOFF_N` 백스톱의 킬스위치. 문자열 `false`만(대소문자 무시, 앞뒤 공백 무시) 비활성화하며, 오타를 포함한 그 외 모든 값은 게이트를 켜 둔 상태로 둠. 끄면 라운드가 아무리 진행돼도 발견은 항상 개별 인라인 스레드로 게시됨. |
 
 ## 리뷰에서 경로 제외하기 (`.github/lens-ignore`)

@@ -74,10 +74,13 @@ on:
     # A merge gate sees only this workflow's conclusion, and that is green
     # whether every reviewer produced a verdict or one of three did. The
     # roster carries that fact out in a form a gate can read; it changes no
-    # conclusion and no exit status (AT-2511).
+    # conclusion and no exit status (AT-2511). The fold count is the same
+    # kind of fact: a finding put in one comment -- a round-cutoff summary,
+    # or the inline fallback -- is not a review thread, so a gate counting
+    # unresolved threads cannot see it (AT-2553).
     outputs:
       reviewer_roster:
-        description: "JSON {expected, responded, missing{name: reason}} for this round; see README 'Output contract reference' for which missing reasons are benign"
+        description: "JSON {expected, responded, missing{name: reason}, folded{name: count}} for this round; see README 'Output contract reference' for which missing reasons are benign"
         value: ${{ jobs.aggregate.outputs.reviewer_roster }}
       reviewers_expected_count:
         description: "How many reviewers were configured for this round"
@@ -85,6 +88,9 @@ on:
       reviewers_responded_count:
         description: "How many of them produced a usable verdict. A benign round can report fewer than expected, so a gate must read reviewer_roster.missing rather than compare the counts alone"
         value: ${{ jobs.aggregate.outputs.reviewers_responded_count }}
+      folded_findings_count:
+        description: "How many findings the responding reviewers put in one PR comment instead of inline threads this round -- a Round Cutoff Summary, or the inline fallback used when no inline post could be made (the head-SHA lookup or the Reviews API call failed). Read back from the fold comments the posting step wrote, by author and marker, never from the verdict file. 0 when none; empty when a responding reviewer reported findings and left neither a fold comment nor inline comments on this head, which a gate must read as unknown, never as 0"
+        value: ${{ jobs.aggregate.outputs.folded_findings_count }}
 
 permissions:
   contents: read
@@ -98,6 +104,7 @@ jobs:
       reviewer_roster: ${{ steps.aggregate.outputs.reviewer_roster }}
       reviewers_expected_count: ${{ steps.aggregate.outputs.reviewers_expected_count }}
       reviewers_responded_count: ${{ steps.aggregate.outputs.reviewers_responded_count }}
+      folded_findings_count: ${{ steps.aggregate.outputs.folded_findings_count }}
     steps:
       # Consumer-repo checkout (kept so per-repo overrides can hook in later).
       - name: Checkout caller repo (PR head)
