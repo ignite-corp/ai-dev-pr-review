@@ -29,12 +29,6 @@ extend-select = ["PLR0915"]
 # a ruff default change cannot move what the templates tell consumers.
 max-statements = 50
 
-[tool.ruff.lint.per-file-ignores]
-# format_summary was 58 statements on the day the rule was switched on.
-# Splitting it belongs with a change to that module, not with the one that
-# turned the check on, so the single offender is grandfathered (AT-2420).
-".github/scripts/aggregate_reviews.py" = ["PLR0915"]
-
 [tool.pyright]
 # Every Python file here lives under a dot-directory, which pyright's default
 # exclude (`**/.*`) skips even when the file is named on the command line: it

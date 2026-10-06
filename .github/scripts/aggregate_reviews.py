@@ -36,6 +36,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -173,7 +174,7 @@ def _missing_reason(conclusion: str) -> str:
 
 
 def _get_available(
-    reviews: dict[str, dict[str, Any] | None],
+    reviews: Mapping[str, dict[str, Any] | None],
 ) -> dict[str, dict[str, Any]]:
     """Filter reviews to only those with valid responses.
 
@@ -290,7 +291,7 @@ def _partial_short_message(
 
 
 def _emit_partial_observability(
-    reviews: dict[str, dict[str, Any] | None],
+    reviews: Mapping[str, dict[str, Any] | None],
     conclusions: dict[str, str],
 ) -> list[str]:
     """Emit GHA warnings + Job Summary rows per partial-failed reviewer.
@@ -346,7 +347,7 @@ def _all_reviewer_jobs_succeeded(total: int) -> bool:
 
 
 def _artifacts_entirely_absent(
-    reviews: dict[str, dict[str, Any] | None],
+    reviews: Mapping[str, dict[str, Any] | None],
 ) -> bool:
     """True when no reviewer wrote any artifact at all.
 
@@ -360,7 +361,7 @@ def _artifacts_entirely_absent(
 
 def _check_insufficient(
     available: dict[str, dict[str, Any]],
-    reviews: dict[str, dict[str, Any] | None],
+    reviews: Mapping[str, dict[str, Any] | None],
     total: int,
 ) -> tuple[str, str] | None:
     if len(available) < MIN_REVIEWERS_FOR_VERDICT:
@@ -737,7 +738,7 @@ def format_policy_skip_summary(paths: list[str]) -> str:
 
 
 def apply_verdict_rules(
-    reviews: dict[str, dict[str, Any] | None],
+    reviews: Mapping[str, dict[str, Any] | None],
 ) -> tuple[str, str, dict[str, dict[str, Any]]]:
     """Apply severity-based verdict rules. Returns (verdict, reason, available)."""
     available = _get_available(reviews)
@@ -884,7 +885,7 @@ def _payload_failure_reason(review: dict[str, Any]) -> str:
 
 
 def _missing_reviewer_reasons(
-    reviews: dict[str, dict[str, Any] | None],
+    reviews: Mapping[str, dict[str, Any] | None],
     available: dict[str, dict[str, Any]],
     conclusions: dict[str, str] | None,
     *,
@@ -1005,8 +1006,11 @@ def write_reviewer_roster(
         print(f"::warning::Failed to write GITHUB_OUTPUT: {e}", file=sys.stderr)
 
 
-def format_summary(
-    reviews: dict[str, dict[str, Any] | None],
+# 58 statements on the day PLR0915 was switched on; splitting it belongs
+# with a change to this module, not with the one that turned the check on
+# (AT-2420).
+def format_summary(  # noqa: PLR0915
+    reviews: Mapping[str, dict[str, Any] | None],
     verdict: str,
     reason: str,
     available: dict[str, dict[str, Any]],
