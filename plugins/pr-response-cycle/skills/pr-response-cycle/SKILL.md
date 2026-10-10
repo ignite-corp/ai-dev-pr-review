@@ -810,6 +810,7 @@ major_dispositions() {
   local item_re='^- \+ \*\*major\*\* `([^`]+)` -- (.*)$'
   local nopath_re='^- \+ \*\*major\*\* -- (.+)$'
   local loc_re='^(.*):([0-9]+)$'
+  local quote quote_re='^[[:space:]>+-]*(\*\*major\*\*.*)$'
   while IFS= read -r line; do
     [[ $line == '- + **major**'* ]] || continue
     n=$((n + 1))
@@ -827,7 +828,12 @@ major_dispositions() {
     needle=${line#- + }
     if [ -n "$path" ] && thread_answers "$threads" "$path" "$lineno" "$desc"; then
       echo "(c) major answered by a replied thread on $path: $line"
-    elif printf '%s\n' "$quotes" | grep -qF -- "$needle"; then
+    elif (
+      while IFS= read -r quote; do
+        [[ $quote =~ $quote_re ]] && [ "${BASH_REMATCH[1]}" = "$needle" ] && exit 0
+      done <<<"$quotes"
+      exit 1
+    ); then
       echo "(c) major answered by a later quoted reply: $line"
     else
       echo "(c) BLOCK: major with neither a replied thread on its path at its line or opening with the producer's rendering of it, nor a later reply quoting '$needle': $line"; bad=$((bad + 1))
@@ -1043,7 +1049,7 @@ review_workflow_known() {
 # reachable, not yet observed, because the cutoff only fires at
 # ROUND_CUTOFF_N and `fetch_round_count` counts Bot verdicts only — a
 # mixed drive reaches it). What stands in for the author is the producer's
-# signature, `cutoff_marker`: a whole line that is nothing but the
+# signature, `cutoff_marker`: the first line is nothing but the
 # marker's HTML comment, which only the producer writes. That shape is
 # also what keeps the regress out — a disposition comment names the marker
 # inline in backticks, never as a line of its own, so it stays an answer
@@ -1057,12 +1063,12 @@ cutoff_findings() {
   local since=$1 comments markers rc=0 id at marker items n_items missing rx
   # jq's regex-escape for the two literals the reply is bound to below, the
   # marker and each item's location, and the producer's own signature: a
-  # whole line that is nothing but the marker's HTML comment. One
+  # first line that is nothing but the marker's HTML comment. One
   # definition each, prepended to all three programs.
   # shellcheck disable=SC2016  # jq's own text, not shell
   rx='def rx: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\])"; "\\" + .c);
-      def cutoff_marker: ((((.body // "") | gsub("\r"; "") | split("\n")
-        | map(capture("^<!--\\s*(?<m>round-cutoff-\\S+?)\\s*-->$") | .m)) | .[0]) // "");'
+      def cutoff_marker: ((((.body // "") | gsub("\r"; "") | split("\n") | (.[0] // "")
+        | [capture("^<!--\\s*(?<m>round-cutoff-\\S+?)\\s*-->$") | .m]) | .[0]) // "");'
   comments=$(cat) || { echo "(c) BLOCK: could not read the comments for the cutoff surface"; return 1; }
   markers=$(printf '%s' "$comments" | jq -r --arg s "$since" "$rx"'
      [ .[]
