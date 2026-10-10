@@ -59,6 +59,9 @@ _FALLBACK_HEADER = "## [bot] {} Inline Review (fallback)"
 # Round-cutoff convergence backstop (RC-5, issue #37). Tunable via the
 # ROUND_CUTOFF_N env var; ROUND_CUTOFF_ENABLED=false disables the gate.
 DEFAULT_ROUND_CUTOFF_N = 5
+# Consumers anchor on this marker as the comment's whole first line: cutoff_findings in
+# plugins/pr-response-cycle/skills/pr-response-cycle/SKILL.md (deployed user-level from
+# hyuk-hur/dev-dotfiles). Append anything to that line and they miss the comment and pass silently.
 _CUTOFF_MARKER = "<!-- round-cutoff-{reviewer}-r{round} -->"
 _CUTOFF_HEADER = "## [bot] {} Round Cutoff Summary (R{})"
 _CUTOFF_LEAD = (
