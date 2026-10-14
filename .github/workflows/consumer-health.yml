@@ -815,12 +815,19 @@ jobs:
             # Actions scope: org-level + repo-level both introspectable via the GitHub App
             # token (the App holds Organization Secrets: Read). Missing = [FLAG].
             #
-            # Dependabot scope: GitHub Apps cannot read org-level Dependabot secrets
-            # (platform limitation -- no "Organization Dependabot Secrets: Read" permission
-            # exists in the App catalog as of 2026-06-17). check_org_secret_grants_repo
-            # dependabot always returns 1 (failure) under App auth, regardless of actual
-            # configuration. We therefore probe repo-level only, surface as informational,
-            # and rely on downstream "recent ai-review runs failed" to catch real misconfig
+            # Dependabot scope: this App does not hold "Organization dependabot
+            # secrets", so check_org_secret_grants_repo dependabot always returns 1
+            # (failure) under App auth, regardless of actual configuration. The blocker
+            # is the grant, not the catalog: GitHub's permissions-required-for-github-apps
+            # reference lists GET /orgs/{org}/dependabot/secrets/{secret_name} under that
+            # permission for installation tokens (IAT), checked 2026-10-16 under AT-2537.
+            # This corrects the original reading here, "no such permission exists in the
+            # App catalog as of 2026-06-17" -- whether it was wrong then or has since been
+            # added is not established. Granting organization_dependabot_secrets: read
+            # would let this probe run org-level; whether to request it is open under
+            # AT-2888. We therefore probe repo-level only, surface as
+            # informational, and rely on downstream "recent ai-review runs failed"
+            # to catch real misconfig
             # (a Dependabot PR with broken secret auth fails the actual ai-review run, which
             # our fail-count check above already detects).
             for key in "${REQUIRED_SECRETS[@]}"; do
