@@ -17,6 +17,7 @@ Pin statuses:
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -41,6 +42,39 @@ _TAGS_PATH_TMPL = "repos/{repo}/tags"
 # message, short enough to avoid bloating ``context.md`` when the CLI dumps
 # a stack trace.
 _STDERR_EXCERPT_MAX_LEN = 200
+
+# Error labels for an HTTP 404. GitHub answers 404, not 403, for a repository
+# the token may not see -- it refuses to disclose existence -- so "absent" and
+# "present but invisible" arrive as the same status code, and nothing this
+# script can reach separates them: the tag-listing response for a real private
+# repository and for one that was never created is byte-identical, headers and
+# content-length included.
+#
+# So neither label asserts absence, and neither earns a `major`. The owner
+# split is NOT a visibility test: the run's credential is the repo-scoped
+# ``GITHUB_TOKEN``, whose boundary is public-vs-private rather than
+# in-org-vs-out-of-org, so a private repository is exactly as invisible on
+# either side of it. What the split does report is the one fact that is
+# observable -- whether the 404'd owner is the owner of the repository this
+# run belongs to -- which shifts the LIKELIER cause the reviewer should raise
+# with the author (a misspelled public action out-of-org, an unreadable
+# private repository in-org) without settling it. (AT-2801)
+#
+# Both names are misnomers, deliberately kept. ``repo-not-found`` asserts
+# the absence its own bullet forbids asserting, and ``repo-not-visible``
+# reads as a visibility verdict although the split above is not a
+# visibility test. Accurate names would be ``repo-404-other-owner`` and
+# ``repo-404-same-owner``, and the values were left alone anyway: the label
+# is emitted into the ``<pin ... error="..."/>`` row that each consumer's
+# own copy of ``code-review-system.md`` keys on, and those copies are
+# updated by hand (see MIGRATION.md, "Upgrading an already-onboarded
+# consumer"). Renaming would drop an un-upgraded consumer's 404 onto its
+# catch-all "any other `error`" bullet, which calls the failure transient
+# and asks the author for nothing -- no false `major`, but no actionable
+# finding either, on a 404 that is deterministic and will repeat on every
+# re-run. Read these names as "404, other owner" and "404, same owner".
+_REPO_NOT_FOUND = "repo-not-found"
+_REPO_NOT_VISIBLE = "repo-not-visible"
 
 
 class RawPin(TypedDict):
@@ -158,6 +192,40 @@ def _decode_paginated_json(
     return items, None
 
 
+def _current_owner() -> str | None:
+    """Return the lowercased owner of the repository this run belongs to.
+
+    ``GITHUB_REPOSITORY`` is set by the Actions runner and, for a reusable
+    workflow, names the CALLER repo -- the consumer whose PR is under review,
+    whose org is the one whose private repos this run's token would have to
+    be able to see. ``review_pr_local.py`` sets the same variable for the
+    local driver. Returns ``None`` when it is absent or not ``owner/name``:
+    membership is then unestablished, and the caller falls back to
+    ``repo-not-found`` rather than guessing in either direction. The
+    fallback is not an escalation -- both labels end in ``Raise only as
+    `suggestion`.`` -- so it changes only which cause the reviewer raises
+    as the likelier one.
+    """
+    owner, _, name = os.environ.get("GITHUB_REPOSITORY", "").strip().partition("/")
+    if not owner or not name:
+        return None
+    return owner.lower()
+
+
+def _classify_404(repo: str) -> str:
+    """Report the 404 error label for ``repo`` by its owner.
+
+    This reports an owner relation, not a cause -- see ``_REPO_NOT_VISIBLE``
+    for why no cause is available here. Owner comparison is case-insensitive
+    because GitHub treats owner names that way.
+    """
+    owner = repo.split("/", 1)[0].lower()
+    current = _current_owner()
+    if current is not None and owner == current:
+        return _REPO_NOT_VISIBLE
+    return _REPO_NOT_FOUND
+
+
 def _fetch_tags(
     repo: str, cache: TagCache
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -198,9 +266,10 @@ def _fetch_tags(
         # Only match the full ``http 404`` token -- bare "not found" is too
         # broad (e.g. "credentials not found in keychain",
         # "file not found") and would misclassify unrelated CLI errors as a
-        # missing repo.
+        # missing repo. Which 404 label applies depends on the owner, not on
+        # the status code -- see ``_classify_404``.
         elif "http 404" in stderr_lc:
-            outcome = (None, "repo-not-found")
+            outcome = (None, _classify_404(repo))
         else:
             # Preserve a short excerpt of stderr so ``<verified-action-pins>``
             # surfaces the actual failure mode to the reviewer prompt.
@@ -371,9 +440,25 @@ def main() -> None:
         '- `status="unmatched"` -- the tag listing was fetched but the SHA did '
         "not appear in any tag. Raise as `major` (likely stale mirror, "
         "force-pushed tag, or typo).\n"
-        '- `status="unverified"` with `error="repo-not-found"` -- the upstream '
-        "action repository does not exist; the pin will never resolve. Raise as "
-        "`major`.\n"
+        '- `status="unverified"` with `error="repo-not-found"` -- the API '
+        "returned 404 for a repository whose owner is not the owner of the "
+        "repository under review, or the run's own owner could not be "
+        "determined. GitHub answers 404 both for a repository that does not "
+        "exist and for a private one this run's token may not read, so the "
+        "404 does NOT establish that the repository is absent. Where the "
+        "owners are known to differ, the pin is usually a public action, "
+        "which makes a misspelled `owner/repo` the likelier of the two. Ask "
+        "the author to confirm the `owner/repo` spelling; do NOT claim the "
+        "repository does not exist. Raise only as `suggestion`.\n"
+        '- `status="unverified"` with `error="repo-not-visible"` -- the API '
+        "returned 404 for a repository whose owner is the owner of the "
+        "repository under review. The same two causes are indistinguishable "
+        "here, and when the owners match the likelier one is a private "
+        "repository this run's token cannot read. Still ask the author to "
+        "confirm the `owner/repo` spelling, since a typo or a "
+        "renamed/deleted action looks identical and would otherwise fail "
+        "only at runtime; do NOT claim the repository does not exist. Raise "
+        "only as `suggestion`.\n"
         '- `status="unverified"` with any other error (e.g. `rate-limit`, '
         "`timeout`, `api-error: ...`, `json-decode-error`, `unknown`) -- the "
         "verification itself failed transiently. Raise only as `suggestion`.\n\n"

@@ -463,8 +463,8 @@ Recommended upgrade flow:
 Version policy:
 
 - Patch (`v1.0.x`): bug fixes, no behavior change for consumers.
-- Minor (`v1.x.0`): new optional inputs, additive reviewer features.
-- Major (`v2.0.0`): input contract changes, breaking script signatures, severity threshold defaults shift.
+- Minor (`v1.x.0`): new optional inputs, additive reviewer features, prompt rules that lower the severity prescribed for a finding class — relaxing only, since raising a prescribed severity can newly block consumers.
+- Major (`v2.0.0`): input contract changes, breaking script signatures, severity threshold defaults shift, prompt rules that raise the severity prescribed for a finding class.
 
 Wrapper version alignment: this repo and the pilot wrapper `ignite-pilot-org/ai-dev-pr-review-wrapper` keep their release versions in MAJOR.MINOR lockstep; PATCH moves independently per repo. Current pairing: base `v1.11.2` ↔ wrapper `v1.11.2`. When either repo needs a MINOR (or MAJOR) bump, the other cuts a matching alignment release — content-identical if it has no changes. Both repos auto-float their `v1` major tag via `move-major-tag.yml` on release publish, so `@v1` consumers need no action.
 
