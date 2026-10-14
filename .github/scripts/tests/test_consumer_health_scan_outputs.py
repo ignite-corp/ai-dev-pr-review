@@ -28,7 +28,12 @@ from typing import Any
 import pytest
 import yaml
 
-from aggregate_reviews import REVIEWER_NAMES, apply_verdict_rules, format_summary
+from aggregate_reviews import (
+    REVIEWER_NAMES,
+    _count_unreviewed_majors,
+    apply_verdict_rules,
+    format_summary,
+)
 from github_pr_support import REVIEW_MARKER
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -73,7 +78,14 @@ def _verdict_body(failed: str | None) -> str:
     return (
         REVIEW_MARKER
         + "\n"
-        + format_summary(reviews, verdict, reason, available, conclusions)
+        + format_summary(
+            reviews,
+            verdict,
+            reason,
+            available,
+            conclusions,
+            unreviewed_majors=_count_unreviewed_majors(available),
+        )
     )
 
 
