@@ -233,15 +233,23 @@ def _assert_net_shape(steps: list[dict[str, Any]]) -> None:
     """Every property the net needs to catch a dead step.
 
     One function, so the inversion tests exercise exactly the assertions
-    the live file passes: the net is the one gemini-gated step under
+    the live file passes: the net is a gemini-gated step under
     ``always()``, it is not ``continue-on-error`` (if the failure cannot be
     recorded the job must not report success), it reads the run step's
     outcome by id, and it runs after the run step and before the shared
     tail that reads the file.
+
+    Membership and not a census: this asserted the gemini-gated
+    ``always()`` steps were exactly ``[_NET_STEP]``, which AT-2614's
+    provenance clear -- a second gemini-gated ``always()`` step, and the
+    one that must run before this net -- made false. The property this
+    test needs is that the net is among them and is unique by name, which
+    ``_named`` below already enforces; the count was never the property,
+    and it would break again on the next step added to this path.
     """
     nets = [step for step in _gemini_gated(steps) if "always()" in str(step["if"])]
-    assert [step["name"] for step in nets] == [_NET_STEP]
-    net = nets[0]
+    assert _NET_STEP in [step["name"] for step in nets]
+    net = _named(steps, _NET_STEP)
     assert not net.get("continue-on-error", False)
     run = _named(steps, _RUN_STEP)
     assert run.get("continue-on-error") is True
