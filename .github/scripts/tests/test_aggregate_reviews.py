@@ -40,6 +40,8 @@ from aggregate_reviews import (
     post_verdict,
     FAILED_DETAIL_PREFIX,
     REVIEWER_NAMES,
+    _STALE_COMMENTS_QUERY,
+    _STALE_REVIEWS_QUERY,
 )
 from github_pr_support import REVIEW_MARKER, normalize_bot_login
 
@@ -504,7 +506,7 @@ class TestReviewerToken:
             return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
         with (
-            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
         ):
             post_verdict("body", verdict, comment_only=False)
@@ -553,7 +555,7 @@ class TestCommentOnlyGating:
             return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
         with (
-            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
         ):
             post_verdict("body", verdict, comment_only=comment_only)
@@ -610,7 +612,7 @@ class TestApproveQuorumGate:
             return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
         with (
-            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
         ):
             post_verdict(
@@ -847,7 +849,7 @@ class TestHeadlineAgreesWithPostedEvent:
 
         with (
             patch("aggregate_reviews.load_reviews", return_value=reviews),
-            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
         ):
             main()
@@ -2775,7 +2777,7 @@ class TestPolicySkipVerdict:
         self._set_policy_env(monkeypatch)
         monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
         with (
-            patch("aggregate_reviews._minimize_stale_bot_items"),
+            patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run") as mock_run,
             pytest.raises(SystemExit) as excinfo,
         ):
@@ -3661,20 +3663,20 @@ def _stale_pages(
 
 
 _STALE_MARKED = f"{REVIEW_MARKER}\nprior round"
+_HEAD = "b" * 40
+_OLD_HEAD = "a" * 40
 
 
 def _minimize_stale(
-    monkeypatch: pytest.MonkeyPatch,
     comments: list[dict[str, Any]],
     reviews: list[dict[str, Any]],
 ) -> list[tuple[str, str]]:
-    """Run ``_minimize_stale_bot_items`` with the default ``BOT_LOGIN``.
+    """Run ``_fold_prior_round_items`` over the given pages, as of ``_HEAD``.
 
     Returns the ``(node_id, label)`` of every mutation it issued, in order.
     """
-    from aggregate_reviews import _minimize_stale_bot_items
+    from aggregate_reviews import _fold_prior_round_items
 
-    monkeypatch.delenv("BOT_LOGIN", raising=False)
     issued: list[tuple[str, str]] = []
 
     def record(query: str, node_id: str, label: str) -> None:
@@ -3687,51 +3689,76 @@ def _minimize_stale(
         ),
         patch("aggregate_reviews._run_gql_mutation", side_effect=record),
     ):
-        _minimize_stale_bot_items("42", "owner/repo")
+        _fold_prior_round_items("42", "owner/repo", head_sha=_HEAD)
     return issued
 
 
-class TestMinimizeStaleBotItemsMatchesGraphQLLogin:
-    """The GraphQL ``author.login`` of an app has no ``[bot]`` suffix.
+def _comment(
+    comment_id: str, login: str | None, body: str = _STALE_MARKED
+) -> dict[str, Any]:
+    """A comments-page node.
 
-    ``BOT_LOGIN`` defaults to the REST spelling ``github-actions[bot]``, but
-    the stale-item queries read ``author { login }`` over GraphQL, where the
-    same app is ``github-actions``. Compared verbatim the two never match,
-    so with the default nothing was ever minimized and every round of a PR
-    appended another aggregate comment (AT-2208, observed on PR #151).
+    The query selects ``id``, ``isMinimized`` and ``body``, which is what
+    the fold reads. ``author`` is carried anyway, so a case can name who
+    posted an item and an author predicate added later has something to
+    match -- which is how the control tests below detect one.
+    """
+    return {
+        "id": comment_id,
+        "author": None if login is None else {"login": login},
+        "isMinimized": False,
+        "body": body,
+    }
+
+
+def _review(
+    review_id: str,
+    login: str | None,
+    state: str,
+    body: str = _STALE_MARKED,
+    commit: str | None = _OLD_HEAD,
+) -> dict[str, Any]:
+    """A reviews-page node, as ``_comment`` is for the other query.
+
+    The query selects ``id``, ``state``, ``body`` and ``commit { oid }``;
+    ``author`` is carried for the same reason. The review is of a
+    superseded head unless a case says otherwise, so the fold cases above
+    the same-head class read as they did before that distinction existed.
+    """
+    return {
+        "id": review_id,
+        "author": None if login is None else {"login": login},
+        "state": state,
+        "body": body,
+        "commit": None if commit is None else {"oid": commit},
+    }
+
+
+class TestFoldPriorRoundItemsKeysOnMarker:
+    """A prior-round item is one whose body carries ``REVIEW_MARKER``.
+
+    The fold used to match the author's login against ``BOT_LOGIN`` as
+    well, and that one login never covered every identity the pipeline
+    posts under: the reviewer App's ``APPROVED`` reviews carry the App's
+    login (AT-2599), and on the local driver the verdict is the operator's
+    (AT-2208). The marker is this pipeline's own HTML comment, so it is the
+    one thing every verdict shares and nothing else carries by accident.
+
+    Each refusal case below shares a page with the accepted case and
+    differs from it in exactly one predicate, so a refusal is attributable
+    to that predicate alone -- and the test fails if that predicate is
+    later dropped, because the paired node would then be folded too.
     """
 
-    _MARKED = _STALE_MARKED
+    _OWN = _review("R_own", "github-actions", "APPROVED")
+    _OWN_FOLDED = [("R_own", "dismiss"), ("R_own", "minimize")]
 
-    def _run(
+    def test_prior_round_comment_and_review_of_the_default_bot_are_folded(
         self,
-        monkeypatch: pytest.MonkeyPatch,
-        comments: list[dict[str, Any]],
-        reviews: list[dict[str, Any]],
-    ) -> list[tuple[str, str]]:
-        return _minimize_stale(monkeypatch, comments, reviews)
-
-    def test_graphql_login_of_the_default_bot_is_minimized(
-        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        issued = self._run(
-            monkeypatch,
-            comments=[
-                {
-                    "id": "C_1",
-                    "author": {"login": "github-actions"},
-                    "isMinimized": False,
-                    "body": self._MARKED,
-                }
-            ],
-            reviews=[
-                {
-                    "id": "R_1",
-                    "author": {"login": "github-actions"},
-                    "state": "CHANGES_REQUESTED",
-                    "body": self._MARKED,
-                }
-            ],
+        issued = _minimize_stale(
+            comments=[_comment("C_1", "github-actions")],
+            reviews=[_review("R_1", "github-actions", "CHANGES_REQUESTED")],
         )
         assert issued == [
             ("C_1", "minimize"),
@@ -3739,75 +3766,391 @@ class TestMinimizeStaleBotItemsMatchesGraphQLLogin:
             ("R_1", "minimize"),
         ]
 
-    def test_a_different_bot_is_left_alone(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_own_approved_marker_review_is_dismissed_and_minimized(
+        self,
     ) -> None:
-        issued = self._run(
-            monkeypatch,
-            comments=[
-                {
-                    "id": "C_2",
-                    "author": {"login": "gemini-code-assist"},
-                    "isMinimized": False,
-                    "body": self._MARKED,
-                }
-            ],
-            reviews=[
-                {
-                    "id": "R_2",
-                    "author": {"login": "gemini-code-assist"},
-                    "state": "CHANGES_REQUESTED",
-                    "body": self._MARKED,
-                }
-            ],
-        )
-        assert issued == []
+        """The defect of AT-2599: a prior head's APPROVED review of our own
+        was never dismissed, so it kept satisfying a ruleset whose
+        dismiss_stale_reviews_on_push is off on a head no review had seen."""
+        issued = _minimize_stale(comments=[], reviews=[self._OWN])
+        assert issued == self._OWN_FOLDED
 
-
-class TestMinimizeStaleBotItemsSkipsNullAuthor:
-    """GraphQL ``author`` is nullable: a deleted or ghost account yields
-    ``"author": null``, so the key is present with value ``None`` and a
-    ``node.get("author", {})`` default never applies. Such nodes must be
-    skipped, not crash the pass, and the bot's own items on the same page
-    must still be minimized.
-    """
-
-    def test_null_author_nodes_are_skipped_and_the_rest_minimized(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_reviewer_app_approved_marker_review_is_dismissed_and_minimized(
+        self,
     ) -> None:
+        """The approval is posted with the App's token, under the App's
+        login; the fold does not need to know that login."""
         issued = _minimize_stale(
-            monkeypatch,
-            comments=[
-                {
-                    "id": "C_ghost",
-                    "author": None,
-                    "isMinimized": False,
-                    "body": _STALE_MARKED,
-                },
-                {
-                    "id": "C_bot",
-                    "author": {"login": "github-actions"},
-                    "isMinimized": False,
-                    "body": _STALE_MARKED,
-                },
-            ],
+            comments=[],
+            reviews=[_review("R_app", "ignite-ai-review-approver", "APPROVED")],
+        )
+        assert issued == [("R_app", "dismiss"), ("R_app", "minimize")]
+
+    def test_a_marker_review_by_any_other_author_is_dismissed_too(
+        self,
+    ) -> None:
+        """By design. Authorship is not read: the local driver's verdict is
+        posted by a human (the operator), another bot quoting the marker is
+        housekeeping, and an author filter would spare one path's prior
+        round while folding the other's. This is the control for the
+        anchor below -- it fails if an author or type check is added."""
+        issued = _minimize_stale(
+            comments=[_comment("C_human", "hyuk-hur")],
             reviews=[
-                {
-                    "id": "R_ghost",
-                    "author": None,
-                    "state": "CHANGES_REQUESTED",
-                    "body": _STALE_MARKED,
-                },
-                {
-                    "id": "R_bot",
-                    "author": {"login": "github-actions"},
-                    "state": "CHANGES_REQUESTED",
-                    "body": _STALE_MARKED,
-                },
+                _review("R_human", "hyuk-hur", "APPROVED"),
+                _review("R_other_bot", "gemini-code-assist", "APPROVED"),
             ],
         )
         assert issued == [
-            ("C_bot", "minimize"),
-            ("R_bot", "dismiss"),
-            ("R_bot", "minimize"),
+            ("C_human", "minimize"),
+            ("R_human", "dismiss"),
+            ("R_human", "minimize"),
+            ("R_other_bot", "dismiss"),
+            ("R_other_bot", "minimize"),
         ]
+
+    def test_items_without_the_marker_are_left_alone(self) -> None:
+        """The anchor: with no author read, the marker is the whole of
+        what separates a prior-round item from everything else on the PR."""
+        issued = _minimize_stale(
+            comments=[
+                _comment("C_own", "github-actions"),
+                _comment("C_unmarked", "github-actions", body="prior round"),
+            ],
+            reviews=[
+                self._OWN,
+                _review("R_unmarked", "github-actions", "APPROVED", body="LGTM"),
+                _review("R_human_plain", "hyuk-hur", "APPROVED", body="LGTM"),
+            ],
+        )
+        assert issued == [("C_own", "minimize"), *self._OWN_FOLDED]
+
+    def test_an_already_minimized_comment_is_not_minimized_again(self) -> None:
+        minimized = _comment("C_done", "github-actions")
+        minimized["isMinimized"] = True
+        issued = _minimize_stale(
+            comments=[minimized, _comment("C_own", "github-actions")], reviews=[]
+        )
+        assert issued == [("C_own", "minimize")]
+
+    def test_a_review_that_quotes_a_verdict_is_left_alone(self) -> None:
+        """GitHub's "Quote reply" copies the quoted body's raw markdown,
+        HTML comments included, so a human review that quotes a verdict and
+        approves carries the marker -- behind "> ". The marker's position
+        is what tells the two apart: every verdict this pipeline posts
+        opens with it. Paired with the folded node, so dropping the
+        position test fails here and dropping the marker test fails the
+        anchor below."""
+        quoted = f"> {_STALE_MARKED}\n\nAgreed, approving."
+        issued = _minimize_stale(
+            comments=[_comment("C_quote", "hyuk-hur", body=quoted)],
+            reviews=[self._OWN, _review("R_quote", "hyuk-hur", "APPROVED", quoted)],
+        )
+        assert issued == self._OWN_FOLDED
+
+    def test_blank_lines_before_the_marker_still_fold(self) -> None:
+        """Blank lines ahead of the marker render nothing and change no
+        body's authorship, and are what a hand-assembled body picks up."""
+        issued = _minimize_stale(
+            comments=[],
+            reviews=[_review("R_pad", None, "APPROVED", f"\r\n\n{_STALE_MARKED}")],
+        )
+        assert issued == [("R_pad", "dismiss"), ("R_pad", "minimize")]
+
+    def test_an_indented_code_block_marker_is_left_alone(self) -> None:
+        """Four leading spaces make an indented code block, so the marker
+        renders as literal text: that is someone documenting the marker,
+        not a verdict. Every producer emits it at column 0. Paired with the
+        folded node, as the quote case above is."""
+        indented = f"    {_STALE_MARKED}\n\nThe marker every verdict opens with."
+        issued = _minimize_stale(
+            comments=[_comment("C_doc", "hyuk-hur", body=indented)],
+            reviews=[self._OWN, _review("R_doc", "hyuk-hur", "APPROVED", indented)],
+        )
+        assert issued == self._OWN_FOLDED
+
+    @pytest.mark.parametrize("state", ["COMMENTED", "PENDING", "DISMISSED"])
+    def test_a_state_the_dismiss_mutation_refuses_is_not_dismissed(
+        self, state: str
+    ) -> None:
+        """``dismissPullRequestReview`` accepts approved or rejected reviews
+        only; issuing it for anything else would log a warning every round
+        for as long as the review exists."""
+        issued = _minimize_stale(
+            comments=[],
+            reviews=[self._OWN, _review("R_other", "github-actions", state)],
+        )
+        assert issued == self._OWN_FOLDED
+
+    def test_an_approval_of_the_current_head_is_returned_not_dismissed(
+        self,
+    ) -> None:
+        """The one item the fold leaves standing; ``post_verdict`` folds it
+        through ``_dismiss_replaced_approvals`` once a review of its own is
+        on the PR. A CHANGES_REQUESTED of the same head goes up front, and
+        an APPROVED of a superseded head as before."""
+        from aggregate_reviews import _fold_prior_round_items
+
+        issued: list[tuple[str, str]] = []
+        pages = _stale_pages(
+            [],
+            [
+                _review("R_same", None, "APPROVED", commit=_HEAD),
+                _review("R_same_block", None, "CHANGES_REQUESTED", commit=_HEAD),
+                self._OWN,
+            ],
+        )
+        with (
+            patch("aggregate_reviews.fetch_paginated_nodes", side_effect=pages),
+            patch(
+                "aggregate_reviews._run_gql_mutation",
+                side_effect=lambda q, i, label: issued.append((i, label)),
+            ),
+        ):
+            standing = _fold_prior_round_items("42", "owner/repo", head_sha=_HEAD)
+        assert standing == ["R_same"]
+        assert issued == [
+            ("R_same_block", "dismiss"),
+            ("R_same_block", "minimize"),
+            *self._OWN_FOLDED,
+        ]
+
+    def test_dismiss_replaced_approvals_folds_the_ids_it_is_given(self) -> None:
+        from aggregate_reviews import _dismiss_replaced_approvals
+
+        issued: list[tuple[str, str]] = []
+        with patch(
+            "aggregate_reviews._run_gql_mutation",
+            side_effect=lambda q, i, label: issued.append((i, label)),
+        ):
+            _dismiss_replaced_approvals(["R_a", "R_b"])
+        assert issued == [
+            ("R_a", "dismiss"),
+            ("R_a", "minimize"),
+            ("R_b", "dismiss"),
+            ("R_b", "minimize"),
+        ]
+
+    def test_the_reviews_query_requests_the_commit(self) -> None:
+        """Pinned on the shape for the reason the author test below gives:
+        a head comparison against a field the server never sent would
+        treat every approval as superseded and fold it up front."""
+        assert "commit { oid }" in _STALE_REVIEWS_QUERY
+
+    @pytest.mark.parametrize(
+        "query",
+        [_STALE_COMMENTS_QUERY, _STALE_REVIEWS_QUERY],
+        ids=["comments", "reviews"],
+    )
+    def test_the_stale_queries_do_not_request_the_author(self, query: str) -> None:
+        """The fold reads no author, so neither query asks for one.
+
+        Asserted on the query rather than on behaviour because a predicate
+        cannot be caught reading a field the server never sent: an author
+        check added back here would be dead against production and alive
+        only against fixtures that still carry the key. The cases above
+        pin the fold's behaviour; this pins the shape it sees.
+        """
+        assert "author" not in query
+
+
+_NOT_LOOKED_UP = object()
+
+
+def _post_verdict_over(
+    monkeypatch: pytest.MonkeyPatch,
+    reviews: list[dict[str, Any]],
+    verdict: str,
+    *,
+    head: str = _HEAD,
+    comment_only: bool = False,
+    approve_quorum: bool = True,
+    review_rc: int = 0,
+    live_head: str | None | object = _NOT_LOOKED_UP,
+) -> tuple[list[list[str]], list[tuple[str, str]], int]:
+    """Run ``post_verdict`` with the stale fold live over ``reviews``.
+
+    Returns the gh commands run and the ``(node_id, label)`` of every
+    mutation issued -- both in order, so a dismissal can be placed before
+    or after the review that replaces it -- and how many pages were
+    fetched. ``review_rc`` is what ``gh pr review`` exits with; every
+    other gh call succeeds.
+
+    ``live_head`` is what ``_current_pr_head`` answers: a SHA, or None for
+    a lookup that failed. Left at its default, the lookup fails the test
+    if it is made at all -- a run that has ``HEAD_SHA`` has nothing to
+    look up, so every case that passes a ``head`` also pins that no
+    ``gh api`` call is spent on one.
+    """
+    monkeypatch.setenv("PR_NUMBER", "42")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("HEAD_SHA", head)
+
+    commands: list[list[str]] = []
+    issued: list[tuple[str, str]] = []
+    fetches = 0
+
+    def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        commands.append(cmd)
+        rc = review_rc if "review" in cmd else 0
+        return type("R", (), {"returncode": rc, "stderr": "", "stdout": ""})()
+
+    def record(query: str, node_id: str, label: str) -> None:
+        issued.append((node_id, label))
+
+    def lookup(pr_number: str, repo: str) -> str | None:
+        assert live_head is not _NOT_LOOKED_UP, (
+            "live head looked up with HEAD_SHA set"
+        )
+        return live_head  # type: ignore[return-value]
+
+    pages = _stale_pages([], reviews)
+
+    def counted(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        nonlocal fetches
+        fetches += 1
+        return pages(*args, **kwargs)
+
+    with (
+        patch("aggregate_reviews.fetch_paginated_nodes", side_effect=counted),
+        patch("aggregate_reviews._run_gql_mutation", side_effect=record),
+        patch("aggregate_reviews._current_pr_head", side_effect=lookup),
+        patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+    ):
+        post_verdict(
+            "body", verdict, comment_only=comment_only, approve_quorum=approve_quorum
+        )
+    return commands, issued, fetches
+
+
+class TestSameHeadApprovalStandsUntilReplaced:
+    """An APPROVED review of the current head is dismissed only once a
+    review of this round has replaced it.
+
+    The fold runs at the top of ``post_verdict``, before the round knows
+    whether it will post a review at all, and three branches post none:
+    the approve-quorum withhold, the ``comment_only`` downgrade, and the
+    comment fallback when ``gh pr review`` fails. Dismissing a same-head
+    approval ahead of those turns a PR that was green on this head into
+    one blocked by a transient failure of the re-run, with nothing on the
+    PR to say why. An approval of a superseded head is different: no
+    review has seen the current head, so it goes up front whatever the
+    round then does (AT-2599's invariant), and so does a CHANGES_REQUESTED
+    of either head, whose blocking force the required check's exit code
+    carries anyway.
+    """
+
+    _SAME = _review("R_same", None, "APPROVED", commit=_HEAD)
+    _OLD = _review("R_old", None, "APPROVED", commit=_OLD_HEAD)
+    _OLD_FOLDED = [("R_old", "dismiss"), ("R_old", "minimize")]
+    _SAME_FOLDED = [("R_same", "dismiss"), ("R_same", "minimize")]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"approve_quorum": False},
+            {"comment_only": True},
+            {"review_rc": 1},
+        ],
+        ids=["quorum-withheld", "comment-only", "review-api-failed"],
+    )
+    def test_a_round_that_posts_no_review_leaves_the_same_head_approval(
+        self, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
+    ) -> None:
+        commands, issued, _ = _post_verdict_over(
+            monkeypatch, [self._SAME, self._OLD], "approve", **kwargs
+        )
+        assert any("comment" in cmd for cmd in commands)
+        assert issued == self._OLD_FOLDED
+
+    @pytest.mark.parametrize(
+        "verdict, flag",
+        [("approve", "--approve"), ("request_changes", "--request-changes")],
+    )
+    def test_a_posted_review_replaces_the_same_head_approval(
+        self, monkeypatch: pytest.MonkeyPatch, verdict: str, flag: str
+    ) -> None:
+        """Dismissed after the review lands, not before: the order is what
+        keeps the PR green across the gap, and a re-run that reaches a
+        different verdict on the same head still retires the old one."""
+        commands, issued, fetches = _post_verdict_over(
+            monkeypatch, [self._SAME, self._OLD], verdict
+        )
+        assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+        assert any("review" in cmd and flag in cmd for cmd in commands)
+        # The pages are read once, before the review is posted; a re-read
+        # afterwards would find this round's own review and dismiss it.
+        assert fetches == 2
+
+    def test_a_comment_verdict_leaves_the_same_head_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, issued, _ = _post_verdict_over(
+            monkeypatch, [self._SAME, self._OLD], "comment"
+        )
+        assert issued == self._OLD_FOLDED
+
+    def test_a_same_head_changes_requested_goes_up_front(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unchanged: the required check is red for as long as the verdict
+        is, so the review's loss blocks nothing on its own."""
+        blocking = _review("R_block", None, "CHANGES_REQUESTED", commit=_HEAD)
+        _, issued, _ = _post_verdict_over(
+            monkeypatch, [blocking], "approve", approve_quorum=False
+        )
+        assert issued == [("R_block", "dismiss"), ("R_block", "minimize")]
+
+    @pytest.mark.parametrize("head", ["", "   "])
+    def test_with_no_head_sha_the_live_head_stands_in(
+        self, monkeypatch: pytest.MonkeyPatch, head: str, capsys: pytest.CaptureFixture
+    ) -> None:
+        """No HEAD_SHA means prepare never resolved one (AT-2087, AT-1975).
+        Both of those paths post a verdict and, with the killswitch off,
+        no review -- so folding a same-head approval up front there is the
+        green-to-blocked outcome the carve-out exists to prevent. The head
+        GitHub reports now is compared instead, and the run log says so."""
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME, self._OLD],
+            "approve",
+            head=head,
+            approve_quorum=False,
+            live_head=_HEAD,
+        )
+        assert issued == self._OLD_FOLDED
+        assert (
+            "::notice::HEAD_SHA unset; prior-round approvals compared"
+            f" against {_HEAD}"
+        ) in capsys.readouterr().err
+
+    def test_with_no_head_at_all_every_approval_goes_up_front(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """No HEAD_SHA and a failed head lookup: nothing can vouch that a
+        standing approval is of this head, so it is folded as a superseded
+        one would be -- the direction that is visible and self-healing
+        rather than silent -- and the log names the degraded comparison."""
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME],
+            "approve",
+            head="",
+            approve_quorum=False,
+            live_head=None,
+        )
+        assert issued == self._SAME_FOLDED
+        assert "::notice::HEAD_SHA unset and the PR head lookup failed" in (
+            capsys.readouterr().err
+        )
+
+    def test_a_review_with_no_commit_goes_up_front(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``PullRequestReview.commit`` is nullable; a review that names no
+        commit cannot be vouched for as of this head either."""
+        orphan = _review("R_orphan", None, "APPROVED", commit=None)
+        _, issued, _ = _post_verdict_over(
+            monkeypatch, [orphan], "approve", approve_quorum=False
+        )
+        assert issued == [("R_orphan", "dismiss"), ("R_orphan", "minimize")]

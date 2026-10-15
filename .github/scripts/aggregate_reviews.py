@@ -58,7 +58,6 @@ from github_pr_support import (
     fetch_paginated_nodes,
     int_env,
     is_valid_review as _is_valid_review,
-    normalize_bot_login,
     normalize_severity as _normalize_severity,
 )
 
@@ -107,6 +106,14 @@ CRITICAL_THRESHOLD, MAJOR_CONSENSUS_OVERLAP = _resolve_thresholds(
 )
 
 MAJOR_CONSENSUS_MIN = int_env("MAJOR_CONSENSUS_MIN", 2)
+# The identity the aggregate's own verdict comments are posted under.
+# NOTHING IN THIS MODULE READS IT TODAY: the stale fold used to, and since
+# AT-2599 it keys on the review marker instead, because tidying needs no
+# identity. It is kept, rather than deleted, for the reads that do need one
+# -- a read that must decide whether to trust a verdict, not merely fold it,
+# cannot use the marker, which anyone can quote. The local driver resolves
+# this name from the default the aggregate step declares, so the two stay in
+# step. Delete it if no such read lands.
 BOT_LOGIN = os.environ.get("BOT_LOGIN", "github-actions[bot]")
 
 # Map job conclusion -> human-readable missing-verdict reason.
@@ -1230,7 +1237,7 @@ query($owner: String!, $name: String!, $pr: Int!,
     pullRequest(number: $pr) {
       comments(first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id author { login } isMinimized body }
+        nodes { id isMinimized body }
       }
     }
   }
@@ -1244,7 +1251,7 @@ query($owner: String!, $name: String!, $pr: Int!,
     pullRequest(number: $pr) {
       reviews(first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id author { login } state body }
+        nodes { id state body commit { oid } }
       }
     }
   }
@@ -1253,20 +1260,93 @@ query($owner: String!, $name: String!, $pr: Int!,
 
 _STALE_PAGE_SIZE = 50
 
+# dismissPullRequestReview "dismisses an approved or rejected pull request
+# review" (GitHub GraphQL reference) and errors on every other state, which
+# _run_gql_mutation would surface as a warning every round for as long as the
+# review exists. These two are also the only states a ruleset counts, so a
+# marker review in any other state has nothing to dismiss.
+_DISMISSABLE_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED"})
 
-def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
-    """Minimize previous bot comments and dismiss stale reviews."""
+
+def _is_prior_round(body: str | None) -> bool:
+    """Was this body posted by a round of this pipeline?
+
+    Every verdict this pipeline posts opens with REVIEW_MARKER on line 1 --
+    the verdict itself (format_summary), the prepare-failure, size-skip and
+    policy-skip comments, and the local driver's two skip comments -- so the
+    marker's position is as reliable as its presence and discriminates what
+    containment cannot: GitHub's "Quote reply" copies the raw markdown of
+    the quoted body, HTML comments included, so a human who quote-replies a
+    verdict and approves in the same review would have that approval
+    dismissed under a containment test. The rule is that the marker sits at
+    column 0 once blank lines are skipped: blank lines render nothing, so
+    they are tolerated; any leading space is refused, because no producer
+    in this pipeline writes one -- each puts REVIEW_MARKER as element 0 of
+    a join -- so a body that opens with " <!-- multi-llm-review -->" is not
+    a verdict of ours, and four spaces would besides make it an indented
+    code block, someone documenting the marker. A quoted line starts with
+    "> ".
+    """
+    return (body or "").lstrip("\r\n").startswith(REVIEW_MARKER)
+
+
+def _fold_prior_round_items(
+    pr_number: str, repo: str, *, head_sha: str
+) -> list[str]:
+    """Minimize prior-round verdict comments and dismiss prior-round reviews.
+
+    Runs right before the new verdict is posted, so a review of a superseded
+    head -- an approval included -- never outlives the round that replaces
+    it. The ruleset otherwise keeps counting a head-A approval on head B
+    wherever dismiss_stale_reviews_on_push is off (AT-2599).
+
+    An APPROVED review of head_sha itself is the one item left standing,
+    and its ids are returned for _dismiss_replaced_approvals to fold once
+    this round has posted a review of its own. The caller does not yet
+    know whether it will: the approve-quorum withhold, the comment_only
+    downgrade and the fallback after a failed `gh pr review` all post a
+    comment and no review, and an approval's permitting force lives only
+    in the review, so dismissing it ahead of those turns a PR that was
+    green on this head into one blocked by a transient failure of the
+    re-run. A CHANGES_REQUESTED of this head goes up front all the same:
+    the required check's exit code carries its block for as long as the
+    verdict stands, so losing the review loses nothing the gate needs.
+
+    When head_sha is empty, prepare never resolved one (AT-2087, AT-1975).
+    Both of those paths post a verdict and, with the killswitch off, no
+    review -- so folding a same-head approval up front there is exactly
+    the outcome above. The head GitHub reports now stands in: _head_is_stale
+    let this run post because nothing could show it superseded, so the
+    live head is the head this round is about. Only when that lookup fails
+    too is there nothing to compare, and then every approval goes up front:
+    the invariant (a superseded approval never outlives the round) needs no
+    evidence, the carve-out needs positive evidence of the head, and the
+    two failure modes are not symmetric -- an approval of this head folded
+    here is visible, since this round's verdict names why it ran, and the
+    next round that posts a review replaces it, while a superseded approval
+    left standing is silent and stays until a review happens to land. Each
+    branch says so in the run log (AT-1975: block visibly). A review that
+    names no commit cannot be vouched for either and is folded the same way.
+
+    An item is prior-round when its body opens with REVIEW_MARKER (see
+    _is_prior_round); who wrote it is not read. The marker is this
+    pipeline's own HTML comment, and the
+    verdicts that carry it are posted under whichever identity a path has
+    -- github-actions[bot], the reviewer App for an approval, the operator's
+    own login on the local driver (review_pr_local.py) -- so any author
+    filter folds one path's history and leaves another's standing. Folding
+    is housekeeping, not trust: a consumer's merge gate decides whether to
+    believe a verdict and needs identity for that; this pass decides what
+    to tidy and does not. The worst case, some other account quoting the
+    marker in a review of its own, costs that review a dismissal.
+    """
     if not repo:
-        return
+        return []
     parts = repo.split("/", 1)
     if len(parts) != 2:
         print(f"Invalid GITHUB_REPOSITORY format: {repo}", file=sys.stderr)
-        return
+        return []
     owner, name = parts
-    # The queries read author.login over GraphQL, which drops the "[bot]"
-    # suffix the BOT_LOGIN default carries; normalize both sides so the
-    # spelling of either never decides whether a prior round is folded.
-    bot = normalize_bot_login(BOT_LOGIN)
 
     for node in fetch_paginated_nodes(
         _STALE_COMMENTS_QUERY,
@@ -1276,13 +1356,26 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         pr_number,
         page_size=_STALE_PAGE_SIZE,
     ):
-        if (
-            normalize_bot_login((node.get("author") or {}).get("login") or "") == bot
-            and not node.get("isMinimized")
-            and REVIEW_MARKER in node.get("body", "")
-        ):
+        if not node.get("isMinimized") and _is_prior_round(node.get("body")):
             _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
 
+    head = head_sha.strip()
+    if not head:
+        head = _current_pr_head(pr_number, repo) or ""
+        if head:
+            print(
+                "::notice::HEAD_SHA unset; prior-round approvals compared"
+                f" against {head}, the PR head GitHub reports now",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "::notice::HEAD_SHA unset and the PR head lookup failed -- no"
+                " head to compare, so every prior-round approval is dismissed"
+                " up front",
+                file=sys.stderr,
+            )
+    standing: list[str] = []
     for node in fetch_paginated_nodes(
         _STALE_REVIEWS_QUERY,
         "reviews",
@@ -1291,13 +1384,30 @@ def _minimize_stale_bot_items(pr_number: str, repo: str) -> None:
         pr_number,
         page_size=_STALE_PAGE_SIZE,
     ):
-        if (
-            normalize_bot_login((node.get("author") or {}).get("login") or "") == bot
-            and node.get("state") == "CHANGES_REQUESTED"
-            and REVIEW_MARKER in node.get("body", "")
+        if node.get("state") not in _DISMISSABLE_STATES or not _is_prior_round(
+            node.get("body")
         ):
-            _run_gql_mutation(_DISMISS_QUERY, node["id"], "dismiss")
-            _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
+            continue
+        reviewed = (node.get("commit") or {}).get("oid")
+        if node["state"] == "APPROVED" and head and reviewed == head:
+            standing.append(node["id"])
+            continue
+        _run_gql_mutation(_DISMISS_QUERY, node["id"], "dismiss")
+        _run_gql_mutation(_MINIMIZE_QUERY, node["id"], "minimize")
+    return standing
+
+
+def _dismiss_replaced_approvals(review_ids: list[str]) -> None:
+    """Fold the same-head approvals _fold_prior_round_items left standing.
+
+    Called once `gh pr review` has returned 0, so a review of this round is
+    on the PR before the one it replaces goes. The ids come from the fold's
+    own read of the page, not a fresh one: a re-read now would find this
+    round's review, which opens with the marker and is of this head too.
+    """
+    for review_id in review_ids:
+        _run_gql_mutation(_DISMISS_QUERY, review_id, "dismiss")
+        _run_gql_mutation(_MINIMIZE_QUERY, review_id, "minimize")
 
 
 def post_verdict(
@@ -1313,7 +1423,9 @@ def post_verdict(
         print(f"PR_NUMBER missing or invalid: {pr_number!r}", file=sys.stderr)
         sys.exit(1)
 
-    _minimize_stale_bot_items(pr_number, repo)
+    standing = _fold_prior_round_items(
+        pr_number, repo, head_sha=os.environ.get("HEAD_SHA", "")
+    )
 
     # Never send a formal APPROVED review unless every configured reviewer
     # produced a verdict: an approval would assert coverage that never
@@ -1379,6 +1491,8 @@ def post_verdict(
             if not _post_comment(pr_number, repo, comment + fallback_note):
                 print("Both review and fallback comment failed", file=sys.stderr)
                 sys.exit(1)
+            return
+        _dismiss_replaced_approvals(standing)
     else:
         if not _post_comment(pr_number, repo, comment):
             print("Failed to post comment", file=sys.stderr)
