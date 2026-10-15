@@ -16,7 +16,11 @@ jobs:
         with:
           python-version-file: .github/scripts/.python-version
       - run: pip install -r .github/scripts/requirements.txt
-      - run: pip install pytest
+      # pytest and ruff, both pinned; the reason sits beside them there.
+      - run: pip install -r .github/scripts/requirements-dev.txt
+      # Cheap check first, so a formatting miss is reported without waiting
+      # on the suite and is never hidden behind a test failure.
+      - run: ruff format --check .
       - run: pytest .github/scripts/tests/ -v
         env:
           PYTHONPATH: .github/scripts

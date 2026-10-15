@@ -92,7 +92,15 @@ class Repos:
 
     def merge_with_merge_commit(self) -> str:
         _git(self.github, "checkout", "-q", "main")
-        _git(self.github, "merge", "-q", "--no-ff", "-m", "Merge pull request #35", "feature")
+        _git(
+            self.github,
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "Merge pull request #35",
+            "feature",
+        )
         _git(self.github, "push", "-q", "origin", "main")
         return _git(self.github, "rev-parse", "HEAD")
 
@@ -153,7 +161,9 @@ def _make_repos(tmp_path: Path, *, single_commit: bool = False) -> Repos:
     _git(tmp_path, "clone", "-q", str(origin), str(work))
     _git(work, "fetch", "-q", "origin", head_sha)
     _git(work, "checkout", "-q", "--detach", head_sha)
-    return Repos(origin=origin, github=github, work=work, base_sha=base_sha, head_sha=head_sha)
+    return Repos(
+        origin=origin, github=github, work=work, base_sha=base_sha, head_sha=head_sha
+    )
 
 
 @pytest.fixture
@@ -255,7 +265,9 @@ def _first_parent_diff(repos: Repos, sha: str) -> str:
 class TestOpenPr:
     """The path every pull_request event takes must not change at all."""
 
-    def test_diff_is_the_three_dot_diff_verbatim(self, repos: Repos, tmp_path: Path) -> None:
+    def test_diff_is_the_three_dot_diff_verbatim(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         run = _run_script(repos, tmp_path, merged=False)
         assert run.returncode == 0, run.stderr
         assert run.diff.strip() == _three_dot_diff(repos)
@@ -281,14 +293,18 @@ class TestOpenPr:
 class TestMergedPrWithMergeCommit:
     """A merged PR is diffed from its merge commit against the first parent."""
 
-    def test_three_dot_diff_is_empty_once_merged(self, repos: Repos, tmp_path: Path) -> None:
+    def test_three_dot_diff_is_empty_once_merged(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         # The defect itself: after the merge the merge-base is the head, so
         # the diff the old step computed has nothing in it.
         repos.merge_with_merge_commit()
         repos.sync_work()
         assert _three_dot_diff(repos) == ""
 
-    def test_merge_commit_yields_the_pr_diff(self, repos: Repos, tmp_path: Path) -> None:
+    def test_merge_commit_yields_the_pr_diff(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         repos.advance_main()
         merge_sha = repos.merge_with_merge_commit()
         repos.sync_work()
@@ -328,7 +344,9 @@ class TestMergedPrWithMergeCommit:
         assert "other.txt" not in run.diff
         assert run.gh_calls == []
 
-    def test_merge_commit_needs_no_commit_count(self, repos: Repos, tmp_path: Path) -> None:
+    def test_merge_commit_needs_no_commit_count(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         # Two parents settle it structurally; PR_COMMITS is not consulted.
         merge_sha = repos.merge_with_merge_commit()
         repos.sync_work()
@@ -340,7 +358,9 @@ class TestMergedPrWithMergeCommit:
         assert run.diff.strip() == _first_parent_diff(repos, merge_sha)
         assert run.gh_calls == []
 
-    def test_merge_commit_absent_locally_is_fetched(self, repos: Repos, tmp_path: Path) -> None:
+    def test_merge_commit_absent_locally_is_fetched(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         # The runner clone was made before the merge; the commit exists only
         # on origin, as it does when the checkout ref predates the merge.
         merge_sha = repos.merge_with_merge_commit()
@@ -358,7 +378,6 @@ class TestMergedPrWithMergeCommit:
         assert f"git diff {merge_sha}^1 {merge_sha}" in run.stdout
 
 
-
 class TestMergedPrFallsBackToGhPrDiff:
     """Whenever the merge commit cannot stand for the PR, GitHub's diff does."""
 
@@ -374,9 +393,7 @@ class TestMergedPrFallsBackToGhPrDiff:
     def test_unreachable_merge_commit(self, repos: Repos, tmp_path: Path) -> None:
         repos.merge_with_merge_commit()
         repos.sync_work()
-        run = _run_script(
-            repos, tmp_path, merged=True, merge_commit_sha="0" * 40
-        )
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha="0" * 40)
         assert run.returncode == 0, run.stderr
         assert run.diff == GH_PR_DIFF_FIXTURE
         assert run.gh_calls == [f"pr diff {PR_NUMBER} --repo {REPOSITORY}"]
@@ -443,7 +460,9 @@ class TestEmptyDiffFailsLoudly:
         assert f"open PR: git diff origin/main...{repos.head_sha}" in run.stdout
         assert "merged=false" in run.stdout
 
-    def test_merged_pr_whose_fallback_is_empty(self, repos: Repos, tmp_path: Path) -> None:
+    def test_merged_pr_whose_fallback_is_empty(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         repos.merge_with_merge_commit()
         repos.sync_work()
         run = _run_script(repos, tmp_path, merged=True, merge_commit_sha="", gh_diff="")
@@ -452,7 +471,9 @@ class TestEmptyDiffFailsLoudly:
         assert f"merged PR: gh pr diff {PR_NUMBER}" in run.stdout
         assert "merged=true" in run.stdout
 
-    def test_empty_diff_leaves_no_usable_pr_diff(self, repos: Repos, tmp_path: Path) -> None:
+    def test_empty_diff_leaves_no_usable_pr_diff(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
         repos.merge_with_merge_commit()
         repos.sync_work()
         run = _run_script(repos, tmp_path, merged=False)
@@ -494,7 +515,9 @@ class TestWorkflowWiring:
         assert run.count(legacy) == 1
         guard = run.index('if [ -f "$SCRIPT" ]')
         assert guard < run.index("else") < run.index(legacy) < run.index("fi\n")
-        assert run.index("::warning::extract_pr_diff.sh not in pinned checkout") < run.index(legacy)
+        assert run.index(
+            "::warning::extract_pr_diff.sh not in pinned checkout"
+        ) < run.index(legacy)
 
     def test_legacy_fallback_still_fails_on_an_empty_diff(self) -> None:
         # The script cannot reconstruct a merged PR from an old pin, but the
@@ -516,7 +539,10 @@ class TestWorkflowWiring:
         assert env["HEAD_SHA"] == "${{ steps.refs.outputs.head_sha }}"
         assert env["GH_TOKEN"] == "${{ github.token }}"
         assert env["GITHUB_REPOSITORY"] == "${{ github.repository }}"
-        assert env["PR_NUMBER"] == "${{ inputs.pr_number || github.event.pull_request.number }}"
+        assert (
+            env["PR_NUMBER"]
+            == "${{ inputs.pr_number || github.event.pull_request.number }}"
+        )
 
     def test_refs_step_exports_the_merge_state(self) -> None:
         run = _step("Resolve PR refs")["run"]

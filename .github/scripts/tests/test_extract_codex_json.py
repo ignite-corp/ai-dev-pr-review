@@ -13,13 +13,13 @@ from extract_codex_json import extract, stamp_model_status
 
 
 def test_extracts_last_json_with_required_fields():
-    log = '''
+    log = """
     Some non-JSON text before.
     {"summary": "x", "issues": []}
     More text.
     {"summary": "Final review", "early_exit": false, "issues": [{"severity":"minor","file":"a","line":1,"description":"d","suggestion":null}]}
     Trailing log line.
-    '''
+    """
     obj = extract(log)
     assert obj is not None
     assert obj["summary"] == "Final review"
@@ -33,18 +33,18 @@ def test_returns_none_when_no_valid_block():
 
 
 def test_picks_last_valid_when_multiple_present():
-    log = '''
+    log = """
     {"summary": "first", "early_exit": false, "issues": []}
     {"summary": "second", "early_exit": false, "issues": []}
-    '''
+    """
     obj = extract(log)
     assert obj["summary"] == "second"
 
 
 def test_handles_nested_objects_in_issues():
-    log = '''
+    log = """
     {"summary": "x", "early_exit": false, "issues": [{"severity":"minor","file":"a","line":1,"description":"d","suggestion":"fix"}]}
-    '''
+    """
     obj = extract(log)
     assert obj is not None
     assert obj["issues"][0]["suggestion"] == "fix"

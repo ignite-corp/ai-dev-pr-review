@@ -46,7 +46,10 @@ def test_event_set_none() -> None:
 
 
 def test_names_uses_job_display_name_and_id_and_workflow_name() -> None:
-    doc = {"name": "ci-main", "jobs": {"lint": {"name": "Lint & Type Check"}, "build": {}}}
+    doc = {
+        "name": "ci-main",
+        "jobs": {"lint": {"name": "Lint & Type Check"}, "build": {}},
+    }
     assert _names(doc) == {"ci-main", "lint", "Lint & Type Check", "build"}
 
 

@@ -70,10 +70,7 @@ def test_signature_with_epoch_returns_epoch():
 
 
 def test_signature_multiple_matches_uses_last():
-    text = (
-        "Claude AI usage limit reached|100\n"
-        "Claude AI usage limit reached|200\n"
-    )
+    text = "Claude AI usage limit reached|100\nClaude AI usage limit reached|200\n"
     assert sca._parse_limit_epoch(text, _NOW) == 200
 
 
@@ -120,9 +117,7 @@ def test_detect_sets_force_api_and_until_when_absent(monkeypatch, tmp_path):
             f"PATCH {_FORCE_PATH}": 404,
         }
     )
-    _run_detect(
-        monkeypatch, tmp_path, "Claude AI usage limit reached|1799999000", api
-    )
+    _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1799999000", api)
     # UNTIL missing -> created via POST with the reset epoch.
     assert (
         "POST",
@@ -159,9 +154,7 @@ def test_detect_keeps_existing_until_epoch(monkeypatch, tmp_path):
             )
         }
     )
-    _run_detect(
-        monkeypatch, tmp_path, "Claude AI usage limit reached|1799999000", api
-    )
+    _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1799999000", api)
     until_writes = [
         (m, p) for m, p, _ in api.calls if m in ("PATCH", "POST") and "UNTIL" in p
     ]
@@ -221,9 +214,7 @@ def test_restore_due_deletes_both_vars(monkeypatch):
 
 
 def test_restore_non_integer_until_deletes_both(monkeypatch):
-    api = FakeApi(
-        {f"GET {_UNTIL_PATH}": FakeResponse(200, {"value": "not-an-int"})}
-    )
+    api = FakeApi({f"GET {_UNTIL_PATH}": FakeResponse(200, {"value": "not-an-int"})})
     _run_restore(monkeypatch, api)
     assert ("DELETE", _FORCE_PATH, None) in api.calls
     assert ("DELETE", _UNTIL_PATH, None) in api.calls
