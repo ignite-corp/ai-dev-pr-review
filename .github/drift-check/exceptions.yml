@@ -21,6 +21,17 @@ vars:
       docs/pilot-usage.md "REVIEW_MODE does nothing on the wrapper path").
 
 env:
+  base-ai-review-prepare.yml:
+    Append verified action SHA pins:
+      GITHUB_REPOSITORY:
+        reason: >-
+          Open drift, tracked in AT-2879: base sets GITHUB_REPOSITORY
+          explicitly since #195 (AT-2801, so verify_action_shas.py can tell
+          a private repo in the caller's org from a missing one), and the
+          wrapper's step does not. The runner sets the same variable as a
+          default env var, so the wrapper step reads it today; the port makes
+          that explicit and is pending. Remove this entry when it lands --
+          that is AT-2879's close condition.
   base-ai-review-single.yml:
     Normalize review file name:
       REVIEWER:
