@@ -46,9 +46,11 @@ _STDERR_EXCERPT_MAX_LEN = 200
 # Error labels for an HTTP 404. GitHub answers 404, not 403, for a repository
 # the token may not see -- it refuses to disclose existence -- so "absent" and
 # "present but invisible" arrive as the same status code, and nothing this
-# script can reach separates them: the tag-listing response for a real private
-# repository and for one that was never created is byte-identical, headers and
-# content-length included.
+# script can reach separates them: a real private repository and one that was
+# never created both come back as HTTP 404 with the same body, and all this
+# layer sees is ``gh``'s stderr token (``_fetch_tags`` matches "http 404" in
+# stderr; it never reads the response headers). Per-request headers differ,
+# but carry no signal about which cause it was.
 #
 # So neither label asserts absence, and neither earns a `major`. The owner
 # split is NOT a visibility test: the run's credential is the repo-scoped

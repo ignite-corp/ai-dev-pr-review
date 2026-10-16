@@ -8,7 +8,6 @@ does not reopen the same nit.
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import subprocess
@@ -322,6 +321,40 @@ def _pin_rows(context_md: str) -> list[str]:
     return [line.strip() for line in context_md.splitlines() if "<pin " in line]
 
 
+def _blurb_text(context_md: str) -> str:
+    """Return the rendered section WITHOUT its ``<pin .../>`` rows.
+
+    The complement of ``_pin_rows``, and for the same reason: the blurb
+    quotes every ``error="..."`` label it governs, so a check run over the
+    whole document cannot tell the blurb's description of a label from a
+    pin that happens to carry it.
+    """
+    return "\n".join(line for line in context_md.splitlines() if "<pin " not in line)
+
+
+def _run_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+    sha: str,
+) -> str:
+    """Run ``main()`` over a one-pin diff and return the written ``context.md``.
+
+    The patched ``subprocess.run`` makes every tag listing 404, which is
+    what the 404 guidance tests need; the blurb itself is rendered for any
+    pin, so tests that only read the blurb can use it too.
+    """
+    (tmp_path / "pr.diff").write_text(f"+      - uses: {repo}@{sha}  # v1\n")
+    (tmp_path / "context.md").write_text("")
+    monkeypatch.chdir(tmp_path)
+    with patch(
+        "verify_action_shas.subprocess.run",
+        return_value=_completed(returncode=1, stderr=_GH_404_STDERR),
+    ):
+        main()
+    return (tmp_path / "context.md").read_text()
+
+
 def _severity_rule_for(document: str, error_label: str) -> str:
     """Return the one prompt bullet in ``document`` governing a label.
 
@@ -442,14 +475,46 @@ class TestFetchTags404Discrimination:
     def test_in_org_owner_match_ignores_case(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GitHub owner names are case-insensitive, so the comparison is."""
-        monkeypatch.setenv("GITHUB_REPOSITORY", "Ignite-Corp/Ai-Dev-Pr-Review")
+        """GitHub owner names are case-insensitive, so the comparison is.
+
+        Both identities are re-cased from the module constants rather than
+        respelled as literals. A literal pair stays self-consistent when
+        ``_RUN_ORG`` changes, so the test would keep passing while no longer
+        testing an in-org pair at all -- silently, because the two literals
+        agree with each other rather than with the module. (AT-2873)
+
+        Deriving the inputs from the target brings its own silent failure,
+        so the property this test needs is asserted directly: the two owner
+        halves must DIFFER in spelling yet match case-insensitively. Only
+        then is ``_classify_404``'s ``.lower()`` doing any work.
+
+        Asserting that each transform changed its own constant is not the
+        same property and does not imply it -- measured: make the two
+        transforms converge (``.title()`` on both) and each value still
+        differs from its own constant, so a per-constant check passes,
+        while both owners become ``Ignite-Corp`` and the comparison under
+        test stops being case-insensitive at all.
+        """
+        run_repo = _RUN_REPO.title()
+        in_org_private = _IN_ORG_PRIVATE.upper()
+        run_owner = run_repo.split("/", 1)[0]
+        pin_owner = in_org_private.split("/", 1)[0]
+        assert run_owner != pin_owner, (
+            "the two owners are spelled identically, so this no longer "
+            "exercises a case-insensitive comparison; pick transforms "
+            "that differ from each other"
+        )
+        assert run_owner.lower() == pin_owner.lower(), (
+            "the two owners must be the same owner differing only in case, "
+            "or this is not an in-org pair"
+        )
+        monkeypatch.setenv("GITHUB_REPOSITORY", run_repo)
         cache: TagCache = {}
         with patch(
             "verify_action_shas.subprocess.run",
             return_value=_completed(returncode=1, stderr=_GH_404_STDERR),
         ):
-            _, error = _fetch_tags("IGNITE-CORP/ai-dev-infra-common", cache)
+            _, error = _fetch_tags(in_org_private, cache)
         assert error == "repo-not-visible"
 
     def test_out_of_org_404_still_repo_not_found(
@@ -477,11 +542,14 @@ class TestFetchTags404Discrimination:
         """The out-of-org label cannot mean "the repository is absent".
 
         ``ignite-corp/ai-dev-infra-common`` exists and is private;
-        ``actions/no-such-action-xyzzy`` does not exist at all. Measured
-        against the live API, their tag-listing 404s are byte-identical down
-        to the headers, so both arrive here as the same ``_GH_404_STDERR``
-        and both must land on the same label. A reviewer instruction keyed
-        on that label therefore cannot assert absence of either one.
+        ``actions/no-such-action-xyzzy`` does not exist at all. Both come
+        back as HTTP 404 with the same body, and all this layer sees is
+        ``gh``'s stderr token -- so both arrive here as the same
+        ``_GH_404_STDERR`` and both must land on the same label.
+        (Per-request headers differ, but carry no signal about which cause
+        it was, and ``_fetch_tags`` never reads them.) A reviewer
+        instruction keyed on that label therefore cannot assert absence of
+        either one.
         """
         monkeypatch.setenv("GITHUB_REPOSITORY", _OUT_OF_ORG_RUN_REPO)
         cache: TagCache = {}
@@ -538,30 +606,11 @@ class TestRendered404Guidance:
     bullet the pin's own label selects.
     """
 
-    def _run_main(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        repo: str,
-        sha: str,
-    ) -> str:
-        (tmp_path / "pr.diff").write_text(f"+      - uses: {repo}@{sha}  # v1\n")
-        (tmp_path / "context.md").write_text("")
-        monkeypatch.chdir(tmp_path)
-        with patch(
-            "verify_action_shas.subprocess.run",
-            return_value=_completed(returncode=1, stderr=_GH_404_STDERR),
-        ):
-            main()
-        return (tmp_path / "context.md").read_text()
-
     def test_in_org_pin_does_not_reach_the_major_instruction(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
-        content = self._run_main(
-            tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA
-        )
+        content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
         (row,) = _pin_rows(content)
         assert f'repo="{_IN_ORG_PRIVATE}"' in row
         assert 'error="repo-not-found"' not in row
@@ -580,9 +629,7 @@ class TestRendered404Guidance:
         consumer whose org differs from the pin's.
         """
         monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
-        content = self._run_main(
-            tmp_path, monkeypatch, _OUT_OF_ORG_ABSENT, CHECKOUT_SHA
-        )
+        content = _run_main(tmp_path, monkeypatch, _OUT_OF_ORG_ABSENT, CHECKOUT_SHA)
         (row,) = _pin_rows(content)
         assert f'repo="{_OUT_OF_ORG_ABSENT}"' in row
         assert 'error="repo-not-found"' in row
@@ -600,9 +647,7 @@ class TestRendered404Guidance:
         could not see -- the AT-2801 defect, one scope narrower.
         """
         monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
-        content = self._run_main(
-            tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA
-        )
+        content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
         (row,) = _pin_rows(content)
         assert f'repo="{_IN_ORG_PRIVATE}"' in row
         assert 'error="repo-not-found"' in row
@@ -619,9 +664,7 @@ class TestRendered404Guidance:
         AT-2801 false ``major`` comes back for cross-org consumers.
         """
         monkeypatch.setenv("GITHUB_REPOSITORY", _OUT_OF_ORG_RUN_REPO)
-        content = self._run_main(
-            tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA
-        )
+        content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
         (row,) = _pin_rows(content)
         assert f'repo="{_IN_ORG_PRIVATE}"' in row
         assert 'error="repo-not-found"' in row
@@ -711,6 +754,69 @@ _PROMPT_PATH = (
 )
 
 
+class TestInlineBlurbLabels:
+    """Labels in the blurb ``main()`` writes that nothing else covers.
+
+    Deliberately NOT gated on ``_PROMPT_PATH``: this runs ``main()`` and
+    reads what it emitted. It sat inside ``TestPromptGuidance`` until
+    AT-2849 and so had never executed anywhere -- the class is skipped here
+    (the caller-repo prompt is absent by design) and is not run in a
+    consumer either. An "add an assertion to the blurb guard" finding
+    therefore landed in dead code and looked addressed.
+
+    Nothing here compares the blurb with the caller-repo prompt doc, and
+    -- measured, not assumed -- no test in this repo does: the three tests
+    left in ``TestPromptGuidance`` each assert a token is present in
+    ``_PROMPT_PATH`` alone and never read what ``main()`` emits.
+    """
+
+    def test_inline_blurb_names_comment_matches_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ``status="verified"`` bullet must name ``comment-matches="false"``.
+
+        Without it a reviewer has no rule for a verified pin whose
+        ``# vX.Y`` comment drifted, and the drift goes unreported.
+
+        Anchored to the bullet, not to the document. The token's meaning
+        is the status it hangs off: the same words under ``unmatched``, or
+        up in the intro prose, attach the rule to the wrong pins while a
+        whole-document substring check stays green. The one-element
+        unpack is the same protection ``_severity_rule_for`` gives the
+        ``error="..."`` labels: exactly one ``status="verified"`` bullet,
+        so splitting the verified guidance across two fails too.
+
+        What it does NOT catch, measured: the sentence staying here AND
+        being copied into another status's bullet. This holds the
+        verified bullet to carrying the rule; it does not make the rule
+        exclusive to it.
+
+        Only this one token is asserted here. The 404 labels are already
+        held against the same rendered text, and more strictly, by
+        ``TestRendered404Guidance``: ``_assert_404_rule_is_honest`` runs
+        ``_severity_rule_for``, which requires exactly one bullet carrying
+        the label and then checks what that bullet says. Repeating them
+        here would be strictly weaker than coverage that already runs.
+
+        Asserted against what ``main()`` emits, by running it, rather than
+        against the shape of its source: reading the source coupled the
+        test to how the blurb happens to be built, so a refactor that
+        changed no output could fail it while a label present anywhere
+        else in the source kept it green. (AT-2849)
+        """
+        monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
+        content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
+        (verified_bullet,) = [
+            line
+            for line in _blurb_text(content).splitlines()
+            if line.startswith('- `status="verified"`')
+        ]
+        assert 'comment-matches="false"' in verified_bullet, (
+            'the `status="verified"` bullet must tell the reviewer what to '
+            "do when comment-matches=false"
+        )
+
+
 @pytest.mark.skipif(
     not _PROMPT_PATH.exists(),
     reason="caller-repo prompt (code-review-system.md) absent in public reusable repo",
@@ -737,10 +843,12 @@ class TestPromptGuidance:
     holds the in-tree template, ``TestRendered404Guidance`` holds the blurb
     ``main()`` renders, and ``MIGRATION.md`` tells an onboarded consumer to
     re-copy the rules. AT-2844 tracks checking the consumer-side copies
-    across the fleet, which no test in this repo can reach; AT-2849 tracks
-    this skip, which also hides ``test_inline_blurb_matches_prompt_doc``
-    below -- that one reads only ``verify_action_shas.py`` and has no
-    business being gated on a caller-repo file at all."""
+    across the fleet, which no test in this repo can reach.
+
+    Every test left here reads ``_PROMPT_PATH`` and so genuinely needs the
+    skip. ``test_inline_blurb_matches_prompt_doc`` did not, and AT-2849
+    moved it out to ``TestInlineBlurbLabels`` above; do not move a test
+    back in unless it reads that file."""
 
     _PROMPT_PATH = _PROMPT_PATH
 
@@ -756,37 +864,6 @@ class TestPromptGuidance:
         assert 'error="repo-not-found"' in text, (
             "Prompt must carry the repo-not-found rule the verifier emits; "
             "copy it from examples/prompts/code-review-system.md."
-        )
-
-    def test_inline_blurb_matches_prompt_doc(self) -> None:
-        """``main()`` embeds a shortened copy of the prompt guidance into
-        ``context.md``. The two must agree on which labels warrant ``major``
-        vs ``suggestion`` -- the rendered blurb (after Python string-literal
-        escaping is undone) must contain the same tokens as the prompt."""
-        # Evaluate the source through ``ast`` so string-literal escapes
-        # collapse to their rendered form. We do not actually want to
-        # execute ``main()`` here -- just read what it would write.
-        # ``.parent`` is this tests/ directory, which holds no production
-        # module -- the script sits one level up, in .github/scripts/. The
-        # wrong path raised FileNotFoundError rather than failing an
-        # assertion, and went unnoticed because the whole class is skipped
-        # wherever .github/prompts/code-review-system.md is absent.
-        source = (
-            Path(__file__).resolve().parent.parent / "verify_action_shas.py"
-        ).read_text()
-        tree = ast.parse(source)
-        # Collect every string constant in the module -- the blurb lives in
-        # a concatenated string expression inside ``main()``.
-        all_strings = "\n".join(
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-        )
-        assert 'comment-matches="false"' in all_strings, (
-            "main()'s inline blurb must reference comment-matches=false"
-        )
-        assert 'error="repo-not-found"' in all_strings, (
-            "main()'s inline blurb must reference error=repo-not-found"
         )
 
     def test_prompt_clarifies_absent_comment_matches_is_not_a_finding(
