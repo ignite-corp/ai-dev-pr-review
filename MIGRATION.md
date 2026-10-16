@@ -11,6 +11,29 @@ After `ignite-corp/ai-dev-pr-review` is created and tagged `v1.0.0`, open one PR
 
 ---
 
+## Upgrading an already-onboarded consumer
+
+Bumping the reusable-workflow pin does **not** update a consumer's prompts. Precondition 3 above keeps `.github/prompts/code-review-system.md` and `.github/prompts/code-review-checklist.md` in the consumer repo, and the per-consumer **Keep** lists repeat it: those two files are consumer-owned and are only ever changed by a PR in the consumer. `examples/prompts/code-review-system.md` in this repo is the template for a *new* onboarding, so a change to it reaches nobody already onboarded. When a release changes what the reviewer is told, the consumer needs its own PR re-copying the changed rules out of the template.
+
+A consumer whose prompt still predates a rule keeps obeying the old one, and the reviewer then has two contradictory instructions for the same input: the blurb this repo's `verify_action_shas.py` renders into `context.md` travels with the pin and is current, while the consumer's prompt is whatever was last copied.
+
+### Action SHA pin 404 rules (AT-2801)
+
+Re-copy **both** of these bullets from the `## GitHub Actions SHA Pins` section of [`examples/prompts/code-review-system.md`](examples/prompts/code-review-system.md) into the consumer's `.github/prompts/code-review-system.md`, replacing the single `repo-not-found` bullet that is there now:
+
+- `status="unverified"` with `error="repo-not-found"`
+- `status="unverified"` with `error="repo-not-visible"` (new label)
+
+**`error="repo-not-found"` no longer means the repository does not exist.** It now means only that the API answered 404 for a repository whose owner is not the owner of the repository under review, or the run's own owner could not be determined. GitHub answers 404 both for an absent repository and for a private one the run's token may not read, so the label asserts nothing about existence. Neither 404 bullet earns a `major` any more: both raise `suggestion` and ask the author to confirm the `owner/repo` spelling. A prompt left on the old bullet — "the upstream action repository does not exist … Raise as `major`" — produces a consensus `major` on every PR that pins a private repository, which is the AT-2801 defect itself.
+
+A consumer whose prompt carries no `## GitHub Actions SHA Pins` section at all needs no change: it never had the old rule, and the rendered `context.md` blurb is its only guidance either way.
+
+### Finding the release that changed a rule
+
+This change lowers the severity the prompt prescribes for a finding class, which the [version policy](README.md#tag-pinning) places in a MINOR (`v1.x.0`): it is consumer-visible behaviour, so **not** a patch, and it only ever relaxes, so it is not one of the breaking changes that would make it a MAJOR. Per the wrapper lockstep in that same section, the pilot wrapper cuts a matching MINOR. Release notes for such a tag must say which prompt rules changed and name this section, so a consumer reviewing a Dependabot pin bump can see that the bump alone is not the whole upgrade.
+
+---
+
 ## Consumer: ai-dev-cab
 
 Repo: `ignite-corp/ai-dev-cab`

@@ -457,6 +457,7 @@ jobs:
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 .ai-dev-pr-review/.github/scripts/verify_action_shas.py
 
       - name: Collect unresolved review threads
