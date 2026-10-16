@@ -22,6 +22,7 @@ import pytest
 import yaml
 
 from aggregate_reviews import (
+    _count_unreviewed_majors,
     _get_available,
     _missing_reason,
     _missing_reviewer_reasons,
@@ -154,7 +155,12 @@ class TestReviewerRoster:
         assert out["roster"]["missing"] == {"gemini": "skipped"}
         verdict, reason, available = apply_verdict_rules(reviews)
         assert "gemini: skipped" not in format_summary(
-            reviews, verdict, reason, available, conclusions
+            reviews,
+            verdict,
+            reason,
+            available,
+            conclusions,
+            unreviewed_majors=_count_unreviewed_majors(available),
         )
 
     @pytest.mark.parametrize("dead", [[], ["claude"], ["claude", "codex"]])
@@ -170,7 +176,14 @@ class TestReviewerRoster:
         conclusions = {n: "success" for n in REVIEWER_NAMES}
         out = _emit(reviews, conclusions, tmp_path / "o")
         verdict, reason, available = apply_verdict_rules(reviews)
-        summary = format_summary(reviews, verdict, reason, available, conclusions)
+        summary = format_summary(
+            reviews,
+            verdict,
+            reason,
+            available,
+            conclusions,
+            unreviewed_majors=_count_unreviewed_majors(available),
+        )
         n_responded = len(out["roster"]["responded"])
         assert f"{n_responded}/3 reviewers" in summary
         assert out["reviewers_responded_count"] == str(n_responded)

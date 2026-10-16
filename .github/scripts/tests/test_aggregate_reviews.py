@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,6 +19,7 @@ import yaml
 
 from review_status import stamp_model_status
 from aggregate_reviews import (
+    _count_unreviewed_majors,
     _get_available,
     _has_full_reviewer_coverage,
     _prepare_failure_result,
@@ -71,6 +73,145 @@ def _make_review(**overrides: Any) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+@pytest.fixture(autouse=True)
+def _no_live_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test in this module that calls ``subprocess.run`` on ``gh``.
+
+    Every main() path in the aggregate is driven from this file, and every
+    one of them can reach a `gh` call. A test that forgets to patch
+    ``subprocess.run`` does not fail -- it quietly hits the live GitHub
+    API, which is how ``test_main_hands_both_readers_the_same_count`` came
+    to run `gh pr view 42 --json labels --repo owner/repo` against the
+    real API on every CI run, and to error outright on a machine with no
+    `gh` on PATH.
+
+    A sweep someone remembers to run is not a check, so the ban lives here
+    rather than in a script. Tests that patch
+    ``aggregate_reviews.subprocess.run`` themselves override this for
+    their own duration, which is the intended way to exercise a `gh`
+    path. Non-`gh` shell-outs are delegated untouched -- several tests in
+    the suite legitimately drive `jq` and `bash`.
+
+    What it covers, exactly, because a guard whose docstring outruns its
+    reach is the same defect one level up: calls through
+    ``subprocess.run``, in either spelling -- an argv sequence or a single
+    command string, which is split rather than compared whole -- and
+    ``gh`` named by bare name or by absolute path. ``subprocess.check_output``
+    and ``subprocess.call`` route through ``run`` and so are covered too.
+    It does NOT cover ``subprocess.Popen`` used directly, nor a module that
+    holds its own reference to ``run`` taken before this fixture applies.
+    Neither is reachable from ``aggregate_reviews`` today, which calls only
+    ``subprocess.run``; a change to either would need this widened with it.
+    """
+    real = subprocess.run
+
+    def guard(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(cmd, (list, tuple)):
+            argv = [str(c) for c in cmd]
+        else:
+            # A string command is the same call in the other spelling.
+            # Comparing it whole made basename() see "gh pr view ..." and
+            # let it past; splitting is what makes the two spellings one
+            # check.
+            try:
+                argv = shlex.split(str(cmd))
+            except ValueError:
+                argv = [str(cmd)]
+        if argv and os.path.basename(argv[0]) == "gh":
+            raise AssertionError(
+                "test reached the live GitHub API: "
+                + " ".join(argv)
+                + " -- patch aggregate_reviews.subprocess.run in this test"
+            )
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guard)
+
+
+def test_no_live_gh_fixture_is_armed() -> None:
+    """Positive control for ``_no_live_gh``.
+
+    Without this, a green suite is indistinguishable from a fixture that
+    silently stopped matching -- a rename of the binary, a change to the
+    argv shape, or an autouse registration that no longer applies.
+    """
+    with pytest.raises(AssertionError, match="live GitHub API"):
+        subprocess.run(["gh", "pr", "view", "1"])
+    # A string command is the same call in the other spelling, and the
+    # naive normalisation made the whole string argv[0], so basename()
+    # compared "gh pr view 1" against "gh" and let it through.
+    with pytest.raises(AssertionError, match="live GitHub API"):
+        subprocess.run("gh pr view 1")
+    # An absolute path is still gh.
+    with pytest.raises(AssertionError, match="live GitHub API"):
+        subprocess.run(["/usr/bin/gh", "pr", "view", "1"])
+    # ...and it must not break the non-gh shell-outs other tests rely on,
+    # in either spelling.
+    done = subprocess.run(["echo", "ok"], capture_output=True, text=True)
+    assert done.stdout.strip() == "ok"
+    done = subprocess.run("echo ok", shell=True, capture_output=True, text=True)
+    assert done.stdout.strip() == "ok"
+
+
+def _two_majors_no_consensus() -> dict[str, Any]:
+    """A full roster whose majors reach verdict "approve".
+
+    Both majors come from one reviewer on different files:
+    _check_major_consensus needs two reviewers on one file, so this is the
+    measured no-consensus shape. Module level because two classes build it
+    -- the withhold gate and the one-count contract.
+    """
+    names = list(REVIEWER_NAMES)
+    reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in names}
+    reviews[names[0]] = _make_named_review(
+        names[0],
+        [
+            _make_issue(severity="major", file="a.py", description="first major"),
+            _make_issue(severity="major", file="b.py", description="second major"),
+        ],
+    )
+    return reviews
+
+
+def _post_and_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str = "approve",
+    *,
+    approve_quorum: bool = True,
+    unreviewed_majors: int = 0,
+) -> list[list[str]]:
+    """Drive post_verdict with the gh calls recorded instead of run.
+
+    One scaffold for both withhold gates: they set the same env, record
+    with the same fake, patch the same pair, and differ only in which of
+    post_verdict's keywords they vary -- quorum for AT-2511, the major
+    count for AT-2823 -- so each passes its own axis and takes the
+    default for the other.
+    """
+    monkeypatch.setenv("PR_NUMBER", "42")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GH_TOKEN", "default-token")
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        commands.append(cmd)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    with (
+        patch("aggregate_reviews._fold_prior_round_items"),
+        patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+    ):
+        post_verdict(
+            "body",
+            verdict,
+            comment_only=False,
+            approve_quorum=approve_quorum,
+            unreviewed_majors=unreviewed_majors,
+        )
+    return commands
 
 
 def _make_status_less_review(**overrides: Any) -> dict[str, Any]:
@@ -509,7 +650,7 @@ class TestReviewerToken:
             patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
         ):
-            post_verdict("body", verdict, comment_only=False)
+            post_verdict("body", verdict, comment_only=False, unreviewed_majors=0)
 
         return captured["env"]
 
@@ -558,14 +699,17 @@ class TestCommentOnlyGating:
             patch("aggregate_reviews._fold_prior_round_items"),
             patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
         ):
-            post_verdict("body", verdict, comment_only=comment_only)
+            post_verdict(
+                "body",
+                verdict,
+                comment_only=comment_only,
+                unreviewed_majors=0,
+            )
 
         return commands
 
     def _has_review_request_changes(self, commands: list[list[str]]) -> bool:
-        return any(
-            "review" in cmd and "--request-changes" in cmd for cmd in commands
-        )
+        return any("review" in cmd and "--request-changes" in cmd for cmd in commands)
 
     def _has_pr_comment(self, commands: list[list[str]]) -> bool:
         return any("comment" in cmd for cmd in commands)
@@ -594,50 +738,25 @@ class TestCommentOnlyGating:
 class TestApproveQuorumGate:
     """Formal approval requires a minimum quorum of available reviewers."""
 
-    def _run(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        verdict: str,
-        *,
-        approve_quorum: bool,
-    ) -> list[list[str]]:
-        monkeypatch.setenv("PR_NUMBER", "42")
-        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-        monkeypatch.setenv("GH_TOKEN", "default-token")
-
-        commands: list[list[str]] = []
-
-        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
-            commands.append(cmd)
-            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
-
-        with (
-            patch("aggregate_reviews._fold_prior_round_items"),
-            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
-        ):
-            post_verdict(
-                "body", verdict, comment_only=False, approve_quorum=approve_quorum
-            )
-
-        return commands
-
     def test_approve_without_quorum_posts_comment(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        commands = self._run(monkeypatch, "approve", approve_quorum=False)
+        commands = _post_and_capture(monkeypatch, "approve", approve_quorum=False)
         assert not any("review" in cmd for cmd in commands)
         assert any("comment" in cmd for cmd in commands)
 
     def test_approve_with_quorum_submits_review(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        commands = self._run(monkeypatch, "approve", approve_quorum=True)
+        commands = _post_and_capture(monkeypatch, "approve", approve_quorum=True)
         assert any("review" in cmd and "--approve" in cmd for cmd in commands)
 
     def test_request_changes_unaffected_by_quorum(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        commands = self._run(monkeypatch, "request_changes", approve_quorum=False)
+        commands = _post_and_capture(
+            monkeypatch, "request_changes", approve_quorum=False
+        )
         assert any("review" in cmd and "--request-changes" in cmd for cmd in commands)
 
     def test_main_zero_responses_withholds_formal_approval(
@@ -797,6 +916,278 @@ class TestApproveQuorumGate:
         assert mock_post.call_args.kwargs["approve_quorum"] is False
 
 
+class TestUndispositionedMajorsGate:
+    """AT-2823: majors nobody dispositioned withhold the formal approval.
+
+    Measured on ignite-corp/ai-dev-infra-max#10: a complete 3/3 roster, two
+    majors with no consensus, headline "Approved with 2 unreviewed major
+    issue(s)" -- and an APPROVED review from the reviewer App over the top
+    of it, which turns the PR page green and fills the ruleset's single
+    required approval. A short roster already withholds (AT-2511); both
+    states mean "this round is not finished", so both take the same branch.
+    """
+
+    def test_approve_with_majors_posts_comment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commands = _post_and_capture(monkeypatch, unreviewed_majors=2)
+        assert not any("review" in cmd for cmd in commands)
+        assert any("comment" in cmd for cmd in commands)
+
+    def test_approve_without_majors_submits_review(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Positive control: the withhold is keyed on the major count, not on
+        # approve itself -- a clean round still gets its formal approval.
+        commands = _post_and_capture(monkeypatch, unreviewed_majors=0)
+        assert any("review" in cmd and "--approve" in cmd for cmd in commands)
+
+    def _run_main_recording_gh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        reviews: dict[str, Any],
+        *,
+        allow_auto_approve: bool = True,
+    ) -> list[tuple[list[str], str]]:
+        """Drive main() with post_verdict REAL, recording the gh calls.
+
+        Named apart from ``TestApproveQuorumGate._run_main``, which mocks
+        post_verdict and returns the mock: these differ in what they
+        leave running and in what they hand back, so one name for both
+        would make a reader of either class expect the other's contract.
+        Returns (argv, body) pairs, so a test can assert on what was
+        posted as well as on whether a review went up at all.
+        """
+        monkeypatch.setenv("PR_NUMBER", "10")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("GH_TOKEN", "default-token")
+        monkeypatch.setenv("REVIEWER_TOKEN", "reviewer-app-token")
+        monkeypatch.setenv(
+            "ALLOW_AUTO_APPROVE", "true" if allow_auto_approve else "false"
+        )
+        monkeypatch.setenv("REVIEW_MODE", "parallel")
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+
+        calls: list[tuple[list[str], str]] = []
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            calls.append((cmd, kwargs.get("input", "")))
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+        with (
+            patch("aggregate_reviews.load_reviews", return_value=reviews),
+            patch("aggregate_reviews._fold_prior_round_items"),
+            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+        ):
+            main()
+        return calls
+
+    def test_main_full_roster_with_majors_withholds_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run_main_recording_gh(monkeypatch, _two_majors_no_consensus())
+
+        assert not any("review" in cmd for cmd, _ in calls), (
+            "a formal APPROVED review must not be posted over undispositioned majors"
+        )
+        bodies = [body for cmd, body in calls if "comment" in cmd]
+        assert len(bodies) == 1
+        assert "Approved with 2 unreviewed major issue(s)" in bodies[0]
+        assert "Auto-approve withheld" in bodies[0]
+        assert "[OK]" not in bodies[0]
+
+    def test_main_clean_round_still_approves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Positive control through the same path: 3/3, no issues at all.
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        calls = self._run_main_recording_gh(monkeypatch, reviews)
+
+        assert any("review" in cmd and "--approve" in cmd for cmd, _ in calls)
+
+    def test_main_minor_only_round_still_approves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The withhold is keyed on majors, not on "issues exist": a round of
+        # minors and suggestions is finished and keeps its approval.
+        names = list(REVIEWER_NAMES)
+        reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in names}
+        reviews[names[0]] = _make_named_review(
+            names[0],
+            [_make_issue(severity="minor"), _make_issue(severity="suggestion")],
+        )
+        calls = self._run_main_recording_gh(monkeypatch, reviews)
+
+        assert any("review" in cmd and "--approve" in cmd for cmd, _ in calls)
+
+    def test_headline_names_the_comment_downgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AT-2240's rule applied to this withhold: the headline must not
+        # describe an outcome other than the one actually posted.
+        calls = self._run_main_recording_gh(monkeypatch, _two_majors_no_consensus())
+
+        body = next(body for cmd, body in calls if "comment" in cmd)
+        assert (
+            "[!] Approved with 2 unreviewed major issue(s) | comment only"
+            " | 3/3 reviewers" in body
+        )
+        # The end-to-end guard for the segment TestSummaryLabels pins at
+        # unit level: a colon here would claim the full roster caused the
+        # downgrade.
+        assert "comment only: 3/3" not in body
+
+    def test_withhold_note_says_how_it_clears(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The defect this feature was reviewed for is that a blocked
+        # reader is told the approval is withheld and given no way to act.
+        # The note is the whole user interface, so it has to name what
+        # re-runs a round in this repo's terms, and it must not promise
+        # that a reply alone clears the withhold -- the aggregate never
+        # sees a disposition (AT-2843).
+        calls = self._run_main_recording_gh(monkeypatch, _two_majors_no_consensus())
+        body = next(body for cmd, body in calls if "comment" in cmd)
+
+        assert "Auto-approve withheld" in body
+        assert "The next round decides again" in body
+        assert "push a commit, or re-run the workflow" in body
+        assert "posts once a round ends with no major raised" in body
+        assert "A human approving this PR satisfies a required-review rule" in body
+
+    def test_coverage_reason_wins_when_both_withholds_apply(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Documented precedence in _approval_withhold_reason: with a short
+        # roster AND majors, coverage is named first, because the missing
+        # reviewer may yet raise findings nobody has seen. Nothing covered
+        # this before -- the only test that did was removed with the
+        # withdrawn label, and the behaviour it checks is not the label's.
+        #
+        # This owns the PROSE axis of the combined case and only that.
+        # Whether the combination also retires the standing same-head
+        # approval is a separate question this harness cannot see -- it
+        # records gh argv, not GraphQL mutations -- and being named for
+        # the case while checking one axis of it is how the combined case
+        # stayed broken through a round that tested "both directions".
+        # The other axis is TestSameHeadApprovalStandsUntilReplaced::
+        # test_a_quorum_short_round_with_majors_still_folds.
+        reviews = _two_majors_no_consensus()
+        reviews[list(REVIEWER_NAMES)[-1]] = None
+        calls = self._run_main_recording_gh(monkeypatch, reviews)
+
+        assert not any("review" in cmd for cmd, _ in calls)
+        body = next(body for cmd, body in calls if "comment" in cmd)
+        assert "not every configured reviewer produced a verdict" in body
+        # Positive control: the majors really are present in this fixture,
+        # so the coverage reason winning is a precedence and not an
+        # absence of majors.
+        assert "major issue(s) raised this round" not in body
+        assert "unreviewed major issue(s)" in body
+
+    def test_killswitch_off_gives_one_explanation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One downgrade, one explanation. With ALLOW_AUTO_APPROVE off the
+        # killswitch already owns the downgrade and the headline names it;
+        # the withhold note must not append a second, different reason for
+        # the same comment. Keying the withhold on majors makes this the
+        # common case for any round that raises one with auto-approve off.
+        reviews = _two_majors_no_consensus()
+
+        # Positive control: the same round with auto-approve ON does emit
+        # the withhold note, so its absence below is this branch and not a
+        # fixture that never produces the string.
+        on = next(
+            body
+            for cmd, body in self._run_main_recording_gh(monkeypatch, reviews)
+            if "comment" in cmd
+        )
+        assert "Auto-approve withheld" in on
+
+        calls = self._run_main_recording_gh(
+            monkeypatch, reviews, allow_auto_approve=False
+        )
+        assert not any("review" in cmd for cmd, _ in calls)
+        off = next(body for cmd, body in calls if "comment" in cmd)
+        assert "posted as comment (auto-approve off)" in off
+        assert "Auto-approve withheld" not in off
+
+
+class TestMajorCountIsOneComputation:
+    """AT-2823 follow-up: one count, read by the headline and by the post.
+
+    main()'s comment and _count_unreviewed_majors' docstring both claim the
+    count is computed once and read twice. It was two independent calls that
+    agreed only because both were handed the same ``available`` -- nothing
+    stopped a caller passing format_summary a different mapping and
+    reintroducing the headline/posted-event disagreement AT-2823 closed.
+    The count is a parameter now, the way ``approve_quorum`` already is.
+    """
+
+    def test_both_readers_require_the_count(self) -> None:
+        # Fail closed at the signature. The gate is `unreviewed_majors > 0`,
+        # so 0 is the permissive value, and a default of 0 makes "the caller
+        # forgot" indistinguishable from "a clean round" -- the same
+        # indistinguishability this parameter exists to prevent, one layer
+        # up. Omitting it must be a TypeError, not a formal APPROVED review
+        # over majors nobody counted.
+        with pytest.raises(TypeError, match="unreviewed_majors"):
+            format_summary(
+                {}, "approve", "reason", {}, comment_only=False, approve_quorum=True
+            )
+        with pytest.raises(TypeError, match="unreviewed_majors"):
+            post_verdict("body", "approve", comment_only=False, approve_quorum=True)
+
+    def test_headline_renders_the_count_it_is_given(self) -> None:
+        # A recount of ``available`` would render 1; the parameter renders 2.
+        reviews = {
+            "claude": _make_named_review("claude", [_make_issue(severity="major")])
+        }
+        summary = format_summary(
+            reviews,
+            "approve",
+            "reason",
+            reviews,
+            comment_only=False,
+            approve_quorum=True,
+            unreviewed_majors=2,
+        )
+        assert "Approved with 2 unreviewed major issue(s)" in summary
+
+    def test_main_hands_both_readers_the_same_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+
+        reviews = _two_majors_no_consensus()
+
+        # format_summary and post_verdict are the only paths out of main()
+        # that shell out, and both are mocked here, so this route makes no
+        # subprocess call at all -- measured, with the recorder confirmed
+        # against a run where post_verdict is left real.
+        with (
+            patch("aggregate_reviews.load_reviews", return_value=reviews),
+            patch(
+                "aggregate_reviews.format_summary", return_value="body"
+            ) as mock_summary,
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+
+        # Positive control: the round really does carry majors, so an
+        # equality of two zeroes cannot pass this.
+        assert mock_post.call_args.kwargs["unreviewed_majors"] == 2
+        assert (
+            mock_summary.call_args.kwargs["unreviewed_majors"]
+            == mock_post.call_args.kwargs["unreviewed_majors"]
+        )
+
+
 class TestFullReviewerCoverage:
     """AT-2124: approve_quorum is full coverage, not an availability count."""
 
@@ -875,9 +1266,7 @@ class TestCommentOnlyToggle:
         monkeypatch.setenv("ALLOW_AUTO_APPROVE", "false")
         assert _is_comment_only() is True
 
-    def test_true_disables_comment_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_true_disables_comment_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
         assert _is_comment_only() is False
 
@@ -893,9 +1282,7 @@ class TestStatusContract:
         assert _get_available(reviews) == {}
 
     def test_status_ok_counted(self) -> None:
-        reviews: dict[str, dict[str, Any] | None] = {
-            "codex": _make_review(status="ok")
-        }
+        reviews: dict[str, dict[str, Any] | None] = {"codex": _make_review(status="ok")}
         assert "codex" in _get_available(reviews)
 
     def test_status_ok_wins_over_error_key(self) -> None:
@@ -932,11 +1319,16 @@ class TestStatusContract:
         assert not _is_partial(_make_review(status="ok"))
 
     def test_status_failed_labeled_in_summary(self) -> None:
-        reviews: dict[str, dict[str, Any] | None] = {
-            n: None for n in REVIEWER_NAMES
-        }
+        reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         reviews[list(REVIEWER_NAMES)[0]] = _make_review(status="failed")
-        summary = format_summary(reviews, "comment", "reason", {}, comment_only=True)
+        summary = format_summary(
+            reviews,
+            "comment",
+            "reason",
+            {},
+            comment_only=True,
+            unreviewed_majors=0,
+        )
         assert "status=failed" in summary
 
 
@@ -1040,13 +1432,23 @@ class TestSummaryLabels:
 
     def test_request_changes_comment_only_label(self) -> None:
         summary = format_summary(
-            {}, "request_changes", "reason", {}, comment_only=True
+            {},
+            "request_changes",
+            "reason",
+            {},
+            comment_only=True,
+            unreviewed_majors=0,
         )
         assert "[!] Changes Requested | posted as comment (auto-approve off)" in summary
 
     def test_request_changes_active_label(self) -> None:
         summary = format_summary(
-            {}, "request_changes", "reason", {}, comment_only=False
+            {},
+            "request_changes",
+            "reason",
+            {},
+            comment_only=False,
+            unreviewed_majors=0,
         )
         assert "[X] Changes Requested | 0/3 reviewers" in summary
         assert "posted as comment" not in summary
@@ -1056,16 +1458,99 @@ class TestSummaryLabels:
         # administrative posting choice, not a review-quality problem, so the
         # icon stays [OK] and the word "Approved" is never dropped.
         summary = format_summary(
-            {}, "approve", "reason", {}, comment_only=True, approve_quorum=True
+            {},
+            "approve",
+            "reason",
+            {},
+            comment_only=True,
+            approve_quorum=True,
+            unreviewed_majors=0,
         )
-        assert "[OK] Approved | posted as comment (auto-approve off) | 0/3 reviewers" in summary
+        assert (
+            "[OK] Approved | posted as comment (auto-approve off) | 0/3 reviewers"
+            in summary
+        )
 
     def test_approve_clean_label(self) -> None:
         reviews = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
         summary = format_summary(
-            reviews, "approve", "reason", reviews, comment_only=False, approve_quorum=True
+            reviews,
+            "approve",
+            "reason",
+            reviews,
+            comment_only=False,
+            approve_quorum=True,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
         )
         assert "[OK] Approved | 3/3 reviewers" in summary
+
+    def test_comment_only_takes_a_colon_only_when_coverage_is_the_reason(
+        self,
+    ) -> None:
+        """The colon introduces a reason, so it needs one to introduce.
+
+        AT-2511 built ``| comment only: <coverage>`` for the quorum
+        shortfall, where the coverage segment IS the reason -- "comment
+        only: not every reviewer responded (2/3 reviewers)" reads
+        correctly. AT-2823 widened the branch to every withhold without
+        widening the prose, so the majors-only path rendered "comment
+        only: 3/3 reviewers", where the colon makes a full roster look
+        like the cause of its own downgrade. The majors are the cause,
+        and the label already names them, so that path takes the plain
+        axis separator instead.
+        """
+        majors = [_make_issue(severity="major")]
+        full = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
+        full["claude"] = _make_named_review("claude", majors)
+
+        # Majors only, full roster: no reason-prose, so no colon.
+        summary = format_summary(
+            full,
+            "approve",
+            "reason",
+            full,
+            comment_only=False,
+            approve_quorum=True,
+            unreviewed_majors=1,
+        )
+        assert (
+            "[!] Approved with 1 unreviewed major issue(s) | comment only"
+            " | 3/3 reviewers" in summary
+        )
+        assert "comment only: 3/3" not in summary
+
+        # Quorum short: the coverage segment is the reason, so it keeps
+        # the colon -- AT-2511's wording is unchanged by this.
+        short = {n: _make_named_review(n, []) for n in list(REVIEWER_NAMES)[:2]}
+        summary = format_summary(
+            short,
+            "approve",
+            "reason",
+            short,
+            comment_only=False,
+            approve_quorum=False,
+            unreviewed_majors=0,
+        )
+        assert (
+            "[!] Approved | comment only: not every reviewer responded"
+            " (2/3 reviewers)" in summary
+        )
+
+        # Both: coverage is named first as the withhold reason, so the
+        # colon form is right here too.
+        summary = format_summary(
+            short,
+            "approve",
+            "reason",
+            short,
+            comment_only=False,
+            approve_quorum=False,
+            unreviewed_majors=1,
+        )
+        assert (
+            "[!] Approved with 1 unreviewed major issue(s) | comment only:"
+            " not every reviewer responded (2/3 reviewers)" in summary
+        )
 
     def test_approve_with_unreviewed_major_issues_loses_ok_icon(self) -> None:
         # AT-2240 claim 1: apply_verdict_rules keeps a major-without-consensus
@@ -1079,9 +1564,28 @@ class TestSummaryLabels:
         verdict, reason, available = apply_verdict_rules(reviews)
         assert verdict == "approve"
         summary = format_summary(
-            reviews, verdict, reason, available, comment_only=False, approve_quorum=True
+            reviews,
+            verdict,
+            reason,
+            available,
+            comment_only=False,
+            approve_quorum=True,
+            unreviewed_majors=_count_unreviewed_majors(available),
         )
-        assert "[!] Approved with 1 unreviewed major issue(s) | 3/3 reviewers" in summary
+        # This expectation changed twice and both changes are owed a
+        # reason. Before AT-2823 it read "| 3/3 reviewers" with no
+        # posting axis, correct then because nothing was downgraded. A
+        # major now withholds the formal approval, and AT-2240's own rule
+        # is that the headline must not describe an outcome other than the
+        # one posted -- so the posting axis has to appear. It appears
+        # without a colon because the coverage figure is not the reason
+        # for the downgrade; that was the second change, and the earlier
+        # "comment only: 3/3 reviewers" here was this test being bent to
+        # the code's output rather than the output being fixed.
+        assert (
+            "[!] Approved with 1 unreviewed major issue(s) | comment only"
+            " | 3/3 reviewers" in summary
+        )
         assert "[OK]" not in summary
 
     def test_approve_without_quorum_loses_ok_icon_and_states_coverage(self) -> None:
@@ -1097,6 +1601,7 @@ class TestSummaryLabels:
             reviews,
             comment_only=False,
             approve_quorum=False,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
         )
         assert (
             "[!] Approved | comment only: not every reviewer responded"
@@ -1119,6 +1624,7 @@ class TestSummaryLabels:
             reviews,
             comment_only=True,
             approve_quorum=False,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
         )
         assert (
             "[!] Approved | posted as comment (auto-approve off) |"
@@ -1127,7 +1633,7 @@ class TestSummaryLabels:
         assert "[OK]" not in summary
 
     def test_comment_verdict_label_states_coverage(self) -> None:
-        summary = format_summary({}, "comment", "reason", {})
+        summary = format_summary({}, "comment", "reason", {}, unreviewed_majors=0)
         assert "[!] Comment Only | 0/3 reviewers" in summary
 
 
@@ -1168,7 +1674,14 @@ class TestClaudeInfrastructureFailure:
         reviews["claude"] = None
         conclusions = {name: "success" for name in REVIEWER_NAMES}
         verdict, reason, available = apply_verdict_rules(reviews)
-        summary = format_summary(reviews, verdict, reason, available, conclusions)
+        summary = format_summary(
+            reviews,
+            verdict,
+            reason,
+            available,
+            conclusions,
+            unreviewed_majors=_count_unreviewed_majors(available),
+        )
         assert "claude: early-exit or no-output" in summary
         assert "failed" not in summary
 
@@ -1190,7 +1703,14 @@ class TestClaudeInfrastructureFailure:
         reviews = self._reviews_with_dead_claude()
         conclusions = {name: "success" for name in REVIEWER_NAMES}
         verdict, reason, available = apply_verdict_rules(reviews)
-        summary = format_summary(reviews, verdict, reason, available, conclusions)
+        summary = format_summary(
+            reviews,
+            verdict,
+            reason,
+            available,
+            conclusions,
+            unreviewed_majors=_count_unreviewed_majors(available),
+        )
         # The headline note and the roster share one derivation (AT-2511),
         # but only the roster value is compared as a whole string, so the
         # namespacing prefix that keeps reviewer-authored text from
@@ -1278,7 +1798,13 @@ class TestNotRunVsPartialVsClean:
             status="failed",
             error="cli_invocation_failed",
         )
-        summary = format_summary({"codex": review}, "comment", "reason", {})
+        summary = format_summary(
+            {"codex": review},
+            "comment",
+            "reason",
+            {},
+            unreviewed_majors=0,
+        )
         section = summary.split("### Codex")[1]
         assert "issue(s)" not in section
         assert "### Codex -- [ ] not run (cli_invocation_failed)" in summary
@@ -1292,7 +1818,13 @@ class TestNotRunVsPartialVsClean:
             error="truncated",
             issues=[_make_issue()],
         )
-        summary = format_summary({"codex": review}, "comment", "reason", {})
+        summary = format_summary(
+            {"codex": review},
+            "comment",
+            "reason",
+            {},
+            unreviewed_majors=0,
+        )
         assert "### Codex -- 1 issue(s) [!] (partial: truncated)" in summary
 
     def test_clean_zero_issues_reviewer_still_says_zero(self) -> None:
@@ -1301,7 +1833,13 @@ class TestNotRunVsPartialVsClean:
         # "0 issue(s)" -- that is the truthful rendering for this case, and
         # it must be visibly different from the not-run case above.
         review = _make_review(status="ok")
-        summary = format_summary({"codex": review}, "comment", "reason", {})
+        summary = format_summary(
+            {"codex": review},
+            "comment",
+            "reason",
+            {},
+            unreviewed_majors=0,
+        )
         assert "### Codex -- 0 issue(s)" in summary
         assert "not run" not in summary
 
@@ -1317,7 +1855,7 @@ class TestNotRunVsPartialVsClean:
             ),
             "gemini": _make_review(status="ok"),
         }
-        summary = format_summary(reviews, "comment", "reason", {})
+        summary = format_summary(reviews, "comment", "reason", {}, unreviewed_majors=0)
         assert "### Codex -- [ ] not run (cli_invocation_failed)" in summary
         assert "### Claude -- 1 issue(s) [!] (partial: truncated)" in summary
         assert "### Gemini -- 0 issue(s)" in summary
@@ -2145,7 +2683,13 @@ class TestCodexVerdictProvenance(_CodexStepHarness):
         self._run_codex_step(tmp_path, scripts_root=self._old_pin(tmp_path))
         _, available = self._aggregate_sees(tmp_path, monkeypatch)
         assert "codex" not in available
-        summary = format_summary(load_reviews(), "comment", "reason", {})
+        summary = format_summary(
+            load_reviews(),
+            "comment",
+            "reason",
+            {},
+            unreviewed_majors=0,
+        )
         assert "### Codex -- [ ] not run (provenance_unavailable)" in summary
 
 
@@ -2689,9 +3233,7 @@ class TestSizeSkipVerdict:
         monkeypatch.setenv("SIZE_SKIPPED", value)
         assert _size_skip_details() is None
 
-    def test_unset_takes_the_normal_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unset_takes_the_normal_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Consumers pinned to an older tag send no size inputs at all."""
         monkeypatch.delenv("SIZE_SKIPPED", raising=False)
         assert _size_skip_details() is None
@@ -2785,7 +3327,9 @@ class TestPolicySkipVerdict:
             main()
         assert excinfo.value.code == 0
         commands = [call.args[0] for call in mock_run.call_args_list]
-        assert commands == [["gh", "pr", "comment", "42", "--body-file", "-", "--repo", "owner/repo"]]
+        assert commands == [
+            ["gh", "pr", "comment", "42", "--body-file", "-", "--repo", "owner/repo"]
+        ]
 
     def test_policy_skip_body_carries_both_markers_in_order(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2812,7 +3356,10 @@ class TestPolicySkipVerdict:
         ):
             main()
         body = mock_post.call_args[0][0]
-        assert "**Result: [OK] Review skipped -- only policy-excluded files changed**" in body
+        assert (
+            "**Result: [OK] Review skipped -- only policy-excluded files changed**"
+            in body
+        )
         assert ".github/lens-ignore" in body
         assert "- `secrets/key.pem`" in body
         assert "- `config/prod.env -> config/live.env`" in body
@@ -2902,25 +3449,47 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.delenv("EXCLUDED_COUNT", raising=False)
         monkeypatch.delenv("EXCLUDED_PATHS", raising=False)
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews,
+            "approve",
+            "3/3 LLM responses -- no issues",
+            reviews,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
+        )
         assert "excluded by policy" not in body
 
     def test_zero_count_adds_no_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("EXCLUDED_COUNT", "0")
         monkeypatch.setenv("EXCLUDED_PATHS", "")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews,
+            "approve",
+            "3/3 LLM responses -- no issues",
+            reviews,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
+        )
         assert "excluded by policy" not in body
 
     def test_exclusion_is_listed_under_the_headline(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("EXCLUDED_COUNT", "2")
-        monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem\nconfig/prod.env -> config/live.env")
+        monkeypatch.setenv(
+            "EXCLUDED_PATHS", "secrets/key.pem\nconfig/prod.env -> config/live.env"
+        )
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews,
+            "approve",
+            "3/3 LLM responses -- no issues",
+            reviews,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
+        )
         lines = body.splitlines()
-        headline = next(i for i, line in enumerate(lines) if line.startswith("**Result:"))
+        headline = next(
+            i for i, line in enumerate(lines) if line.startswith("**Result:")
+        )
         note = (
             "> [i] 2 file(s) excluded by policy (.github/lens-ignore):"
             " `secrets/key.pem`, `config/prod.env -> config/live.env`"
@@ -2934,8 +3503,17 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "")
         monkeypatch.setenv("EXCLUDED_PATHS", "secrets/key.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
-        assert "> [i] 1 file(s) excluded by policy (.github/lens-ignore): `secrets/key.pem`" in body
+        body = format_summary(
+            reviews,
+            "approve",
+            "3/3 LLM responses -- no issues",
+            reviews,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
+        )
+        assert (
+            "> [i] 1 file(s) excluded by policy (.github/lens-ignore): `secrets/key.pem`"
+            in body
+        )
 
     def test_verdict_note_cannot_be_broken_by_a_path(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2944,12 +3522,20 @@ class TestPartialExclusionOnTheVerdict:
         monkeypatch.setenv("EXCLUDED_COUNT", "1")
         monkeypatch.setenv("EXCLUDED_PATHS", "tick`\x1b[0m.pem")
         reviews = {n: _make_review() for n in REVIEWER_NAMES}
-        body = format_summary(reviews, "approve", "3/3 LLM responses -- no issues", reviews)
+        body = format_summary(
+            reviews,
+            "approve",
+            "3/3 LLM responses -- no issues",
+            reviews,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
+        )
         assert "(.github/lens-ignore): `tick\u02cb\\x1b[0m.pem`" in body
         assert "tick`" not in body
         assert "\x1b" not in body
 
-    def test_partial_exclusion_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_partial_exclusion_does_not_skip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Only the all-excluded case skips; a partial diff is reviewed."""
         monkeypatch.setenv("POLICY_SKIPPED", "false")
         monkeypatch.setenv("EXCLUDED_COUNT", "1")
@@ -3037,21 +3623,27 @@ class TestReviewTreeMatchesTheDiff:
 
     def test_prepare_is_not_given_its_own_output(self) -> None:
         """It produces head_sha; consuming it would be a cycle."""
-        supplied = dict(_workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]["prepare"].get("with") or {})
+        supplied = dict(
+            _workflow(_ORCHESTRATOR_WORKFLOW)["jobs"]["prepare"].get("with") or {}
+        )
         assert "head_sha" not in supplied
 
     @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
     def test_checkout_prefers_the_resolved_head(self, path: Path) -> None:
         job = next(iter(_workflow(path)["jobs"].values()))
         checkout = next(
-            s for s in job["steps"] if str(s.get("name", "")).startswith("Checkout caller repo")
+            s
+            for s in job["steps"]
+            if str(s.get("name", "")).startswith("Checkout caller repo")
         )
         ref = str(checkout["with"]["ref"])
         assert "inputs.head_sha" in ref
         assert ref.index("inputs.head_sha") < ref.index("github.ref")
 
     @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
-    def test_guard_passes_when_the_tree_matches(self, path: Path, tmp_path: Path) -> None:
+    def test_guard_passes_when_the_tree_matches(
+        self, path: Path, tmp_path: Path
+    ) -> None:
         head = _git_repo_at(tmp_path)
         assert _run_guard(_guard_script(path), tmp_path, head) == 0
 
@@ -3071,23 +3663,43 @@ class TestReviewTreeMatchesTheDiff:
 
 
 def _git_repo_at(root: Path) -> str:
-    env = {"PATH": os.environ["PATH"], "HOME": str(root),
-           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(root),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
     (root / "f").write_text("x", encoding="utf-8")
     for args in (["init", "-q"], ["add", "f"], ["commit", "-qm", "c"]):
-        subprocess.run(["git", *args], cwd=root, env=env, check=True,
-                       capture_output=True, timeout=30)
-    out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, env=env,
-                         check=True, capture_output=True, text=True, timeout=30)
+        subprocess.run(
+            ["git", *args],
+            cwd=root,
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     return out.stdout.strip()
 
 
 def _run_guard(script: str, cwd: Path, head_sha: str) -> int:
     return subprocess.run(
-        ["bash", "-c", script], cwd=cwd,
+        ["bash", "-c", script],
+        cwd=cwd,
         env={"PATH": os.environ["PATH"], "HEAD_SHA": head_sha},
-        capture_output=True, timeout=30,
+        capture_output=True,
+        timeout=30,
         check=False,  # the exit code IS the assertion here
     ).returncode
 
@@ -3257,9 +3869,7 @@ class TestPrepareFailureVerdict:
         monkeypatch.setenv("PREPARE_RESULT", value)
         assert _prepare_failure_result() is None
 
-    def test_unset_takes_the_normal_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unset_takes_the_normal_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Consumers pinned to an older tag send no prepare_result at all."""
         monkeypatch.delenv("PREPARE_RESULT", raising=False)
         assert _prepare_failure_result() is None
@@ -3477,9 +4087,7 @@ class TestSupersededHeadPostsNoVerdict:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Every download is continue-on-error, so nothing else stops it."""
-        self._set_env(
-            monkeypatch, ["cancelled"] * 3, head_sha=self._REVIEWED
-        )
+        self._set_env(monkeypatch, ["cancelled"] * 3, head_sha=self._REVIEWED)
         with (
             self._head_lookup(self._NEWER),
             patch("aggregate_reviews.load_reviews") as mock_load,
@@ -3492,9 +4100,7 @@ class TestSupersededHeadPostsNoVerdict:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Exit 0 would be a green required check for an unreviewed commit."""
-        self._set_env(
-            monkeypatch, ["success"] * 3, head_sha=self._REVIEWED
-        )
+        self._set_env(monkeypatch, ["success"] * 3, head_sha=self._REVIEWED)
         with self._head_lookup(self._NEWER), pytest.raises(SystemExit) as excinfo:
             main()
         assert excinfo.value.code != 0
@@ -3631,11 +4237,7 @@ class TestNormalizeBotLogin:
 
     @pytest.mark.parametrize(
         ("left", "right"),
-        [
-            (a, b)
-            for a in _GITHUB_ACTIONS_SPELLINGS
-            for b in _APPROVER_SPELLINGS
-        ],
+        [(a, b) for a in _GITHUB_ACTIONS_SPELLINGS for b in _APPROVER_SPELLINGS],
     )
     def test_different_apps_stay_different(self, left: str, right: str) -> None:
         assert normalize_bot_login(left) != normalize_bot_login(right)
@@ -3649,14 +4251,10 @@ class TestNormalizeBotLogin:
         assert normalize_bot_login("Github-Actions[bot]") == "Github-Actions"
 
 
-def _stale_pages(
-    comments: list[dict[str, Any]], reviews: list[dict[str, Any]]
-) -> Any:
+def _stale_pages(comments: list[dict[str, Any]], reviews: list[dict[str, Any]]) -> Any:
     """Stand in for ``fetch_paginated_nodes``, keyed on the query's field."""
 
-    def fake(
-        query: str, field: str, *args: Any, **kwargs: Any
-    ) -> list[dict[str, Any]]:
+    def fake(query: str, field: str, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return {"comments": comments, "reviews": reviews}[field]
 
     return fake
@@ -3965,6 +4563,7 @@ def _post_verdict_over(
     head: str = _HEAD,
     comment_only: bool = False,
     approve_quorum: bool = True,
+    unreviewed_majors: int = 0,
     review_rc: int = 0,
     live_head: str | None | object = _NOT_LOOKED_UP,
 ) -> tuple[list[list[str]], list[tuple[str, str]], int]:
@@ -3999,9 +4598,7 @@ def _post_verdict_over(
         issued.append((node_id, label))
 
     def lookup(pr_number: str, repo: str) -> str | None:
-        assert live_head is not _NOT_LOOKED_UP, (
-            "live head looked up with HEAD_SHA set"
-        )
+        assert live_head is not _NOT_LOOKED_UP, "live head looked up with HEAD_SHA set"
         return live_head  # type: ignore[return-value]
 
     pages = _stale_pages([], reviews)
@@ -4018,22 +4615,31 @@ def _post_verdict_over(
         patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
     ):
         post_verdict(
-            "body", verdict, comment_only=comment_only, approve_quorum=approve_quorum
+            "body",
+            verdict,
+            comment_only=comment_only,
+            approve_quorum=approve_quorum,
+            unreviewed_majors=unreviewed_majors,
         )
     return commands, issued, fetches
 
 
 class TestSameHeadApprovalStandsUntilReplaced:
-    """An APPROVED review of the current head is dismissed only once a
-    review of this round has replaced it.
+    """An APPROVED review of the current head survives a round that
+    found nothing wrong with it, and only such a round.
 
     The fold runs at the top of ``post_verdict``, before the round knows
-    whether it will post a review at all, and three branches post none:
-    the approve-quorum withhold, the ``comment_only`` downgrade, and the
-    comment fallback when ``gh pr review`` fails. Dismissing a same-head
-    approval ahead of those turns a PR that was green on this head into
-    one blocked by a transient failure of the re-run, with nothing on the
-    PR to say why. An approval of a superseded head is different: no
+    whether it will post a review at all, and four branches post none.
+    Three are transient -- the approve-quorum withhold, the
+    ``comment_only`` downgrade, and the comment fallback when ``gh pr
+    review`` fails -- and dismissing a same-head approval ahead of those
+    turns a PR that was green on this head into one blocked by a
+    transient failure of the re-run, with nothing on the PR to say why.
+    The fourth, AT-2823's undispositioned-majors withhold, is a finding
+    about this head rather than a flake, so it folds the approval itself
+    once its comment is up; left standing, the withhold would do nothing
+    on the same-head re-run its own note asks the reader to make.
+    An approval of a superseded head is different: no
     review has seen the current head, so it goes up front whatever the
     round then does (AT-2599's invariant), and so does a CHANGES_REQUESTED
     of either head, whose blocking force the required check's exit code
@@ -4062,6 +4668,114 @@ class TestSameHeadApprovalStandsUntilReplaced:
         )
         assert any("comment" in cmd for cmd in commands)
         assert issued == self._OLD_FOLDED
+
+    def test_the_majors_withhold_folds_the_same_head_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AT-2823's withhold is a finding, not a flake, so it folds.
+
+        The carve-out above exists because re-blocking a PR that was green
+        on this head would be a regression *caused by a transient failure
+        of the re-run* -- a reviewer that did not answer, the killswitch,
+        an API error. An undispositioned major is none of those: it is a
+        substantive finding about this very head. Leaving the approval
+        standing would make the withhold do nothing at all on a same-head
+        re-run, which is exactly the action the withhold note tells the
+        reader to take, so the PR would stay green while the comment said
+        the approval was withheld.
+        """
+        commands, issued, _ = _post_verdict_over(
+            monkeypatch, [self._SAME, self._OLD], "approve", unreviewed_majors=2
+        )
+        assert any("comment" in cmd for cmd in commands)
+        assert not any("review" in cmd for cmd in commands)
+        assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+
+    def test_a_quorum_short_round_with_majors_still_folds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both withholds at once is still a finding about this head.
+
+        Coverage is named first in the prose -- the missing reviewer may
+        yet raise more -- but which reason gets *said* is a different
+        question from whether this head is vouched for. A major was found
+        on it either way, so the standing approval goes. Treating the
+        combination as transient would reopen AT-2823 behind a second,
+        unrelated fault: head X approved cleanly, then a same-head re-run
+        where one reviewer dies and another raises a major leaves the PR
+        green while the comment says the approval was withheld.
+        """
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME, self._OLD],
+            "approve",
+            approve_quorum=False,
+            unreviewed_majors=2,
+        )
+        assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+
+    def test_the_majors_fold_happens_with_the_killswitch_off_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """comment_only suppresses the second explanation, not the fold.
+
+        With ALLOW_AUTO_APPROVE off the headline already says why nothing
+        was posted as a review, so the withhold note would be a second
+        reason for one downgrade -- that suppression is right. What is
+        not right is skipping the dismissal with it: a clean round can
+        have approved head X while the killswitch was on, and a same-head
+        re-run that raises a major while it is off would leave that
+        APPROVED standing over an undispositioned major, which is the
+        outcome this whole change exists to close.
+        """
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME, self._OLD],
+            "approve",
+            comment_only=True,
+            unreviewed_majors=2,
+        )
+        assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+
+    def test_the_majors_withhold_folds_against_the_live_head_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no HEAD_SHA, the dismissal is not a no-op -- checked, not assumed.
+
+        The fold leaves a same-head approval standing on this path as well,
+        comparing against the head GitHub reports now, so ``standing`` is
+        non-empty here and the majors withhold really does dismiss. That is
+        the intended reading rather than an inherited one: the live head is
+        established as this round's by the lookup -- _head_is_stale let the
+        run post because nothing showed it superseded -- so an approval of
+        it is an approval of the head the major was found on.
+        """
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME, self._OLD],
+            "approve",
+            head="",
+            live_head=_HEAD,
+            unreviewed_majors=2,
+        )
+        assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+
+    def test_with_no_head_at_all_the_majors_withhold_adds_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The other half of the same question: when the lookup fails too,
+        # the fold already sent every approval up front, so `standing` is
+        # empty and the new dismissal is genuinely a no-op -- no approval
+        # is folded twice.
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME],
+            "approve",
+            head="",
+            live_head=None,
+            unreviewed_majors=2,
+        )
+        assert issued == self._SAME_FOLDED
 
     @pytest.mark.parametrize(
         "verdict, flag",
@@ -4120,8 +4834,7 @@ class TestSameHeadApprovalStandsUntilReplaced:
         )
         assert issued == self._OLD_FOLDED
         assert (
-            "::notice::HEAD_SHA unset; prior-round approvals compared"
-            f" against {_HEAD}"
+            f"::notice::HEAD_SHA unset; prior-round approvals compared against {_HEAD}"
         ) in capsys.readouterr().err
 
     def test_with_no_head_at_all_every_approval_goes_up_front(

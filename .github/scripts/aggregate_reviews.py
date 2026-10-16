@@ -37,7 +37,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, TypeGuard
+from typing import Any, NamedTuple, TypeGuard
 
 # The payload-shape pair is written once, in github_pr_support, so the two
 # reviewer shims can gate their direct-write path on the SAME test this
@@ -786,6 +786,29 @@ def apply_verdict_rules(
     return "approve", reason, available
 
 
+def _count_unreviewed_majors(available: dict[str, dict[str, Any]]) -> int:
+    """Count major issues in this round that no disposition has closed.
+
+    "Unreviewed" is the headline's own word for them: the aggregate knows
+    only that a reviewer raised a major and that the round ended with it
+    still standing -- it cannot see a reply, a fix or a Won't fix, so every
+    major it can see is one nobody has dispositioned here yet.
+
+    One computation, two readers: main() calls this once and passes the
+    value to both ``format_summary``, which renders it, and
+    ``post_verdict``, which gates the formal approval on it -- so the
+    comment can never say "2 unreviewed major issue(s)" over a posted
+    APPROVED review (AT-2823). Neither reader recounts; the value is a
+    parameter on both, the way ``approve_quorum`` is.
+    """
+    return sum(
+        1
+        for review in available.values()
+        for issue in review.get("issues", [])
+        if issue.get("severity") == "major"
+    )
+
+
 def _format_issue_line(issue: dict[str, Any]) -> str:
     """Format a single issue as a markdown list item."""
     sev = issue.get("severity", "suggestion")
@@ -1021,6 +1044,7 @@ def format_summary(
     *,
     comment_only: bool = False,
     approve_quorum: bool = True,
+    unreviewed_majors: int,
     sequential_bypass: bool = False,
 ) -> str:
     """Build the headline as three independent axes (AT-2240).
@@ -1033,6 +1057,21 @@ def format_summary(
     the same ``approve_quorum`` used for ``post_verdict`` so the headline
     can never describe a different outcome than the one actually posted.
 
+    ``unreviewed_majors`` is a parameter for that same reason, not a count
+    taken off ``available`` here (AT-2823): recomputing it would agree with
+    ``post_verdict`` only while both happened to be handed the same
+    mapping, and a caller passing a different one would reintroduce exactly
+    the headline/posted-event disagreement this withhold exists to close.
+
+    It is required rather than defaulted, on both readers. The gate is
+    ``unreviewed_majors > 0``, so 0 is the permissive value: a default
+    would make a caller that forgot the keyword indistinguishable from a
+    clean round, and the silent outcome of that confusion is a formal
+    APPROVED review posted over majors nobody counted -- the thing
+    AT-2823 exists to prevent. ``approve_quorum`` has the same shape and
+    keeps its default: that one predates this change, and widening it is
+    not this PR's to do.
+
     ``sequential_bypass`` is passed for the same reason and forwarded to
     ``_missing_reviewer_reasons``: sharing the helper only makes the prose
     and the roster one rendering of one computation if both are told which
@@ -1044,20 +1083,17 @@ def format_summary(
     n_available = len(available)
     coverage = f"{n_available}/{total} reviewers"
 
-    n_major = sum(
-        1
-        for review in available.values()
-        for issue in review.get("issues", [])
-        if issue.get("severity") == "major"
-    )
-    approve_has_majors = verdict == "approve" and n_major > 0
+    approve_has_majors = verdict == "approve" and unreviewed_majors > 0
     approve_quorum_short = verdict == "approve" and not approve_quorum
+    # The two states that withhold the formal approval, read off the same
+    # flags post_verdict is handed (AT-2823, AT-2511).
+    approve_withheld = approve_has_majors or approve_quorum_short
 
     if verdict == "approve":
         label = "Approved"
         if approve_has_majors:
-            label += f" with {n_major} unreviewed major issue(s)"
-        icon = "[!]" if approve_has_majors or approve_quorum_short else "[OK]"
+            label += f" with {unreviewed_majors} unreviewed major issue(s)"
+        icon = "[!]" if approve_withheld else "[OK]"
     elif verdict == "request_changes":
         label = "Changes Requested"
         icon = "[!]" if comment_only else "[X]"
@@ -1079,7 +1115,17 @@ def format_summary(
     if comment_only and verdict in ("approve", "request_changes"):
         label += f" | posted as comment (auto-approve off) | {coverage_segment}"
     elif approve_quorum_short:
+        # The colon introduces a reason, and here the coverage segment is
+        # one: "comment only: not every reviewer responded (2/3
+        # reviewers)" (AT-2511).
         label += f" | comment only: {coverage_segment}"
+    elif approve_withheld:
+        # Majors with a full roster. The coverage figure is not the reason
+        # -- the majors are, and the label already names them -- so this
+        # keeps the plain axis separator. Under a colon it rendered
+        # "comment only: 3/3 reviewers", which reads as though a complete
+        # roster were the cause of its own downgrade.
+        label += f" | comment only | {coverage_segment}"
     else:
         label += f" | {coverage_segment}"
 
@@ -1308,7 +1354,18 @@ def _fold_prior_round_items(
     comment and no review, and an approval's permitting force lives only
     in the review, so dismissing it ahead of those turns a PR that was
     green on this head into one blocked by a transient failure of the
-    re-run. A CHANGES_REQUESTED of this head goes up front all the same:
+    re-run.
+
+    The AT-2823 withhold also posts a comment and no review, and is the
+    one such path that is NOT carved out: an undispositioned major is a
+    finding about this head rather than a flake of the re-run, so
+    post_verdict dismisses the standing approval itself once its comment
+    is up (see _Withhold.transient). Left standing it would keep the PR
+    green on precisely the same-head re-run the withhold note asks for,
+    with the comment saying the approval was withheld. The carve-out is
+    for rounds that found nothing wrong and could not say so.
+
+    A CHANGES_REQUESTED of this head goes up front all the same:
     the required check's exit code carries its block for as long as the
     verdict stands, so losing the review loses nothing the gate needs.
 
@@ -1400,14 +1457,154 @@ def _fold_prior_round_items(
 def _dismiss_replaced_approvals(review_ids: list[str]) -> None:
     """Fold the same-head approvals _fold_prior_round_items left standing.
 
-    Called once `gh pr review` has returned 0, so a review of this round is
-    on the PR before the one it replaces goes. The ids come from the fold's
-    own read of the page, not a fresh one: a re-read now would find this
-    round's review, which opens with the marker and is of this head too.
+    Called once this round's own verdict is on the PR -- either a review
+    that `gh pr review` returned 0 for, or, on AT-2823's majors withhold,
+    the comment that deliberately replaces one. Those are the two callers
+    and they differ in kind: the review path replaces the approval, so
+    something still vouches for the head; the withhold path removes it
+    and puts nothing back, which is the point, because a major was found
+    on this head and the PR must not stay green on a prior round's say-so.
+    What both guarantee is that the page already explains itself before
+    the old approval goes.
+
+    The other comment-and-no-review paths -- the approve-quorum withhold,
+    the comment_only downgrade, the fallback after a failed review -- do
+    NOT call this: see _fold_prior_round_items for why a transient round
+    must leave a same-head approval alone.
+
+    The ids come from the fold's own read of the page, not a fresh one: a
+    re-read now would find this round's review, which opens with the
+    marker and is of this head too.
     """
     for review_id in review_ids:
         _run_gql_mutation(_DISMISS_QUERY, review_id, "dismiss")
         _run_gql_mutation(_MINIMIZE_QUERY, review_id, "minimize")
+
+
+class _Withhold(NamedTuple):
+    """Why an approve verdict is not posted, and whether that is a flake.
+
+    ``transient`` is what _fold_prior_round_items needs to know. Its
+    carve-out leaves an APPROVED review of this same head standing
+    because re-blocking a PR that was green on this head would be a
+    regression caused by a transient failure of the re-run -- a reviewer
+    that did not answer, the killswitch, an API error. An undispositioned
+    major is not one of those: it is a finding about this very head, so
+    the approval it contradicts has to go, or the withhold does nothing
+    at all on the same-head re-run its own note asks the reader to run.
+
+    The two fields answer different questions and must not be coupled:
+    the reason is "what do I tell the reader", the flag is "is this head
+    vouched for". They come apart when both withholds apply at once. A
+    short roster is reported first, because the missing reviewer may yet
+    raise more and that is the more useful thing to say -- but a major
+    was still found on this head, so the round is NOT transient and the
+    standing approval goes. Putting the flag on the branch that chose the
+    prose is what made the combined case transient, and it reopened
+    AT-2823 behind a second, unrelated fault.
+
+    The flag travels with the reason rather than being re-derived at the
+    call site, because the function that decides *why* is the one that
+    knows *which kind*.
+    """
+
+    reason: str
+    transient: bool
+
+
+def _approval_withhold(
+    verdict: str, approve_quorum: bool, unreviewed_majors: int
+) -> _Withhold | None:
+    """Why this approve verdict must not be posted as a formal approval.
+
+    Both states mean the same thing -- this round is not finished -- so both
+    take one branch and produce one note, rather than a second mechanism
+    beside the first. A short roster was the original (AT-2511); majors
+    nobody dispositioned were posted green until AT-2823, which is the
+    asymmetry this returns a single reason to close. Coverage is named
+    first: with both true, the missing reviewer may yet raise more.
+
+    The majors reason carries how it clears, because the reader it
+    reaches is the one it blocks. There is no key to hold: the aggregate
+    re-decides every round from that round's payloads, so the approval
+    posts as soon as a round ends with no major standing. What the
+    aggregate cannot do is see a disposition -- a reply, a fix or a
+    Won't fix on a thread reaches the reviewers (prepare hands them the
+    unresolved threads as context) but never this function, so the reason
+    says a reply may stop a reviewer raising it again rather than
+    promising that a reply clears the withhold. AT-2843 is the channel
+    that would make a resolved thread clear its own major.
+
+    The human path is named too: a human approving the PR satisfies a
+    required-approving-review rule on its own, independently of anything
+    the App does or does not post.
+    """
+    if verdict != "approve":
+        return None
+    if not approve_quorum:
+        # Coverage is named first, but the two questions are separate: the
+        # reason answers "what do I tell the reader", the flag answers "is
+        # this head vouched for". A short roster alone is transient -- the
+        # missing reviewer may answer next run and nothing has been found
+        # wrong -- while majors alongside it still mean a finding on this
+        # head, so the flag reads the majors even when the prose does not.
+        return _Withhold(
+            "not every configured reviewer produced a verdict",
+            unreviewed_majors == 0,
+        )
+    if unreviewed_majors > 0:
+        return _Withhold(
+            f"{unreviewed_majors} major issue(s) raised this round are not"
+            " dispositioned. The next round decides again: push a fix, or"
+            " reply on the thread so the reviewers see it, then re-run the"
+            " review (push a commit, or re-run the workflow) -- the approval"
+            " posts once a round ends with no major raised. A human approving"
+            " this PR satisfies a required-review rule on its own",
+            False,
+        )
+    return None
+
+
+def _post_withheld_verdict(
+    pr_number: str,
+    repo: str,
+    comment: str,
+    withhold: _Withhold,
+    standing: list[str],
+) -> None:
+    """Post a withheld approve verdict as a comment, and fold if it must.
+
+    Split out of post_verdict, which the withhold grew past the 80-line
+    guideline; the block was already self-contained.
+    """
+    # The outcome leads and the reason follows, rather than the reason
+    # leading and the outcome trailing behind a semicolon: the majors
+    # reason is several sentences now, and a trailing "; posted as
+    # comment" read as a clause of whichever sentence happened to end it.
+    print(
+        "::notice::Auto-approve withheld, posting comment instead of"
+        f" approval -- {withhold.reason}.",
+        file=sys.stderr,
+    )
+    note = f"\n\n> [!] Auto-approve withheld, posted as comment: {withhold.reason}."
+    if not _post_comment(pr_number, repo, comment + note):
+        print("Failed to post comment", file=sys.stderr)
+        sys.exit(1)
+    # A non-transient withhold retires the standing same-head approval
+    # that _fold_prior_round_items deliberately left alone. Its carve-out
+    # is for rounds that post no review because something flaked; a major
+    # found on this head is not that, and leaving the approval up would
+    # keep the PR green on exactly the same-head re-run the note above
+    # tells the reader to make.
+    #
+    # The position is load-bearing, not incidental: _post_comment exits 1
+    # above on failure, so reaching this line means the explanation is
+    # already on the PR. Dismissing before it would let a failed comment
+    # pull the approval and leave nothing saying why -- a silently
+    # blocked PR, which is the failure AT-1975 ("block visibly") exists
+    # to prevent.
+    if not withhold.transient:
+        _dismiss_replaced_approvals(standing)
 
 
 def post_verdict(
@@ -1415,6 +1612,7 @@ def post_verdict(
     verdict: str,
     *,
     comment_only: bool,
+    unreviewed_majors: int,
     approve_quorum: bool = True,
 ) -> None:
     pr_number = os.environ.get("PR_NUMBER", "")
@@ -1427,23 +1625,23 @@ def post_verdict(
         pr_number, repo, head_sha=os.environ.get("HEAD_SHA", "")
     )
 
-    # Never send a formal APPROVED review unless every configured reviewer
-    # produced a verdict: an approval would assert coverage that never
-    # happened. The verdict (and thus the merge-gate exit code) is
-    # unchanged; only the posted event is downgraded to a comment.
-    if verdict == "approve" and not approve_quorum:
-        print(
-            "::notice::Auto-approve withheld -- not every configured reviewer"
-            " produced a verdict; posting comment instead of approval.",
-            file=sys.stderr,
-        )
-        note = (
-            "\n\n> [!] Auto-approve withheld: not every configured reviewer"
-            " produced a verdict; posted as comment."
-        )
-        if not _post_comment(pr_number, repo, comment + note):
-            print("Failed to post comment", file=sys.stderr)
-            sys.exit(1)
+    # Never send a formal APPROVED review for a round that is not finished:
+    # an approval asserts coverage that never happened, or fills the
+    # ruleset's required approval over issues still awaiting a disposition.
+    # The verdict (and thus the merge-gate exit code) is unchanged; only the
+    # posted event is downgraded to a comment, and the next round approves
+    # once the reason is gone.
+    #
+    # Computed unconditionally. comment_only gates the *prose* below and
+    # nothing else: the headline already says "posted as comment
+    # (auto-approve off)", so a withhold note would be a second reason for
+    # one downgrade -- but the fold is not an explanation, it is the
+    # retirement of an approval this round's finding contradicts, and it
+    # has to happen on every path that found something.
+    withhold = _approval_withhold(verdict, approve_quorum, unreviewed_majors)
+
+    if withhold is not None and not comment_only:
+        _post_withheld_verdict(pr_number, repo, comment, withhold, standing)
         return
 
     # Downgrade formal review verdicts to comment when killswitch is off.
@@ -1451,6 +1649,13 @@ def post_verdict(
         if not _post_comment(pr_number, repo, comment):
             print("Failed to post comment", file=sys.stderr)
             sys.exit(1)
+        # The same fold the withheld path does, for the same reason and in
+        # the same position -- after the comment lands. The killswitch
+        # suppresses the second explanation, not the consequence: a round
+        # that found a major on this head must not leave a prior APPROVED
+        # of this head standing to satisfy the required-review rule.
+        if withhold is not None and not withhold.transient:
+            _dismiss_replaced_approvals(standing)
         return
 
     if verdict in ("approve", "request_changes"):
@@ -1541,7 +1746,15 @@ def main() -> None:
         # exits 1 with the reason on stderr: the check is still created and
         # still red, explained only in the runner log. Worse than a comment,
         # far better than a context that never appears.
-        post_verdict(comment, "request_changes", comment_only=_is_comment_only())
+        # Zero majors is the fact here, not a placeholder: prepare failed,
+        # so no reviewer ran and nothing was raised. The same holds for the
+        # size-skip and policy-skip exits below.
+        post_verdict(
+            comment,
+            "request_changes",
+            comment_only=_is_comment_only(),
+            unreviewed_majors=0,
+        )
         print(f"Final verdict: request_changes -- prepare reported {prepare_failure}")
         # No review happened at all; passing would newly permit unreviewed
         # merges, which is the opposite of what this check exists for.
@@ -1555,6 +1768,7 @@ def main() -> None:
             comment,
             "request_changes",
             comment_only=_is_comment_only(),
+            unreviewed_majors=0,
         )
         print(
             f"Final verdict: request_changes -- review skipped, {total} changed"
@@ -1571,7 +1785,12 @@ def main() -> None:
         # APPROVED review would attest to a review that did not happen. The
         # verdict "comment" takes post_verdict's comment-only branch on every
         # ALLOW_AUTO_APPROVE setting.
-        post_verdict(comment, "comment", comment_only=_is_comment_only())
+        post_verdict(
+            comment,
+            "comment",
+            comment_only=_is_comment_only(),
+            unreviewed_majors=0,
+        )
         print(
             f"Final verdict: none -- review skipped, {len(policy_skip)}"
             " policy-excluded file(s) only"
@@ -1623,6 +1842,9 @@ def main() -> None:
     # Computed once so the headline and the posted event can never disagree
     # about whether every configured reviewer produced a verdict (AT-2240).
     approve_quorum = _has_full_reviewer_coverage(available)
+    # The same contract for the other thing that withholds an approval: one
+    # count, passed to the headline and to the posted event (AT-2823).
+    unreviewed_majors = _count_unreviewed_majors(available)
 
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
     sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
@@ -1667,6 +1889,7 @@ def main() -> None:
         conclusions,
         comment_only=comment_only,
         approve_quorum=approve_quorum,
+        unreviewed_majors=unreviewed_majors,
         sequential_bypass=sequential_bypass,
     )
     post_verdict(
@@ -1674,6 +1897,7 @@ def main() -> None:
         verdict,
         comment_only=comment_only,
         approve_quorum=approve_quorum,
+        unreviewed_majors=unreviewed_majors,
     )
     print(f"Final verdict: {verdict} -- {reason}")
 
