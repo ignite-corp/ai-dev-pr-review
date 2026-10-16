@@ -545,6 +545,7 @@ class TestReportedPaths:
     def test_the_rule_matches_the_raw_path_and_the_label_is_sanitized(self) -> None:
         rules = parse_rules("evil*\n")
         _, entries = split_diff(QUOTED_NEWLINE)
+        assert entries[0].new_path is not None
         assert matches(rules, entries[0].new_path)
         kept, excluded = filter_diff(QUOTED_NEWLINE, rules)
         assert kept == ""
@@ -774,7 +775,7 @@ def _step(name: str) -> dict[str, Any]:
     raise AssertionError(f"step not found in {PREPARE.name}: {name}")
 
 
-def _prepare_workflow() -> dict[str, Any]:
+def _prepare_workflow() -> dict[str | bool, Any]:
     return dict(yaml.safe_load(PREPARE.read_text(encoding="utf-8")))
 
 

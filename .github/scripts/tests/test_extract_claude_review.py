@@ -9,7 +9,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from extract_claude_review import extract_review, stamp_model_status
+from extract_claude_review import extract_review, stamp_model_status  # noqa: E402
 
 
 def test_stamp_status_derives_ok_when_missing() -> None:

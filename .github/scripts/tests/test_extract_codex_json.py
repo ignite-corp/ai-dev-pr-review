@@ -9,7 +9,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from extract_codex_json import extract, stamp_model_status
+from extract_codex_json import extract, stamp_model_status  # noqa: E402
 
 
 def test_extracts_last_json_with_required_fields():
@@ -38,6 +38,7 @@ def test_picks_last_valid_when_multiple_present():
     {"summary": "second", "early_exit": false, "issues": []}
     '''
     obj = extract(log)
+    assert obj is not None
     assert obj["summary"] == "second"
 
 
