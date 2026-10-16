@@ -65,6 +65,16 @@ steps:
   # ---- base-ai-review-single.yml: one reusable job per reviewer in base,
   #      three consecutive reviewer step groups in wrapper ----
   - base_file: base-ai-review-single.yml
+    base_step: Validate timeout inputs
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Base takes the claude step cap and the job cap as workflow_call inputs
+      (AT-2876) and refuses a job cap without headroom over the running
+      reviewer's step cap; the wrapper takes no such inputs and keeps
+      literal caps (10 on its reviewer steps, 180 on the job), so there is
+      nothing to compare.
+  - base_file: base-ai-review-single.yml
     base_step: Validate reviewer input
     wrapper_file: wrapper.yml
     wrapper_steps: []

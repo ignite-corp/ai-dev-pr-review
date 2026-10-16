@@ -216,6 +216,8 @@ All workflows accept `workflow_call` inputs:
 | `pr_number` | string | false | `""` | Required only when triggered via `workflow_dispatch`. On `pull_request`, the orchestrator reads `github.event.pull_request.number`. |
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | Path INSIDE THE CONSUMER REPO to the per-repo system prompt. The prepare workflow `git show`s this from the PR's base branch (not from PR head) to prevent prompt injection. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | Same path semantics. |
+| `claude-timeout-minutes` | number | false | `10` | Minutes the Claude reviewer step may run before the runner kills it. The default is what every consumer has always had; this repo's own `self-review.yml` raises it because its PRs can exceed 10 minutes (AT-2876). |
+| `review-job-timeout-minutes` | number | false | `15` | Cap on the whole reviewer job; forwarded to the Claude reviewer jobs only. Raise it together with `claude-timeout-minutes` and keep it at least 5 whole minutes above it, so the step cap is the one that fires; the Claude jobs fail at their `Validate timeout inputs` step otherwise. |
 
 The `single` and `aggregate` workflows additionally accept reviewer-routing inputs (`reviewer`, `claude_result`, `codex_result`, `gemini_result`) but consumers do not invoke them directly — the orchestrator wires them.
 

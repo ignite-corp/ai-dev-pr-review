@@ -20,8 +20,12 @@ truth for:
 - **`api_timeout_ms` (default 600000)** - applied to BOTH `API_TIMEOUT_MS` (the
   per-request cap) and `CLAUDE_STREAM_IDLE_TIMEOUT_MS`. The CLI's byte-level
   stream-idle watchdog defaults to **180 s on direct Anthropic API
-  connections** and aborts slow billed-API reviews; 600000 matches the caller
-  job's 10-minute budget. (AT-1499 auth ternary + composite; AT-1601 timeout.)
+  connections** and aborts slow billed-API reviews; 600000 matches the
+  **default** of the caller step's cap (`claude-timeout-minutes`, default 10,
+  a `workflow_call` input since AT-2876). It is a per-request and stream-idle
+  cap, not a total budget, so it does not move when a caller raises the step
+  cap -- this repo's own `self-review.yml` passes 20 and keeps 600000.
+  (AT-1499 auth ternary + composite; AT-1601 timeout; AT-2876 step cap input.)
 
 ## API <-> subscription toggle (per repo)
 
