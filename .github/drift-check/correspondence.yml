@@ -22,6 +22,23 @@ wrapper_files:
 steps:
   # ---- base-ai-review-prepare.yml: copied step for step, same names ----
   - base_file: base-ai-review-prepare.yml
+    base_step: Resolve review target
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2520. Base's cross-repository review (target_repo)
+      resolves the target and mints a token for it in every job that checks
+      it out; the wrapper has no target_repo input yet. Remove this entry
+      when the wrapper ports it or AT-2520 records that it never will.
+  - base_file: base-ai-review-prepare.yml
+    base_step: Resolve target PR head
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2520; see 'Resolve review target'. Reads the target
+      PR's head through the target token so prepare's checkout lands on
+      it; runs only when target_repo names another repository.
+  - base_file: base-ai-review-prepare.yml
     base_step: Validate PR number
     wrapper_file: wrapper.yml
     wrapper_steps: [Validate PR number]
@@ -82,6 +99,14 @@ steps:
       Base takes the reviewer as a workflow_call input and validates it; the
       wrapper hardcodes REVIEWER per reviewer step group, so there is no input
       to validate.
+  - base_file: base-ai-review-single.yml
+    base_step: Resolve review target
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2520; see the prepare.yml step of the same name. The
+      wrapper checks the PR head out once, so a port would carry this step
+      once, not per reviewer.
   - base_file: base-ai-review-single.yml
     base_step: Confirm the tree matches the diff
     wrapper_file: wrapper.yml
@@ -185,6 +210,12 @@ steps:
       - Read Codex early_exit
 
   # ---- base-ai-review-aggregate.yml ----
+  - base_file: base-ai-review-aggregate.yml
+    base_step: Resolve review target
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2520; see the prepare.yml step of the same name.
   - base_file: base-ai-review-aggregate.yml
     base_step: Confirm the tree matches the diff
     wrapper_file: wrapper.yml

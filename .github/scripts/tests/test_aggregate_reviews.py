@@ -3638,7 +3638,11 @@ class TestReviewTreeMatchesTheDiff:
         )
         ref = str(checkout["with"]["ref"])
         assert "inputs.head_sha" in ref
-        assert ref.index("inputs.head_sha") < ref.index("github.ref")
+        # The fallback is the resolve step's `fallback_ref`: the caller's event
+        # SHA or `github.ref` when the repository under review is the caller,
+        # nothing on a cross-repository run (AT-2520; the shape is pinned in
+        # test_target_repo_threading.py).
+        assert ref.index("inputs.head_sha") < ref.index("steps.target.outputs.fallback_ref")
 
     @pytest.mark.parametrize("path", [_SINGLE_WORKFLOW, _AGGREGATE_WORKFLOW])
     def test_guard_passes_when_the_tree_matches(

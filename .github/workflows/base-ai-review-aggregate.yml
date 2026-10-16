@@ -12,6 +12,11 @@ on:
         type: string
         required: false
         description: "PR number (for workflow_dispatch)"
+      target_repo:
+        description: "Repository (owner/name) whose PR is reviewed; empty means the caller (AT-2520)"
+        required: false
+        type: string
+        default: ""
       prepare_result:
         type: string
         required: false
@@ -99,13 +104,127 @@ jobs:
       reviewers_expected_count: ${{ steps.aggregate.outputs.reviewers_expected_count }}
       reviewers_responded_count: ${{ steps.aggregate.outputs.reviewers_responded_count }}
     steps:
-      # Consumer-repo checkout (kept so per-repo overrides can hook in later).
+      # Cross-repository review (AT-2520): the same two steps as in
+      # base-ai-review-prepare.yml, byte for byte -- the comment there says
+      # why, and test_target_repo_threading.py holds the copies equal.
+      - name: Resolve review target
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          CALLER_REPO: ${{ github.repository }}
+          # `visibility`, not the `private` boolean: GitHub reports
+          # private=true for an INTERNAL repository too, and internal is every
+          # member of the enterprise -- wider than the target's collaborators.
+          CALLER_VISIBILITY: ${{ github.event.repository.visibility }}
+          # The caller's event: the ref every target checkout fell back to
+          # before target_repo existed. Both name a commit or branch of the
+          # CALLER, so they are handed on (as fallback_ref) only when the
+          # repository under review is the caller.
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_REF: ${{ github.ref }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+          REVIEWER_APP_ID: ${{ vars.REVIEWER_APP_ID }}
+          # One bit, not the PEM: this step only asks whether the key exists.
+          # The mint step below is the one place that reads the secret.
+          REVIEWER_APP_KEY_PRESENT: ${{ secrets.REVIEWER_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          # Validate the INPUT, then default. The caller's own name is
+          # GitHub's, not ours to re-validate: a login the owner pattern
+          # below does not model would otherwise refuse every default run
+          # of that consumer, with target_repo never set.
+          if [ -n "$TARGET_REPO" ]; then
+            # Bounded and re-spelled before it reaches a log line: the input
+            # is caller-supplied text, and a newline in it would be a second
+            # line the runner parses for workflow commands.
+            SAFE_TARGET=$(printf '%s' "${TARGET_REPO:0:64}" | tr -c 'A-Za-z0-9_./-' '?')
+            # What GitHub allows: an owner is alphanumerics with inner
+            # hyphens; a repository name may carry `.` and `_` as well. The
+            # value is concatenated into `repos/<target>/pulls/<n>` and into
+            # a checkout `repository:` later, so a segment of dots (`.`,
+            # `..`) -- which the character class alone admits -- is refused
+            # as a path, not a name.
+            if [[ ! $TARGET_REPO =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9_.-]+$ ]] \
+              || [[ ${TARGET_REPO#*/} =~ ^\.+$ ]]; then
+              echo "::error::target_repo must be owner/name, got: ${SAFE_TARGET}"
+              exit 1
+            fi
+          else
+            TARGET_REPO="$CALLER_REPO"
+            SAFE_TARGET="$CALLER_REPO"
+          fi
+          CROSS=false
+          # Case-insensitive: GitHub repository names are case-preserving
+          # but not case-sensitive, so an input that differs from the caller
+          # only in case names the caller (AT-2538, item 1).
+          if [ "${TARGET_REPO,,}" != "${CALLER_REPO,,}" ]; then
+            CROSS=true
+            if [ -z "$PR_NUMBER" ]; then
+              echo "::error::target_repo is set but pr_number is empty; the caller's event names a PR in ${CALLER_REPO}, not in ${SAFE_TARGET} (AT-2520)"
+              exit 1
+            fi
+            if [ -z "$CALLER_VISIBILITY" ]; then
+              CALLER_VISIBILITY=$(gh api "repos/${CALLER_REPO}" --jq '.visibility') || CALLER_VISIBILITY=""
+            fi
+            # Exactly `private`: public and internal are refused, and so is an
+            # unknown value -- the question could not be answered, which is
+            # not a yes.
+            if [ "$CALLER_VISIBILITY" != "private" ]; then
+              echo "::error::refusing to review ${SAFE_TARGET} from ${CALLER_REPO}: the caller's visibility is ${CALLER_VISIBILITY:-unknown}, not private; this run's logs and artifacts would publish the target's diff (AT-2520)"
+              exit 1
+            fi
+            if [ -z "$REVIEWER_APP_ID" ] || [ "$REVIEWER_APP_KEY_PRESENT" != "true" ]; then
+              echo "::error::target_repo is set but REVIEWER_APP_ID / REVIEWER_APP_PRIVATE_KEY are not both available; a cross-repository review needs an App token for ${SAFE_TARGET%%/*} (AT-2520)"
+              exit 1
+            fi
+          fi
+          # fallback_ref: what a checkout of the repository under review may
+          # fall back to when no resolved head is at hand. The caller's event
+          # ref when that repository is the caller -- exactly the chain the
+          # checkouts carried before target_repo existed -- and nothing on a
+          # cross run, where any caller ref against the target is a wrong
+          # tree or a raw git error, and an empty ref is the target's default
+          # branch, unused on the paths that reach it (size skip, failed
+          # prepare).
+          FALLBACK_REF=""
+          if [ "$CROSS" = "false" ]; then
+            FALLBACK_REF="${EVENT_HEAD_SHA:-$EVENT_REF}"
+          fi
+          {
+            echo "owner=${TARGET_REPO%%/*}"
+            echo "name=${TARGET_REPO#*/}"
+            echo "cross=${CROSS}"
+            echo "fallback_ref=${FALLBACK_REF}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Why these permissions and no `issues`, and why this pin: the comment
+      # on the step of the same name in base-ai-review-prepare.yml, the one
+      # home for it; test_target_repo_threading.py holds the three steps
+      # equal.
+      - name: Mint target App token
+        id: target_token
+        if: steps.target.outputs.cross == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-pull-requests: write
+
+      # Target-repo checkout (kept so per-repo overrides can hook in later).
+      # The token falls through to github.token when no target token was
+      # minted.
       - name: Checkout caller repo (PR head)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
-          repository: ${{ github.repository }}
-          ref: ${{ inputs.head_sha || github.event.pull_request.head.sha || github.ref }}
+          repository: ${{ inputs.target_repo || github.repository }}
+          ref: ${{ inputs.head_sha || steps.target.outputs.fallback_ref }}
+          token: ${{ steps.target_token.outputs.token || github.token }}
+          persist-credentials: false
 
       # The head prepare resolved and computed the diff against. Without it this
       # falls back to `github.ref`, which on a workflow_dispatch is whatever ref
@@ -140,6 +259,7 @@ jobs:
           ref: v1.11.2
           path: .ai-dev-pr-review
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Download Claude review
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -197,10 +317,16 @@ jobs:
       - name: Aggregate and post verdict
         id: aggregate
         env:
+          # The PR coordinate follows target_repo so the verdict is addressed
+          # to the PR that was reviewed, never to the caller's PR of the same
+          # number. The two tokens do NOT follow it yet: which identity posts
+          # on a target is AT-2520 phase 1b, after AT-2823. Until then a
+          # cross-repository run fails here, loudly, on a 404 from the
+          # target -- the right failure, not a verdict on the wrong PR.
           GH_TOKEN: ${{ github.token }}
           REVIEWER_TOKEN: ${{ steps.reviewer_token.outputs.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
           PREPARE_RESULT: ${{ inputs.prepare_result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # The head this run is about, compared against the PR's head as it

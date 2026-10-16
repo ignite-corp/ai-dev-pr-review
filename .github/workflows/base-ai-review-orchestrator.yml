@@ -30,6 +30,18 @@ on:
         required: false
         type: number
         default: 15
+      # Cross-repository review (AT-2520): the repository whose PR is
+      # reviewed, `owner/name`. Empty means the caller, which is every
+      # consumer's case today and changes nothing for them. Set it only
+      # from a PRIVATE caller with `pr_number`: the diff and the prompts
+      # land in the caller's logs and artifacts, and prepare refuses a
+      # public caller for that reason. The reviewer App must be installed
+      # on the target; each job mints its own installation token for it.
+      target_repo:
+        description: "Repository (owner/name) whose PR is reviewed. Empty means the caller repository. Requires pr_number, a private caller, and the reviewer App installed on the target (AT-2520)"
+        required: false
+        type: string
+        default: ""
     secrets:
       OPENAI_API_KEY:
         required: true
@@ -55,8 +67,13 @@ on:
         description: "How many of them produced a usable verdict. A benign round can report fewer than expected, so a gate must read reviewer_roster.missing rather than compare the counts alone"
         value: ${{ jobs.aggregate.outputs.reviewers_responded_count }}
 
+# The group names the repository the PR belongs to as well as the PR number:
+# one caller reviewing PR #12 of two different targets must not have the
+# second run cancel the first (AT-2520, comment 89295). For a caller that
+# reviews only its own PRs the repository half is constant, so the grouping
+# is the per-PR one it always was.
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  group: ai-review-${{ inputs.target_repo || github.repository }}-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -70,8 +87,13 @@ jobs:
     uses: ./.github/workflows/base-ai-review-prepare.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       code-review-system-prompt-path: ${{ inputs.code-review-system-prompt-path }}
       code-review-checklist-path: ${{ inputs.code-review-checklist-path }}
+    secrets:
+      # Read only when target_repo names another repository: prepare mints
+      # the App token that reaches the target's PR from it (AT-2520).
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
   # --- Parallel mode (default) ---
   # Note: early_exit in parallel mode only affects aggregate verdict,
@@ -83,12 +105,16 @@ jobs:
     with:
       reviewer: gemini
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Read only when target_repo names another repository (AT-2520); the
+      # claude jobs below forward it for the auth switch as well.
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
   review-codex-p:
     if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
@@ -97,12 +123,15 @@ jobs:
     with:
       reviewer: codex
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Read only when target_repo names another repository (AT-2520).
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
   review-claude-p:
     if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
@@ -111,6 +140,7 @@ jobs:
     with:
       reviewer: claude
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
       review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
@@ -130,6 +160,7 @@ jobs:
     with:
       reviewer: claude
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
       review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
@@ -178,12 +209,15 @@ jobs:
     with:
       reviewer: codex
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Read only when target_repo names another repository (AT-2520).
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
   # Same shape as review-codex-s above, one clause per upstream reviewer.
   # Until AT-2125 the claude clause was `result == 'success'`, so a failed
@@ -200,12 +234,15 @@ jobs:
     with:
       reviewer: gemini
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Read only when target_repo names another repository (AT-2520).
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
   # --- Aggregate ---
   aggregate:
@@ -270,6 +307,7 @@ jobs:
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       prepare_result: ${{ needs.prepare.result }}
       pr_author: ${{ needs.prepare.outputs.pr_author }}

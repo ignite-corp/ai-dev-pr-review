@@ -16,6 +16,15 @@ on:
         required: false
         type: string
         default: ".github/prompts/code-review-checklist.md"
+      target_repo:
+        description: "Repository (owner/name) whose PR is reviewed; empty means the caller (AT-2520)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      REVIEWER_APP_PRIVATE_KEY:
+        required: false
+        description: "Private key of the reviewer GitHub App; read only when target_repo names another repository (AT-2520)"
     outputs:
       skip:
         description: "Whether to skip review: the PR is too large, or every changed file is policy-excluded. The reviewer jobs gate on this; size_skipped and policy_skipped say which"
@@ -68,14 +77,203 @@ jobs:
       size_limit: ${{ steps.size-check.outputs.limit }}
       pr_author: ${{ steps.refs.outputs.pr_author }}
     steps:
-      # Caller-repo checkout: the prompt paths live in the consumer repo,
-      # not in ai-dev-pr-review, so checkout the caller's PR head.
+      # Cross-repository review (AT-2520). `target_repo` names the repository
+      # whose PR is reviewed; empty means the caller, which is every
+      # consumer's case today. When it names another repository the PR is
+      # read with a token that reaches it, minted per job below (a job
+      # output cannot carry a secret), and the caller must be private: the
+      # diff and the prompts land in this run's logs and artifacts
+      # (measured on run 38830207533, self-review on this public repo --
+      # the Codex job log holds the whole diff, `codex exec ... | tee`),
+      # so a private target reviewed from a public caller is published by
+      # the review. The visibility is read from the event payload
+      # (`repository.visibility`, public | private | internal, on the
+      # repository object every repository event carries, pull_request and
+      # workflow_dispatch included), with the API as the fallback for an
+      # event that lacks it; only `private` proceeds, unknown refuses.
+      #
+      # The same step, byte for byte, opens every job that checks the
+      # target out (single.yml, aggregate.yml); test_target_repo_threading.py
+      # holds the copies equal, so a fix here is a fix in all three.
+      - name: Resolve review target
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          CALLER_REPO: ${{ github.repository }}
+          # `visibility`, not the `private` boolean: GitHub reports
+          # private=true for an INTERNAL repository too, and internal is every
+          # member of the enterprise -- wider than the target's collaborators.
+          CALLER_VISIBILITY: ${{ github.event.repository.visibility }}
+          # The caller's event: the ref every target checkout fell back to
+          # before target_repo existed. Both name a commit or branch of the
+          # CALLER, so they are handed on (as fallback_ref) only when the
+          # repository under review is the caller.
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_REF: ${{ github.ref }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+          REVIEWER_APP_ID: ${{ vars.REVIEWER_APP_ID }}
+          # One bit, not the PEM: this step only asks whether the key exists.
+          # The mint step below is the one place that reads the secret.
+          REVIEWER_APP_KEY_PRESENT: ${{ secrets.REVIEWER_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          # Validate the INPUT, then default. The caller's own name is
+          # GitHub's, not ours to re-validate: a login the owner pattern
+          # below does not model would otherwise refuse every default run
+          # of that consumer, with target_repo never set.
+          if [ -n "$TARGET_REPO" ]; then
+            # Bounded and re-spelled before it reaches a log line: the input
+            # is caller-supplied text, and a newline in it would be a second
+            # line the runner parses for workflow commands.
+            SAFE_TARGET=$(printf '%s' "${TARGET_REPO:0:64}" | tr -c 'A-Za-z0-9_./-' '?')
+            # What GitHub allows: an owner is alphanumerics with inner
+            # hyphens; a repository name may carry `.` and `_` as well. The
+            # value is concatenated into `repos/<target>/pulls/<n>` and into
+            # a checkout `repository:` later, so a segment of dots (`.`,
+            # `..`) -- which the character class alone admits -- is refused
+            # as a path, not a name.
+            if [[ ! $TARGET_REPO =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9_.-]+$ ]] \
+              || [[ ${TARGET_REPO#*/} =~ ^\.+$ ]]; then
+              echo "::error::target_repo must be owner/name, got: ${SAFE_TARGET}"
+              exit 1
+            fi
+          else
+            TARGET_REPO="$CALLER_REPO"
+            SAFE_TARGET="$CALLER_REPO"
+          fi
+          CROSS=false
+          # Case-insensitive: GitHub repository names are case-preserving
+          # but not case-sensitive, so an input that differs from the caller
+          # only in case names the caller (AT-2538, item 1).
+          if [ "${TARGET_REPO,,}" != "${CALLER_REPO,,}" ]; then
+            CROSS=true
+            if [ -z "$PR_NUMBER" ]; then
+              echo "::error::target_repo is set but pr_number is empty; the caller's event names a PR in ${CALLER_REPO}, not in ${SAFE_TARGET} (AT-2520)"
+              exit 1
+            fi
+            if [ -z "$CALLER_VISIBILITY" ]; then
+              CALLER_VISIBILITY=$(gh api "repos/${CALLER_REPO}" --jq '.visibility') || CALLER_VISIBILITY=""
+            fi
+            # Exactly `private`: public and internal are refused, and so is an
+            # unknown value -- the question could not be answered, which is
+            # not a yes.
+            if [ "$CALLER_VISIBILITY" != "private" ]; then
+              echo "::error::refusing to review ${SAFE_TARGET} from ${CALLER_REPO}: the caller's visibility is ${CALLER_VISIBILITY:-unknown}, not private; this run's logs and artifacts would publish the target's diff (AT-2520)"
+              exit 1
+            fi
+            if [ -z "$REVIEWER_APP_ID" ] || [ "$REVIEWER_APP_KEY_PRESENT" != "true" ]; then
+              echo "::error::target_repo is set but REVIEWER_APP_ID / REVIEWER_APP_PRIVATE_KEY are not both available; a cross-repository review needs an App token for ${SAFE_TARGET%%/*} (AT-2520)"
+              exit 1
+            fi
+          fi
+          # fallback_ref: what a checkout of the repository under review may
+          # fall back to when no resolved head is at hand. The caller's event
+          # ref when that repository is the caller -- exactly the chain the
+          # checkouts carried before target_repo existed -- and nothing on a
+          # cross run, where any caller ref against the target is a wrong
+          # tree or a raw git error, and an empty ref is the target's default
+          # branch, unused on the paths that reach it (size skip, failed
+          # prepare).
+          FALLBACK_REF=""
+          if [ "$CROSS" = "false" ]; then
+            FALLBACK_REF="${EVENT_HEAD_SHA:-$EVENT_REF}"
+          fi
+          {
+            echo "owner=${TARGET_REPO%%/*}"
+            echo "name=${TARGET_REPO#*/}"
+            echo "cross=${CROSS}"
+            echo "fallback_ref=${FALLBACK_REF}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Per job, because a job output cannot carry a secret. `owner` and
+      # `repositories` scope the installation token to the target, and the
+      # permission-* inputs narrow it to what the review does with it:
+      # read the tree and the PR, post on the PR. `pull-requests: write`
+      # covers the issue-comment endpoint on a pull request (`POST
+      # /repos/{owner}/{repo}/issues/{issue_number}/comments` is listed
+      # under the Pull requests permission in GitHub's "Permissions
+      # required for GitHub Apps"), which is what the size-gate and policy
+      # comments below use; `issues` is NOT requested -- the reviewer App's
+      # installations do not hold it (run 38830491912), and asking for a
+      # permission the installation lacks fails the mint. The pin is the
+      # one the cross-owner mints in consumer-health.yml and the AT-2520
+      # spike use. single.yml's auth-switch mint keeps its own pin and
+      # `owner: ignite-corp`: that token writes a corp org variable, not
+      # the target. Skipped, not continue-on-error: with no target token
+      # the checkout below would reach for github.token and fail on the
+      # target anyway.
+      - name: Mint target App token
+        id: target_token
+        if: steps.target.outputs.cross == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-pull-requests: write
+
+      # The target's PR head, read through the target token, so the checkout
+      # below lands on the commit the review is about. prepare is the job
+      # that resolves head_sha for the others and has no such input itself,
+      # and `github.event.pull_request.head.sha` / `github.ref` both name
+      # the CALLER's commit or branch, which the target does not have.
+      # Skipped when the target is the caller: the output is then empty and
+      # the ref falls through to what it was before target_repo existed.
+      # 'Resolve PR refs' reads the same PR again below for the other
+      # fields; one extra request on the cross path, none on the default.
+      - name: Resolve target PR head
+        id: target_head
+        if: steps.target.outputs.cross == 'true'
+        env:
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          # 'Validate PR number' runs after the checkout; this is the first
+          # step that puts the number in a URL, so it checks the shape itself.
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid PR_NUMBER for the target repository (AT-2520)"
+            exit 1
+          fi
+          # Guarded like the visibility lookup: under `set -e` a failing `gh`
+          # (404 -- App not installed on the target, or no such PR there)
+          # would abort the step before the annotation below says why.
+          SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha // ""') || SHA=""
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not resolve the head of PR #${PR_NUMBER} in the target repository (AT-2520)"
+            exit 1
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      # Target-repo checkout: the prompt paths live in the repository under
+      # review, not in ai-dev-pr-review, so check out ITS PR head -- the one
+      # the step above resolved when the target is another repository, the
+      # caller's event (fallback_ref) otherwise; a caller ref never reaches
+      # a target checkout. The token falls through to github.token when no
+      # target token was minted -- the default the step ran with before
+      # target_repo existed.
+      #
+      # persist-credentials: false on every checkout that takes the target
+      # token (here, single.yml, aggregate.yml). actions/checkout would
+      # otherwise write it into the workspace's .git/config, and on a cross
+      # run that token has write access on another organization's
+      # repository, in the workspace the reviewers walk while reading
+      # attacker-authored diff text. The two steps below that still fetch
+      # from origin ('Fetch PR head', 'Extract diff and context') get the
+      # same token through their own env instead, so the default path keeps
+      # fetching private consumers exactly as before.
       - name: Checkout caller repo (PR head)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
-          repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          repository: ${{ inputs.target_repo || github.repository }}
+          ref: ${{ steps.target_head.outputs.sha || steps.target.outputs.fallback_ref }}
+          token: ${{ steps.target_token.outputs.token || github.token }}
+          persist-credentials: false
 
       # Checkout this reusable repo for the helper scripts.
       # WARNING: ref below is hardcoded to this release's tag. When cutting a new
@@ -90,6 +288,7 @@ jobs:
           ref: v1.11.2
           path: .ai-dev-pr-review
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Validate PR number
         env:
@@ -103,9 +302,13 @@ jobs:
       - name: Check PR size
         id: size-check
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_SIZE_LIMIT: ${{ vars.PR_SIZE_LIMIT || '3000' }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
+          # Through env, never interpolated into the script: target_repo is
+          # caller-supplied text, and the regex guard above is a different
+          # step's invariant (AT-2520).
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: |
           if ! [[ "$PR_SIZE_LIMIT" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid PR_SIZE_LIMIT: $PR_SIZE_LIMIT (must be integer)"
@@ -113,7 +316,7 @@ jobs:
           fi
 
           PR_DATA=$(gh pr view "$PR_NUMBER" \
-            --repo "${{ github.repository }}" --json additions,deletions)
+            --repo "$GITHUB_REPOSITORY" --json additions,deletions)
           ADDITIONS=$(echo "$PR_DATA" | jq '.additions')
           DELETIONS=$(echo "$PR_DATA" | jq '.deletions')
           TOTAL=$((ADDITIONS + DELETIONS))
@@ -124,7 +327,7 @@ jobs:
           if [ "$TOTAL" -gt "$PR_SIZE_LIMIT" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" \
-              --repo "${{ github.repository }}" \
+              --repo "$GITHUB_REPOSITORY" \
               --body "[!] PR too large (${TOTAL} lines changed, limit ${PR_SIZE_LIMIT}). Skipping AI review -- the aggregate verdict below explains how to proceed."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -168,7 +371,7 @@ jobs:
         id: refs
         if: steps.size-check.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -176,14 +379,18 @@ jobs:
           MERGE_COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           PR_COMMITS: ${{ github.event.pull_request.commits }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
+          # The event payload describes the CALLER's PR. When the review is
+          # about another repository's PR, every field below must come from
+          # that repository's API, whatever the event carried (AT-2520).
+          CROSS_REPO: ${{ steps.target.outputs.cross }}
           # No pull_request payload on a dispatch: github.event.pull_request
           # does not exist, and toJSON of a missing property is the literal
           # string "null" -- handled below alongside the webhook path, which
           # gets a real JSON array of label objects here (AT-2222).
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
         run: |
-          if [ -z "$BASE_REF" ]; then
+          if [ -z "$BASE_REF" ] || [ "$CROSS_REPO" = "true" ]; then
             PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
             BASE_REF=$(echo "$PR_JSON" | jq -r '.base.ref // ""')
             HEAD_SHA=$(echo "$PR_JSON" | jq -r '.head.sha // ""')
@@ -241,11 +448,27 @@ jobs:
             echo "labels=${LABELS}"
           } >> "$GITHUB_OUTPUT"
 
+      # GIT_AUTH_TOKEN: the checkout above did not persist its credential, so
+      # the fetch gets the same token through git's environment config
+      # (GIT_CONFIG_COUNT/KEY_0/VALUE_0, the extraheader actions/checkout
+      # would have written to .git/config), which nothing in the workspace
+      # can read back. Same block in 'Extract diff and context'.
       - name: Fetch PR head (when pr_number provided manually)
         if: steps.size-check.outputs.skip == 'false' && inputs.pr_number != ''
         env:
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
-        run: git fetch origin "$HEAD_SHA"
+          GIT_AUTH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
+        run: |
+          # Actions masks the raw token, not its base64 form; mask the encoded
+          # value before anything can print it (actions/checkout does the
+          # same for the header it writes). This repository is public.
+          B64=$(printf 'x-access-token:%s' "$GIT_AUTH_TOKEN" | base64 -w0)
+          echo "::add-mask::$B64"
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${B64}"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          git fetch origin "$HEAD_SHA"
 
       # The caller-repo checkout above resolves `github.ref` when there is no
       # pull_request payload, which is the dispatched ref -- `main` unless the
@@ -281,9 +504,9 @@ jobs:
       - name: Extract diff and context
         if: steps.size-check.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
           BASE_REF: ${{ steps.refs.outputs.base_ref }}
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
           PR_AUTHOR: ${{ steps.refs.outputs.pr_author }}
@@ -294,7 +517,20 @@ jobs:
           LABELS: ${{ steps.refs.outputs.labels }}
           SYSTEM_PROMPT_PATH: ${{ inputs.code-review-system-prompt-path }}
           CHECKLIST_PATH: ${{ inputs.code-review-checklist-path }}
+          # See 'Fetch PR head': the checkout persisted no credential, and
+          # this step fetches (the base branch below; the merge commit
+          # inside extract_pr_diff.sh).
+          GIT_AUTH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
         run: |
+          # Actions masks the raw token, not its base64 form; mask the encoded
+          # value before anything can print it (actions/checkout does the
+          # same for the header it writes). This repository is public.
+          B64=$(printf 'x-access-token:%s' "$GIT_AUTH_TOKEN" | base64 -w0)
+          echo "::add-mask::$B64"
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${B64}"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           # self-review.yml runs this YAML from the PR while the scripts come
           # from the pinned release tag, so a pin that predates the script
           # would fail here and review nothing -- the same guard as the
@@ -401,9 +637,9 @@ jobs:
         id: policy
         if: steps.size-check.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: |
           SCRIPT=".ai-dev-pr-review/.github/scripts/filter_pr_diff.py"
           RULES=".github/lens-ignore"
@@ -448,25 +684,38 @@ jobs:
       - name: Append prior review context
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: python3 .ai-dev-pr-review/.github/scripts/fetch_review_context.py
 
+      # The script reads tag listings of the UPSTREAM action repositories the
+      # diff pins (actions/checkout, ...), public repositories outside the
+      # installation the target token is scoped to. That a repository-scoped
+      # installation token reads them is measured for the token class, not
+      # yet for the reviewer App's own: github.token is such a token
+      # (installation of the GitHub Actions app, restricted to this one
+      # repository) and verified 1/1 upstream pins on this very workflow's
+      # run (PR #202, job 116827618669); the docs do not state the rule
+      # either way. The AT-2520 phase 2 pilot run on the target confirms it
+      # for the reviewer App's token. If it 404s there, every cross-path pin
+      # degrades to an `unverified` suggestion-grade label (AT-2801), never a
+      # false major; the honest fix is then a per-pin token choice in
+      # verify_action_shas.py, not a different token here.
       - name: Append verified action SHA pins
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: python3 .ai-dev-pr-review/.github/scripts/verify_action_shas.py
 
       - name: Collect unresolved review threads
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: bash .ai-dev-pr-review/.github/scripts/collect_review_threads.sh
 
       - name: Upload review context

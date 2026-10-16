@@ -218,6 +218,7 @@ All workflows accept `workflow_call` inputs:
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | Same path semantics. |
 | `claude-timeout-minutes` | number | false | `10` | Minutes the Claude reviewer step may run before the runner kills it. The default is what every consumer has always had; this repo's own `self-review.yml` raises it because its PRs can exceed 10 minutes (AT-2876). |
 | `review-job-timeout-minutes` | number | false | `15` | Cap on the whole reviewer job; forwarded to the Claude reviewer jobs only. Raise it together with `claude-timeout-minutes` and keep it at least 5 whole minutes above it, so the step cap is the one that fires; the Claude jobs fail at their `Validate timeout inputs` step otherwise. |
+| `target_repo` | string | false | `""` | Repository (`owner/name`) whose PR is reviewed; empty means the caller, which changes nothing for existing consumers (AT-2520). Set it only from a **private** caller, with `pr_number`: the diff and the prompts land in the caller's logs and artifacts, so `prepare` refuses a public caller. The reviewer App (`REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY`) must be installed on the target; each job mints its own installation token for it. The verdict step still authenticates as the caller, so a cross-repository run currently fails with a 404 at `Aggregate and post verdict` (phase 1b, AT-2520). |
 
 The `single` and `aggregate` workflows additionally accept reviewer-routing inputs (`reviewer`, `claude_result`, `codex_result`, `gemini_result`) but consumers do not invoke them directly — the orchestrator wires them.
 
@@ -409,7 +410,7 @@ jobs:
 
 ## Concurrency and re-push behavior
 
-The orchestrator sets `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`, so each PR has at most one active review run at a time. The group key is the PR number (`inputs.pr_number` for `workflow_dispatch`, falling back to `github.run_id`).
+The orchestrator sets `concurrency: { group: ai-review-<repository>-<pr-number>, cancel-in-progress: true }`, so each PR has at most one active review run at a time. The group key is the repository the PR belongs to (`target_repo`, falling back to the caller) and the PR number (`inputs.pr_number` for `workflow_dispatch`, falling back to `github.run_id`); the repository half keeps a caller that reviews two targets' PR #12 from cancelling one with the other.
 
 - **New push during a review:** every push fires `pull_request: synchronize`, which starts a new run and cancels the in-progress run for the same PR. The new run restarts from `prepare` against the latest diff. Runs do not accumulate — the PR converges to a single active run.
 - **Different PRs:** different group keys, so they run independently and never cancel each other.

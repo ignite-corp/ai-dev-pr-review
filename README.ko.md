@@ -207,6 +207,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | 동일한 경로 의미. |
 | `claude-timeout-minutes` | number | false | `10` | Claude 리뷰어 단계가 러너에 의해 종료되기 전까지 실행될 수 있는 분 수. 기본값은 모든 소비자가 지금까지 쓰던 값이며, 이 레포 자체의 `self-review.yml`만 PR이 10분을 넘길 수 있어 올려 둠(AT-2876). |
 | `review-job-timeout-minutes` | number | false | `15` | 리뷰어 잡 전체의 상한. Claude 리뷰어 잡에만 전달됨. `claude-timeout-minutes`와 함께 올리되 항상 그보다 5분(정수) 이상 크게 유지 — 잡 상한이 아니라 단계 상한이 먼저 걸리도록. 그렇지 않으면 Claude 잡이 `Validate timeout inputs` 단계에서 실패함. |
+| `target_repo` | string | false | `""` | 리뷰할 PR 이 있는 저장소(`owner/name`). 비우면 호출자 자신이며, 기존 소비자에게는 아무 변화가 없습니다(AT-2520). **private** 호출자에서 `pr_number`와 함께만 설정하세요: diff 와 프롬프트가 호출자의 로그와 artifact 에 남으므로 `prepare` 가 public 호출자를 거부합니다. 리뷰어 App(`REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY`)이 대상에 설치돼 있어야 하며, 각 job 이 대상용 설치 토큰을 직접 발급합니다. 판정 단계는 아직 호출자 신원으로 인증하므로, 지금은 cross-repository 런이 `Aggregate and post verdict` 에서 404 로 실패합니다(1b 단계, AT-2520). |
 
 `single`과 `aggregate` 워크플로우는 추가로 리뷰어 라우팅 입력(`reviewer`, `claude_result`, `codex_result`, `gemini_result`)을 받지만, 소비자가 직접 호출하지 않습니다 — orchestrator가 연결합니다.
 
@@ -398,7 +399,7 @@ jobs:
 
 ## 동시성(Concurrency)과 재푸시(re-push) 동작
 
-orchestrator는 `concurrency: { group: ai-review-<pr-number>, cancel-in-progress: true }`를 설정하므로, 각 PR은 한 번에 최대 1개의 활성 리뷰 런만 갖습니다. 그룹 키는 PR 번호입니다(`workflow_dispatch`에서는 `inputs.pr_number`, 없으면 `github.run_id`로 폴백).
+orchestrator는 `concurrency: { group: ai-review-<repository>-<pr-number>, cancel-in-progress: true }`를 설정하므로, 각 PR은 한 번에 최대 1개의 활성 리뷰 런만 갖습니다. 그룹 키는 PR 이 속한 저장소(`target_repo`, 없으면 호출자)와 PR 번호입니다(`workflow_dispatch`에서는 `inputs.pr_number`, 없으면 `github.run_id`로 폴백). 저장소 절반이 있어야 한 호출자가 두 대상의 PR #12 를 리뷰할 때 서로를 취소하지 않습니다.
 
 - **리뷰 도중 새 push:** 모든 push는 `pull_request: synchronize`를 발생시켜 새 런을 시작하고 같은 PR의 진행 중 런을 취소합니다. 새 런은 최신 diff로 `prepare`부터 재시작합니다. 런은 누적되지 않으며 — PR은 단일 활성 런으로 수렴합니다.
 - **서로 다른 PR:** 그룹 키가 다르므로 독립적으로 실행되고 서로 취소하지 않습니다.
