@@ -793,9 +793,11 @@ class TestPrepareStep:
 
     def test_step_env_covers_the_skip_comment(self) -> None:
         env = _step(STEP_NAME)["env"]
-        assert env["GH_TOKEN"] == "${{ github.token }}"
+        # Target-repo threading (AT-2520): the caller's token and name are the
+        # fallback, the target's the first choice.
+        assert env["GH_TOKEN"] == "${{ steps.target_token.outputs.token || github.token }}"
         assert env["PR_NUMBER"] == "${{ inputs.pr_number || github.event.pull_request.number }}"
-        assert env["GITHUB_REPOSITORY"] == "${{ github.repository }}"
+        assert env["GITHUB_REPOSITORY"] == "${{ inputs.target_repo || github.repository }}"
 
     def test_guard_mirrors_the_extract_step(self) -> None:
         run = _step(STEP_NAME)["run"]

@@ -32,6 +32,38 @@ env:
           default env var, so the wrapper step reads it today; the port makes
           that explicit and is pending. Remove this entry when it lands --
           that is AT-2879's close condition.
+    Check PR size:
+      GITHUB_REPOSITORY:
+        reason: >-
+          Open drift, AT-2520. Base reads the repository under review from
+          env so the caller-supplied target_repo is never interpolated into
+          the script; the wrapper still interpolates github.repository
+          inline, which is safe there because it has no target_repo input.
+          Remove with the 'Resolve review target' entries in
+          correspondence.yml.
+    Fetch PR head (when pr_number provided manually):
+      GIT_AUTH_TOKEN:
+        reason: >-
+          Open drift, AT-2520. Base's target checkout no longer persists its
+          credential into .git/config (the target token has write access on
+          another repository, in the workspace the reviewers walk), so the
+          steps that still fetch hand git the token through their env; the
+          wrapper has no target token and keeps the persisted github.token.
+          Remove with the 'Resolve review target' entries in
+          correspondence.yml.
+    Extract diff and context:
+      GIT_AUTH_TOKEN:
+        reason: >-
+          Open drift, AT-2520; same as 'Fetch PR head (when pr_number
+          provided manually)'.
+    Resolve PR refs:
+      CROSS_REPO:
+        reason: >-
+          Open drift, AT-2520. Base forces the API path for every PR field
+          when target_repo names another repository, because the event
+          payload describes the caller's PR; the wrapper has no target_repo
+          input yet. Remove with the 'Resolve review target' entries in
+          correspondence.yml.
   base-ai-review-single.yml:
     Normalize review file name:
       REVIEWER:

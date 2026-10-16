@@ -207,7 +207,7 @@ def _run_refs_step(
 def _dispatch_context(pr_number: str = "35") -> dict[str, str]:
     """workflow_dispatch: no pull_request payload, so every ref is empty."""
     return {
-        "github.token": "gh-token",
+        "steps.target_token.outputs.token || github.token": "gh-token",
         "github.base_ref": "",
         "github.head_ref": "",
         "github.event.pull_request.user.login": "",
@@ -216,7 +216,8 @@ def _dispatch_context(pr_number: str = "35") -> dict[str, str]:
         "github.event.pull_request.merge_commit_sha": "",
         "github.event.pull_request.commits": "",
         "inputs.pr_number || github.event.pull_request.number": pr_number,
-        "github.repository": "ignite-corp/ai-dev-pr-review",
+        "inputs.target_repo || github.repository": "ignite-corp/ai-dev-pr-review",
+        "steps.target.outputs.cross": "false",
         # toJSON of a property read off an event object that doesn't exist
         # on this trigger -- the literal string "null" (AT-2222).
         "toJSON(github.event.pull_request.labels)": "null",
@@ -238,6 +239,8 @@ def _pull_request_context(
     merged: str = "false",
     merge_commit_sha: str = _TEST_MERGE_SHA,
     labels: list[str] | None = None,
+    cross: str = "false",
+    target: str = "ignite-corp/ai-dev-pr-review",
 ) -> dict[str, str]:
     # A minimal but realistic slice of the webhook's label object shape --
     # the step only reads `.name`, but a fixture with just that one key
@@ -247,7 +250,7 @@ def _pull_request_context(
         for i, name in enumerate(labels or [])
     ]
     return {
-        "github.token": "gh-token",
+        "steps.target_token.outputs.token || github.token": "gh-token",
         "github.base_ref": base_ref,
         "github.head_ref": head_ref,
         "github.event.pull_request.user.login": author,
@@ -256,7 +259,8 @@ def _pull_request_context(
         "github.event.pull_request.merge_commit_sha": merge_commit_sha,
         "github.event.pull_request.commits": "2",
         "inputs.pr_number || github.event.pull_request.number": "35",
-        "github.repository": "ignite-corp/ai-dev-pr-review",
+        "inputs.target_repo || github.repository": target,
+        "steps.target.outputs.cross": cross,
         "toJSON(github.event.pull_request.labels)": json.dumps(label_objects),
     }
 
@@ -397,6 +401,22 @@ class TestPullRequestPath:
         # resolution branch is not entered at all when github.base_ref is set.
         _, calls = _run_refs_step(tmp_path, context=_pull_request_context())
         assert calls == []
+
+    def test_another_target_forces_the_api_path_over_the_event_payload(
+        self, tmp_path: Path
+    ) -> None:
+        # A pull_request event describes the CALLER's PR. When target_repo
+        # names another repository every field must come from that
+        # repository's API, however complete the payload is (AT-2520).
+        # The target is a different repository from the caller, so the
+        # request proves the coordinate followed the target, not only that
+        # the API branch was taken.
+        context = _pull_request_context(cross="true", target="other-org/target-repo")
+        outputs, calls = _run_refs_step(tmp_path, context=context, rest=_FORK_REST)
+        assert calls == ["api repos/other-org/target-repo/pulls/35"]
+        assert outputs["head_sha"] == _FORK_REST["head"]["sha"]
+        assert outputs["head_ref"] == "fix-the-thing"
+        assert outputs["pr_author"] == "someuser"
 
     def test_human_author_and_head_ref_pass_through(self, tmp_path: Path) -> None:
         context = _pull_request_context(
@@ -556,9 +576,9 @@ def _run_extract_context_step(
     """Run the real `Extract diff and context` script; return context.md."""
     step = _step("Extract diff and context")
     context = {
-        "github.token": "gh-token",
+        "steps.target_token.outputs.token || github.token": "gh-token",
         "inputs.pr_number || github.event.pull_request.number": "35",
-        "github.repository": "ignite-corp/ai-dev-pr-review",
+        "inputs.target_repo || github.repository": "ignite-corp/ai-dev-pr-review",
         "steps.refs.outputs.base_ref": base_ref,
         "steps.refs.outputs.head_sha": head_sha,
         "steps.refs.outputs.pr_author": author,

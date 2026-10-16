@@ -514,8 +514,10 @@ class TestWorkflowWiring:
         assert env["PR_COMMITS"] == "${{ steps.refs.outputs.pr_commits }}"
         assert env["BASE_REF"] == "${{ steps.refs.outputs.base_ref }}"
         assert env["HEAD_SHA"] == "${{ steps.refs.outputs.head_sha }}"
-        assert env["GH_TOKEN"] == "${{ github.token }}"
-        assert env["GITHUB_REPOSITORY"] == "${{ github.repository }}"
+        # Target-repo threading (AT-2520): the caller's token and name are the
+        # fallback, the target's the first choice.
+        assert env["GH_TOKEN"] == "${{ steps.target_token.outputs.token || github.token }}"
+        assert env["GITHUB_REPOSITORY"] == "${{ inputs.target_repo || github.repository }}"
         assert env["PR_NUMBER"] == "${{ inputs.pr_number || github.event.pull_request.number }}"
 
     def test_refs_step_exports_the_merge_state(self) -> None:
