@@ -1203,9 +1203,10 @@ def reviewer_timeout_sec(name: str) -> int:
 def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
     """Run one reviewer; return the conclusion aggregate_reviews.py reads.
 
-    Actions loses the exit code to `continue-on-error`, so a reviewer that
-    died reports `success` with no artifact and the aggregate calls it
-    "early-exit or no-output" (AT-1837). Here the exit code is in hand.
+    Actions loses the exit code to `continue-on-error`, so each reviewer
+    path records its own death separately -- claude's and gemini's always()
+    nets write a `failed` verdict, codex's fails the job (AT-1837, AT-2539).
+    Here the exit code is in hand.
     """
     log = work / f"{name}-review.log"
     timeout_sec = reviewer_timeout_sec(name)
