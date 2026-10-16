@@ -32,7 +32,73 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
 - org/repo-level secret accessibility
 - Dependabot PR status
 
-Authentication: GitHub App `ignite-actions-token-app` (app_id=1582952).
-- Org secrets `IGNITE_ACTIONS_TOKEN_APP_ID` / `IGNITE_ACTIONS_TOKEN_APP_PRIVATE_KEY` already accessible from this repo.
-- App permissions: `administration: write` (rulesets), `actions: read` (workflow runs), `contents: read`, `metadata: read`.
-- Workflows mint short-lived tokens via `actions/create-github-app-token@v3`. No PAT to manage / rotate.
+The `health` job of `consumer-health.yml` authenticates as the fleet-admin App
+below -- not as the one the `pilot-credential-scan` job of the same file uses.
+
+### Authentication: two Apps, not one (AT-2537)
+Two GitHub Apps are live in this repo and they are not interchangeable. Choose
+by what the job has to do, not by whichever credential name you saw first: a
+job that administers the fleet and a job that speaks on a pull request need
+different Apps, and swapping one for the other fails for reasons that look
+like something else.
+
+**Fleet administration -- `ignite-actions-token-app` (app_id=1582952).**
+- Used by `ruleset-sync.yml`, `ruleset-audit.yml`, and the `health` job of
+  `consumer-health.yml`.
+- Credentials: org secrets `IGNITE_ACTIONS_TOKEN_APP_ID` /
+  `IGNITE_ACTIONS_TOKEN_APP_PRIVATE_KEY` (visibility=selected, with this repo
+  on the selected list).
+- Installed on **ignite-corp only**: measured 2026-10-16,
+  `gh api orgs/ignite-pilot-org/installations` does not list it, so no token
+  minted from it reaches a pilot consumer, with any permission. That is an
+  observation and negatives go stale silently -- re-read that call before
+  building on the absence.
+- Permissions this doctrine relies on, mapped against GitHub's
+  permissions-required-for-github-apps reference rather than guessed from the
+  endpoint name: `administration: write` (PUT a ruleset -- `ruleset-sync.yml`
+  only), `metadata: read` (GET a ruleset in `ruleset-audit.yml`, and this
+  repo's tag list for pin freshness -- both are Metadata endpoints, not
+  Administration or Contents), `contents: read` (consumer workflow files, read
+  by both `ruleset-audit.yml` and the health check), `actions: read` (consumer
+  run conclusions), `secrets: read` / `organization_secrets: read` /
+  `dependabot_secrets: read` (secret accessibility; this is the
+  repository-level key, and for Dependabot the health job probes repo-level
+  only -- org-level Dependabot is a separate permission,
+  `organization_dependabot_secrets`, which this App did not hold as of
+  2026-10-16 (`gh api orgs/ignite-corp/installations`); re-read that call
+  before building on the absence. The org-level Actions probe above is
+  unaffected: it uses `organization_secrets: read`, which the App does hold),
+  `pull_requests: read` (Dependabot PR status, via a REST call; the
+  reviewer-error streak uses GraphQL, which the reference does not map, so this
+  entry rests on the REST call alone). The live installation
+  grant is broader than this list; if a decision turns on whether some
+  permission is present, read `gh api orgs/ignite-corp/installations` instead
+  of this file.
+
+**Review pipeline -- `ignite-ai-review-approver` (app_id=4196135).**
+- Used by `base-ai-review-aggregate.yml` (submit a real APPROVED review),
+  `base-ai-review-single.yml` and `claude-auth-restore.yml` (flip the
+  ignite-corp Claude auth org vars), the `pilot-credential-scan` job of
+  `consumer-health.yml`, and `spike-cross-repo-probe.yml`.
+  `base-ai-review-orchestrator.yml` forwards its key to the `review-claude-p`,
+  `review-claude-s` and `aggregate` jobs, and `self-review.yml` forwards it
+  into the orchestrator.
+- Credentials are a var/secret pair, not two secrets: org var `REVIEWER_APP_ID`
+  (visibility=all) plus org secret `REVIEWER_APP_PRIVATE_KEY`
+  (visibility=selected, with this repo on the selected list).
+- Installed on **both ignite-corp and ignite-pilot-org**. This bullet gives the
+  permissions the cross-org question turns on, not the full grant: it holds
+  `pull_requests: write` on each, so it is the only one of the two that can act
+  cross-org, and `organization_actions_variables: write`, which is what
+  `switch_claude_auth.py` uses to set and delete the ignite-corp
+  `CLAUDE_FORCE_API` and `CLAUDE_FORCE_API_UNTIL` org vars. Measured
+  2026-10-16, neither installation grants any `actions` permission --
+  `organization_actions_variables: write` is a different key -- which is why
+  the pilot scan reads PR and review bodies rather than consumer run
+  conclusions. Treat that as an observation, not a
+  design guarantee: a negative goes stale silently, so re-read
+  `gh api orgs/ignite-corp/installations` and
+  `gh api orgs/ignite-pilot-org/installations` before building on the absence.
+
+Both mint short-lived tokens via `actions/create-github-app-token` (pinned per
+workflow). No PAT to manage / rotate.
