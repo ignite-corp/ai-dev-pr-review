@@ -88,6 +88,16 @@ jobs:
       # consumers copy from examples/prompts.
       code-review-system-prompt-path: examples/prompts/code-review-system.md
       code-review-checklist-path: examples/prompts/code-review-checklist.md
+      # The Claude reviewer step is capped at 10 minutes by default and this
+      # repo's PRs can exceed it: on PR #194 the step hit the cap in both
+      # runs 38679319725 and 38819148513 (the second ended 2/3 with
+      # action_invocation_failed), while the other self-review runs of the
+      # same day finished it in 4 to 7.5 minutes. Twice the default clears
+      # #194's shape with margin and still bounds a stuck review; the job cap
+      # keeps the defaults' 5-minute headroom over the step cap. Set here,
+      # not in the base defaults, so consumers are unchanged (AT-2876).
+      claude-timeout-minutes: 20
+      review-job-timeout-minutes: 25
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}

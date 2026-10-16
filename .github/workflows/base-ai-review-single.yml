@@ -15,6 +15,19 @@ on:
       pr_number:
         type: string
         required: false
+      # Both caps are inputs so one caller can raise them without moving the
+      # defaults every consumer gets (AT-2876): the base repo's own PRs can
+      # need more than 10 minutes of Claude review, a consumer's have not.
+      claude-timeout-minutes:
+        type: number
+        required: false
+        default: 10
+        description: "Minutes the 'Run Claude review' step may run before the runner kills it"
+      review-job-timeout-minutes:
+        type: number
+        required: false
+        default: 15
+        description: "Minutes the whole reviewer job may run; must exceed the running reviewer's step cap (claude-timeout-minutes for claude, the literal 10 for gemini and codex) by at least 5 whole minutes so the step cap is the one that fires. The job fails at its 'Validate timeout inputs' step otherwise"
     secrets:
       OPENAI_API_KEY:
         required: true
@@ -39,14 +52,15 @@ jobs:
   review:
     name: "${{ inputs.reviewer }} review"
     runs-on: ubuntu-latest
-    # Upper bound for the whole job. The 10-minute timeout-minutes on the
-    # reviewer steps below does bind the claude composite's inner steps: the
-    # runner hands the caller step's remaining timeout to every composite
-    # child (ExecutionContext.CreateEmbeddedChild -> GetRemainingTimeout(),
+    # Upper bound for the whole job. The timeout-minutes on the reviewer
+    # steps below (10 by default; the claude one is an input, AT-2876) does
+    # bind the claude composite's inner steps: the runner hands the caller
+    # step's remaining timeout to every composite child
+    # (ExecutionContext.CreateEmbeddedChild -> GetRemainingTimeout(),
     # actions/runner v2.336.0; in place since #599, v2.272.0).
     # actions/runner#1979 (open) is about timeout-minutes keys written inside
     # composite steps being ignored, not about the caller's step timeout.
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
     steps:
@@ -58,6 +72,50 @@ jobs:
             claude|gemini|codex) ;;
             *) echo "Invalid reviewer: $REVIEWER"; exit 1 ;;
           esac
+
+      # The job cap must clear the running reviewer's step cap with room for
+      # the steps around it (checkouts and the context download before,
+      # verdict extraction, upload and inline comments after), or the runner
+      # kills the job while the reviewer step is still running and the step's
+      # own failure path (error verdict file, execution-log fallback) never
+      # runs -- PR #194's action_invocation_failed shape, which a caller that
+      # raises only one of the two inputs would reach silently. Refuse it
+      # here, before any checkout, for every reviewer: the job cap applies to
+      # the job whatever runs in it, and single.yml is itself a workflow_call
+      # entry point, so a direct caller can pair a low job cap with the
+      # literal gemini/codex step cap too. The headroom is the gap the
+      # defaults (10/15) and self-review (20/25) both carry; both values must
+      # be positive integers without a leading zero, because the comparison
+      # is integer arithmetic: a fractional value would slip past it as a
+      # false condition, bash reads a leading zero as octal, and a zero cap
+      # is the killed-step shape itself (AT-2876).
+      - name: Validate timeout inputs
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+          JOB_MINUTES: ${{ inputs.review-job-timeout-minutes }}
+          CLAUDE_STEP_MINUTES: ${{ inputs.claude-timeout-minutes }}
+          # The literal timeout-minutes on the 'Run Gemini review' and 'Run
+          # Codex review' steps below; test_claude_review_timeout.py pins
+          # the three equal.
+          OTHER_STEP_MINUTES: 10
+          MIN_HEADROOM_MINUTES: 5
+        run: |
+          case "$REVIEWER" in
+            claude) STEP_MINUTES="$CLAUDE_STEP_MINUTES"; STEP_LABEL="claude-timeout-minutes" ;;
+            # Anything else was rejected by the step above.
+            *) STEP_MINUTES="$OTHER_STEP_MINUTES"; STEP_LABEL="the $REVIEWER step cap" ;;
+          esac
+          for pair in "review-job-timeout-minutes=$JOB_MINUTES" "$STEP_LABEL=$STEP_MINUTES"; do
+            case "${pair#*=}" in
+              ""|0*|*[!0-9]*)
+                echo "::error::${pair%%=*} (${pair#*=}) must be whole minutes of at least 1, without leading zeros"
+                exit 1 ;;
+            esac
+          done
+          if [ "$JOB_MINUTES" -lt "$((STEP_MINUTES + MIN_HEADROOM_MINUTES))" ]; then
+            echo "::error::review-job-timeout-minutes ($JOB_MINUTES) must exceed $STEP_LABEL ($STEP_MINUTES) by at least $MIN_HEADROOM_MINUTES minutes so the step cap is the one that fires"
+            exit 1
+          fi
 
       # Consumer-repo checkout: needed so the codex CLI / claude action can
       # walk the workspace if the consumer wires the workflow that way.
@@ -259,7 +317,13 @@ jobs:
         if: inputs.reviewer == 'claude'
         id: claude-review
         continue-on-error: true
-        timeout-minutes: 10
+        # This is the cap that fires on a large PR ("The action has timed
+        # out." in the composite's inner step, AT-2876). An input, default
+        # 10, so the base repo's self-review can raise it for its own PRs
+        # while consumers keep today's value. The composite's api_timeout_ms
+        # (600000) is a per-request and idle cap, not a total budget, so it
+        # does not move with this one.
+        timeout-minutes: ${{ inputs.claude-timeout-minutes }}
         uses: ./.ai-dev-pr-review/.github/actions/claude-review
         with:
           github_token: ${{ github.token }}

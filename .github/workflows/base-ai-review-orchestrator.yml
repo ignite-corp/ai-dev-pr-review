@@ -17,6 +17,19 @@ on:
         required: false
         type: string
         default: ".github/prompts/code-review-checklist.md"
+      # Forwarded to the claude reviewer jobs only (AT-2876). The defaults
+      # repeat base-ai-review-single.yml's so a consumer that never sets them
+      # is unchanged; test_claude_review_timeout.py pins the two copies equal.
+      claude-timeout-minutes:
+        description: "Minutes the Claude reviewer step may run before the runner kills it"
+        required: false
+        type: number
+        default: 10
+      review-job-timeout-minutes:
+        description: "Minutes the whole reviewer job may run; forwarded to the Claude reviewer jobs only. Must exceed claude-timeout-minutes by at least 5 whole minutes so the step cap is the one that fires; the job fails at its 'Validate timeout inputs' step otherwise"
+        required: false
+        type: number
+        default: 15
     secrets:
       OPENAI_API_KEY:
         required: true
@@ -99,6 +112,8 @@ jobs:
       reviewer: claude
       pr_number: ${{ inputs.pr_number || '' }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -116,6 +131,8 @@ jobs:
       reviewer: claude
       pr_number: ${{ inputs.pr_number || '' }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}

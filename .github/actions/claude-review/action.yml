@@ -51,7 +51,9 @@ inputs:
       (API_TIMEOUT_MS) and stream idle watchdog (CLAUDE_STREAM_IDLE_TIMEOUT_MS).
       The CLI's byte-level watchdog defaults to 180000 ms on direct Anthropic
       API connections and aborts slow billed-API reviews; 600000 matches the
-      caller job's 10-minute budget.
+      default of the caller step's cap (claude-timeout-minutes, default 10,
+      AT-2876). It is a per-request and stream-idle cap, not a total budget,
+      so it does not move when a caller raises the step cap.
     required: false
     default: '600000'
   prompt:

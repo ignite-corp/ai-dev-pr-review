@@ -205,6 +205,8 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `pr_number` | string | false | `""` | `workflow_dispatch`로 트리거될 때만 필수. `pull_request`에서는 orchestrator가 `github.event.pull_request.number`를 읽음. |
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | 레포별 시스템 프롬프트의 **소비자 레포 내부** 경로. prepare 워크플로우가 프롬프트 인젝션 방지를 위해 PR head가 아닌 PR의 base 브랜치에서 `git show`로 읽음. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | 동일한 경로 의미. |
+| `claude-timeout-minutes` | number | false | `10` | Claude 리뷰어 단계가 러너에 의해 종료되기 전까지 실행될 수 있는 분 수. 기본값은 모든 소비자가 지금까지 쓰던 값이며, 이 레포 자체의 `self-review.yml`만 PR이 10분을 넘길 수 있어 올려 둠(AT-2876). |
+| `review-job-timeout-minutes` | number | false | `15` | 리뷰어 잡 전체의 상한. Claude 리뷰어 잡에만 전달됨. `claude-timeout-minutes`와 함께 올리되 항상 그보다 5분(정수) 이상 크게 유지 — 잡 상한이 아니라 단계 상한이 먼저 걸리도록. 그렇지 않으면 Claude 잡이 `Validate timeout inputs` 단계에서 실패함. |
 
 `single`과 `aggregate` 워크플로우는 추가로 리뷰어 라우팅 입력(`reviewer`, `claude_result`, `codex_result`, `gemini_result`)을 받지만, 소비자가 직접 호출하지 않습니다 — orchestrator가 연결합니다.
 
