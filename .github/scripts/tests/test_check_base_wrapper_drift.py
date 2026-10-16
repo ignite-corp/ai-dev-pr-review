@@ -59,6 +59,11 @@ Three layers:
 
 from __future__ import annotations
 
+import ast
+import contextlib
+import io
+import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -66,6 +71,8 @@ from pathlib import Path
 
 import pytest
 from check_base_wrapper_drift import (
+    GIT_COMPLAINT_ELLIPSIS,
+    GIT_COMPLAINT_QUOTE_LIMIT,
     DriftConfig,
     Exceptions,
     MalformedConfigError,
@@ -75,6 +82,8 @@ from check_base_wrapper_drift import (
     check_env_keys,
     check_vars_consumed,
     check_workflow_outputs,
+    _printable,
+    describe_input_revision,
     extract_vars_consumed,
     find_step_env_keys,
     load_correspondence,
@@ -979,6 +988,1080 @@ def test_run_exits_one_on_a_malformed_outputs_exception(tmp_path: Path) -> None:
 
 def test_run_exits_one_on_a_malformed_exceptions_file(tmp_path: Path) -> None:
     assert _run_dirs(tmp_path, with_round_cutoff=True, exceptions_text="vars:\n  SOMETHING: {}\nenv: {}\n") == 1
+
+
+# ---------------------------------------------------------------------------
+# The input-revision stamp (AT-2557)
+#
+# Wrapper PR #44 attached this check's own output as evidence of "exit 0, no
+# drift". The output was genuine -- the real tool, the real findings -- but it
+# had been produced against base v1.10.0, three weeks before the two axes the
+# PR existed to satisfy (vars.CLAUDE_ALLOWED_BOTS, AT-2272; workflow_call
+# outputs, AT-2511) reached base at all. Re-run at v1.11.2 the same pair gives
+# exit 1 with seven findings. Nothing in the attached file said which base it
+# had read, so catching it cost a four-version bisect.
+#
+# Every test below is on that one property: the output names its own inputs,
+# in every case, including the cases where the honest answer is awkward.
+# ---------------------------------------------------------------------------
+
+_GIT_ENV = {
+    **os.environ,
+    # The host's git config must not reach these fixtures: a global
+    # commit.gpgsign or a template hook would make the commit fail, and
+    # init.defaultBranch would change nothing the tests read but is pinned
+    # anyway so the fixture is the same everywhere.
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_AUTHOR_NAME": "drift test",
+    "GIT_AUTHOR_EMAIL": "drift-test@example.invalid",
+    "GIT_COMMITTER_NAME": "drift test",
+    "GIT_COMMITTER_EMAIL": "drift-test@example.invalid",
+}
+
+
+@pytest.fixture
+def git_search_ceiling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Insulate the git calls *inside the code under test* from the host.
+
+    ``describe_input_revision`` runs ``git -C <dir>``, and git walks up out of
+    ``<dir>`` looking for a checkout. Whether it finds one above ``tmp_path``
+    is a property of the host, not of the code: some CI images and container
+    setups put TMPDIR inside the workspace checkout, and the tests that assert
+    `not a git checkout` then fail against the surrounding repository's HEAD --
+    a red suite for a reason that has nothing to do with the stamp. Measured:
+    with TMPDIR inside a checkout and no ceiling, the first line reads
+    `@ <workspace sha> (no tag at this commit) + 1 uncommitted path(s)`.
+
+    ``_GIT_ENV`` pins the config files but is a snapshot taken at import and
+    is passed only to the fixture-building calls; the git calls inside the
+    code under test inherit the ambient environment instead, which is what
+    ``monkeypatch`` reaches. So the config files are pinned here too, or the
+    insulation stops at the fixtures and leaves the assertions exposed to the
+    host for a second reason.
+
+    Historical, and no longer reproducible against this code: a host-global
+    `core.excludesFile` naming `*.yml` once turned
+    `test_stamp_reports_an_untracked_file_in_the_input` and
+    `test_stamp_counts_every_file_in_an_untracked_directory` red, the
+    fifty-file case stamping with no dirt at all. That was measured before
+    the dirt probe took `--ignored`. It now reports ignored paths as `!!`
+    entries, `-uall` expands them one per file, and the counts hold -- so
+    the same config leaves both tests green. Re-measured with the pins
+    removed: `core.excludesFile` naming `*.yml`, the same naming `*.yml` and
+    `*.swp`, `status.showUntrackedFiles = no` (overridden by the explicit
+    `-uall`) and `core.quotePath = true` all leave both green. The control
+    for that negative is the same `*.yml` config against the probe with
+    `--ignored` taken out, which still turns both red, and `git config
+    --get core.excludesFile` returning the planted path -- so the sweep
+    reached git and found nothing, rather than never reaching it.
+
+    The pins stay because four variables leaving the assertions alone is not
+    a proof that none can, and the insulation costs two lines; what is
+    withdrawn is the claim that a specific one currently bites.
+    """
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+
+
+def _fixture_git(path: Path, *args: str) -> str:
+    result = subprocess.run(
+        ("git", "-C", str(path), *args),
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_GIT_ENV,
+    )
+    return result.stdout.strip()
+
+
+def _break_git_on_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fails: str = "",
+    fails_message: str = "forced git failure",
+    hangs: str = "",
+    garbles: str = "",
+) -> None:
+    """Put a passthrough ``git`` on PATH that makes one subcommand really fail.
+
+    The failure branches are about what ``_git`` returns when the subprocess
+    itself goes wrong, so the subprocess is made to go wrong: the shim exits
+    128 for ``fails``, sleeps past the timeout for ``hangs``, writes
+    undecodable bytes on stderr for ``garbles``, and execs the real git for
+    everything else. Patching ``_git``'s return instead would assert against
+    the stub and leave the real failure path unproven -- and for ``garbles``
+    it would miss the point entirely, since the decode happens inside
+    ``subprocess.run`` and that is the thing under test.
+
+    Install it *after* the fixture repository is built, or the fixture's own
+    git calls hit the shim too.
+    """
+    real = shutil.which("git")
+    assert real is not None, "these tests need a real git on PATH"
+    # exist_ok, so a test can re-plant the shim with a different message;
+    # the file is overwritten and the PATH entry is simply prepended again.
+    bindir = tmp_path / "shim-bin"
+    bindir.mkdir(exist_ok=True)
+    # Every interpolation that becomes shell source is shlex.quote'd, and
+    # a test enumerates them so the word "every" is checked rather than
+    # asserted. Unquoted, a
+    # message carrying `$`, a backtick, a backslash or a double quote -- the
+    # shape of a realistic git complaint, `... at "$HOME/x"` -- is expanded
+    # or terminates the word, and the shim then emits something other than
+    # what the test planted while the assertion still passes against the
+    # wrong string. Measured: `fatal: ... at "$HOME/x"` came out as
+    # `fatal: ... at /home/SENTINEL/x`, quotes eaten and $HOME expanded. A
+    # guard that can quietly check something other than what it names is
+    # worse than no guard. `printf %s\n` rather than `echo` for the same
+    # reason: dash's echo interprets backslash escapes.
+    guards: list[str] = []
+    if fails:
+        guards.append(
+            f"  if [ \"$a\" = {shlex.quote(fails)} ]; then"
+            f" printf '%s\\n' {shlex.quote(fails_message)} >&2; exit 128; fi"
+        )
+    if hangs:
+        # `exec`, so the sleep *replaces* the shell and the kill that ends the
+        # timeout lands on the process actually holding the inherited stdout
+        # and stderr pipes. As a child of /bin/sh it survives instead: measured
+        # on this tree, 3 runs out of 3 left an orphaned `sleep` reparented to
+        # init, against 0 out of 3 with `exec`. It costs no wall time here --
+        # both forms measure 1.01s against a 1s timeout, because CPython's
+        # POSIX branch calls process.wait() on the direct child rather than
+        # communicate(); it is communicate()-after-kill, the Windows branch,
+        # that would block on the orphan's pipes. Leaking a process per run is
+        # reason enough, and `exec` also keeps that branch honest.
+        guards.append(f"  if [ \"$a\" = {shlex.quote(hangs)} ]; then exec sleep 5; fi")
+    if garbles:
+        # A lone 0x80 is not valid UTF-8, so a strict decode of this stderr
+        # raises UnicodeDecodeError inside subprocess.run -- which is where
+        # the decode happens under `text=True`.
+        guards.append(
+            f"  if [ \"$a\" = {shlex.quote(garbles)} ];"
+            f" then printf 'fatal: \\200\\200 bad\\n' >&2; exit 128; fi"
+        )
+    shim = bindir / "git"
+    shim.write_text(
+        "#!/bin/sh\nfor a in \"$@\"; do\n" + "\n".join([*guards, "  :"]) + f'\ndone\nexec {shlex.quote(real)} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+
+def _committed_base(tmp_path: Path, *, tag: str = "") -> tuple[Path, str]:
+    """The prologue every stamp test shares: a committed one-file input dir.
+
+    Returns the directory and its HEAD, so a test that needs more -- a
+    `.gitignore` before the commit, an extra file after it -- builds on the
+    returned path rather than restating the four lines.
+    """
+    base = tmp_path / "base"
+    base.mkdir()
+    _write(base / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+    return base, _commit_as_repo(base, tag=tag)
+
+
+def _commit_as_repo(path: Path, *, tag: str = "") -> str:
+    """Turn ``path`` into a git checkout with its contents committed."""
+    subprocess.run(
+        ("git", "init", "-q", "--initial-branch=main", str(path)),
+        check=True,
+        capture_output=True,
+        env=_GIT_ENV,
+    )
+    _fixture_git(path, "add", "-A")
+    _fixture_git(path, "commit", "-q", "-m", "fixture")
+    if tag:
+        _fixture_git(path, "tag", tag)
+    return _fixture_git(path, "rev-parse", "HEAD")
+
+
+def _stamped_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    with_round_cutoff: bool = True,
+    base_tag: str = "",
+    base_is_repo: bool = True,
+    dirty: bool = False,
+) -> tuple[int, list[str]]:
+    """Run the check on a synthetic pair and return (exit code, output lines)."""
+    base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
+    base_dir.mkdir()
+    wrapper_dir.mkdir()
+    _write(base_dir / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+    (wrapper_dir / "wrapper.yml").write_text(_wrapper_yml(with_round_cutoff=with_round_cutoff), encoding="utf-8")
+    if base_is_repo:
+        _commit_as_repo(base_dir, tag=base_tag)
+    if dirty:
+        (base_dir / "base-ai-review-single.yml").write_text(
+            textwrap.dedent(_BASE_SINGLE_YML) + "# edited after the commit\n", encoding="utf-8"
+        )
+    correspondence = tmp_path / "correspondence.yml"
+    _write_correspondence(correspondence)
+    exceptions = tmp_path / "exceptions.yml"
+    exceptions.write_text("vars: {}\nenv: {}\n", encoding="utf-8")
+    code = run(base_dir, wrapper_dir, correspondence, exceptions)
+    return code, capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_run_stamps_the_base_revision_on_the_first_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The negative test for AT-2557, and the whole ticket in one assertion.
+
+    The positive control is the last line: `no undeclared base<->wrapper
+    drift found` is what this pair printed before the stamp existed and must
+    still print, so a green first line cannot be an artefact of the check
+    having stopped producing output at all.
+    """
+    code, lines = _stamped_run(tmp_path, capsys, base_tag="v9.9.9")
+    head = _fixture_git(tmp_path / "base", "rev-parse", "HEAD")
+
+    assert lines[0].startswith("base input revision:")
+    assert head in lines[0]
+    assert "tag v9.9.9" in lines[0]
+
+    assert code == 0
+    assert lines[-1] == "no undeclared base<->wrapper drift found"
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_run_stamps_the_wrapper_revision_too(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The check reads two trees, and either going stale produces the same
+    hollow pass; stamping only the one this incident happened to involve
+    would leave the other half unreadable."""
+    _, lines = _stamped_run(tmp_path, capsys)
+    assert lines[1].startswith("wrapper input revision:")
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_names_a_tag_that_points_at_the_commit(tmp_path: Path) -> None:
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    stamp = describe_input_revision(base)
+    assert head in stamp
+    assert "tag v1.11.2" in stamp
+    assert "uncommitted" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_no_tag_rather_than_guessing_a_nearby_one(tmp_path: Path) -> None:
+    """A detached commit with no tag on it prints the SHA and says so.
+
+    Deliberately not `git describe`'s nearest-tag form: `v1.11.2-3-gabc1234`
+    reads as v1.11.2 at a glance, and a near-miss revision passing for the
+    right one is the defect this stamp exists to close.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+    (base / "base-ai-review-single.yml").write_text(textwrap.dedent(_BASE_SINGLE_YML) + "# later\n", encoding="utf-8")
+    _fixture_git(base, "commit", "-q", "-am", "a commit after the tag")
+    later = _fixture_git(base, "rev-parse", "HEAD")
+
+    stamp = describe_input_revision(base)
+    assert later in stamp
+    assert head not in stamp
+    assert "no tag at this commit" in stamp
+    assert "v1.11.2" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_reports_an_uncommitted_change_in_the_input(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A dirty tree makes the SHA a half-truth: the file the check read is
+    not the file that SHA names. Saying only the SHA would be the same
+    hollow pass one layer down."""
+    _, lines = _stamped_run(tmp_path, capsys, base_tag="v9.9.9", dirty=True)
+    assert "uncommitted" in lines[0]
+    # Still names the commit it departs from -- the stamp narrows the search,
+    # it does not refuse to answer.
+    assert _fixture_git(tmp_path / "base", "rev-parse", "HEAD") in lines[0]
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_reports_an_untracked_file_in_the_input(tmp_path: Path) -> None:
+    """Untracked counts as dirty: a workflow file added but not committed is
+    read by the check and is in no commit, so the SHA does not describe the
+    input. It covers only what `git status` reports, which is why the two
+    tests below exist: an ignored path is invisible to it."""
+    base, _ = _committed_base(tmp_path)
+    _write(base / "base-ai-review-extra.yml", "jobs: {}\n")
+
+    assert "uncommitted" in describe_input_revision(base)
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_refuses_to_credit_a_checkout_for_an_ignored_artefact_directory(tmp_path: Path) -> None:
+    """An artefact unpacked into an ignored location names no revision.
+
+    `git status` says nothing about ignored paths, so a directory under
+    `build/` reads as clean while `rev-parse` has already walked up and
+    answered with the surrounding repository's HEAD -- which would stamp that
+    commit's SHA and tag onto files it never contained. That is AT-2557's own
+    defect one layer down, and it is the case the untracked-file test above
+    does not reach.
+
+    The positive control is the tracked directory in the same checkout: it
+    must still get the SHA and the tag, so a green assertion here cannot come
+    from the stamp having stopped naming revisions at all.
+    """
+    checkout = tmp_path / "checkout"
+    tracked = checkout / ".github" / "workflows"
+    tracked.mkdir(parents=True)
+    _write(tracked / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+    (checkout / ".gitignore").write_text("build/\n", encoding="utf-8")
+    head = _commit_as_repo(checkout, tag="v1.11.2")
+
+    artefact = checkout / "build" / "unpacked-base"
+    artefact.mkdir(parents=True)
+    _write(artefact / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+
+    stamp = describe_input_revision(artefact)
+    assert "no tracked content here" in stamp
+    assert head not in stamp
+    assert "v1.11.2" not in stamp
+
+    control = describe_input_revision(tracked)
+    assert head in control
+    assert "tag v1.11.2" in control
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_counts_an_ignored_artefact_beside_tracked_workflow_files(tmp_path: Path) -> None:
+    """The case `--ignored` exists to close, and the one `ls-files` cannot.
+
+    The tracked-content probe catches a directory with *nothing* tracked in
+    it. A directory holding real tracked workflow files *and* an unpacked
+    artefact under an ignored path sails through it, and plain `git status`
+    is silent about the ignored half -- so the stamp printed a SHA and a tag
+    for a tree it had only partly looked at. That is this ticket's defect in
+    the configuration that is actually common: a checkout, with something
+    extra dropped into it.
+
+    The positive control is the clean-directory assertion first: the same
+    fixture with nothing planted stamps no dirt at all, so the count below
+    is the artefact and not a fixture that was dirty to begin with.
+
+    Several files, not one. With a single planted file a per-file count and
+    a per-directory `!! unpacked/` count are both 1, so the assertion could
+    not tell them apart and passed either way -- measured: at one planted
+    file `--ignored -uall` and `--ignored` alone both report 1, and they
+    diverge only from two upwards. Per-file expansion *inside an ignored
+    directory* rests on `--ignored` and `-uall` together, which the
+    fifty-file test cannot show because its artefact is merely untracked.
+    Were that interaction to change, a fifty-file artefact under an ignored
+    path would report `1 uncommitted path(s)` -- the exact understatement
+    the dirt probe's own comment says `-uall` prevents.
+    """
+    base = tmp_path / "base"
+    base.mkdir()
+    _write(base / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+    (base / ".gitignore").write_text("unpacked/\n", encoding="utf-8")
+    head = _commit_as_repo(base, tag="v1.11.2")
+
+    # Control: tracked content, nothing extra, no dirt.
+    clean = describe_input_revision(base)
+    assert "uncommitted" not in clean
+    assert head in clean and "tag v1.11.2" in clean
+
+    unpacked = base / "unpacked"
+    unpacked.mkdir()
+    planted = [unpacked / f"base-ai-review-{index:02d}.yml" for index in range(4)]
+    for artefact in planted:
+        _write(artefact, "jobs: {}\n")
+
+    stamp = describe_input_revision(base)
+    # Derived from the plant rather than written out, so the two cannot
+    # drift apart if someone changes how many files the fixture lays down.
+    assert f"{len(planted)} uncommitted path(s)" in stamp
+    # Still names the commit; the stamp narrows the search rather than
+    # refusing to answer. And it is not the no-tracked-content line: this
+    # directory does track files, which is precisely why `ls-files` passes.
+    assert head in stamp
+    assert "no tracked content here" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_counts_routine_ignored_files_too_which_is_the_accepted_cost(tmp_path: Path) -> None:
+    """Counting ignored paths also counts `__pycache__` and swapfiles.
+
+    This test used to assert the opposite, and the reversal is deliberate.
+    An earlier round rejected `--ignored` because it reported routine build
+    noise as input dirt, on the strength of 7 such paths under this repo's
+    `.github/scripts`. But `.github/scripts` is not an input to this check:
+    the directories it is given are `.github/workflows`, and re-measured
+    there, `--porcelain --ignored -uall` reports 0 paths against 61 for
+    `.github/scripts` -- nothing writes build artefacts next to workflow
+    YAML. The control for that zero is that planting one `__pycache__`
+    under `.github/workflows` takes it to 1, so the zero is a clean
+    directory rather than a command that silently reported nothing.
+
+    So the noise this test once guarded against does not occur on the real
+    inputs, while the case the previous test covers does. The over-reporting
+    kept here is the price, and it errs toward saying the tree was not fully
+    accounted for -- the safe direction for a stamp whose whole purpose is
+    to stop an output reading better than its evidence.
+    """
+    base = tmp_path / "base"
+    base.mkdir()
+    _write(base / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+    (base / ".gitignore").write_text("__pycache__/\n*.swp\n", encoding="utf-8")
+    head = _commit_as_repo(base, tag="v1.11.2")
+    (base / "__pycache__").mkdir()
+    (base / "__pycache__" / "helper.cpython-313.pyc").write_bytes(b"\x00")
+    (base / ".base-ai-review-single.yml.swp").write_bytes(b"\x00")
+
+    stamp = describe_input_revision(base)
+    assert "2 uncommitted path(s)" in stamp
+    assert head in stamp
+    assert "tag v1.11.2" in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_counts_every_file_in_an_untracked_directory(tmp_path: Path) -> None:
+    """Fifty unpacked files are fifty, not one `?? unpacked/` entry.
+
+    `--untracked-files=normal`, git's default, collapses an untracked
+    directory into a single porcelain line, so an artefact directory of fifty
+    files reported `1 uncommitted path(s)` and understated how far the tree
+    the check read had departed from the commit the same line names. The
+    number is there to say how much of the input the SHA does not cover, so
+    it has to be a count of what was read.
+
+    The control for the flag not having simply made everything dirty is the
+    clean-directory assertion in the ignored-artefact test above: the same
+    `--ignored -uall` reports no dirt there until something is planted.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+    unpacked = base / "unpacked"
+    unpacked.mkdir()
+    for index in range(50):
+        _write(unpacked / f"base-ai-review-{index:02d}.yml", "jobs: {}\n")
+
+    stamp = describe_input_revision(base)
+    assert "50 uncommitted path(s)" in stamp
+    assert head in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_tracked_content_probe_failed_rather_than_that_nothing_is_tracked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed `ls-files` is not an empty one.
+
+    `_git` answers None for git missing, a non-zero exit and a timeout alike,
+    so testing the probe's result for falsity read every one of them as "no
+    tracked content here, so the nearest checkout's HEAD does not describe
+    it" -- a positive claim about a tree nothing had looked at, which also
+    discarded a SHA `rev-parse` had already resolved. An output reading
+    better than the evidence behind it is the defect AT-2557 exists to stop,
+    so it may not be the one this fix introduces.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    # Positive control: content really is tracked here, so "no tracked
+    # content" is false of this directory however the probe ends up going.
+    assert "no tracked content" not in describe_input_revision(base)
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="ls-files")
+    stamp = describe_input_revision(base)
+
+    assert "tracked-content check failed" in stamp
+    assert "no tracked content here" not in stamp
+    assert head in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_tracked_content_probe_failed_when_it_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The timeout branch of the same conflation, which is the likelier one:
+    a non-zero exit needs a broken checkout, while a stalled git needs only a
+    slow or contended filesystem on a CI runner."""
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    monkeypatch.setattr("check_base_wrapper_drift.GIT_TIMEOUT_SECONDS", 1)
+    _break_git_on_path(tmp_path, monkeypatch, hangs="ls-files")
+    stamp = describe_input_revision(base)
+
+    assert "tracked-content check failed" in stamp
+    assert "no tracked content here" not in stamp
+    assert head in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_tag_lookup_failed_rather_than_that_there_is_no_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same conflation one line down: `no tag at this commit` asserted the
+    absence of a tag that was never successfully queried. Here the tag exists,
+    so the old wording was not merely unsupported but wrong."""
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    # Positive control: the tag is on this very commit.
+    assert "tag v1.11.2" in describe_input_revision(base)
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="--points-at")
+    stamp = describe_input_revision(base)
+
+    assert "tag lookup failed" in stamp
+    assert "no tag at this commit" not in stamp
+    assert head in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_tag_lookup_failed_when_it_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The timeout half of the tag probe, which was the one gap in the grid.
+
+    The three other probes each had both failure modes tested; this one had
+    only the non-zero exit, while a docstring two tests down claimed all of
+    them were covered on both. The claim was wider than the suite, in a file
+    whose subject is claims wider than their evidence, so the sibling is
+    added rather than the claim narrowed -- the timeout is as reachable here
+    as anywhere, since `tag --points-at` scans the whole refs namespace.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    # Positive control: the tag really is on this commit, so "no tag" would
+    # be false of it whatever the probe does.
+    assert "tag v1.11.2" in describe_input_revision(base)
+
+    monkeypatch.setattr("check_base_wrapper_drift.GIT_TIMEOUT_SECONDS", 1)
+    _break_git_on_path(tmp_path, monkeypatch, hangs="--points-at")
+    stamp = describe_input_revision(base)
+
+    assert "tag lookup failed" in stamp
+    assert "no tag at this commit" not in stamp
+    assert head in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_dirt_check_failed_rather_than_reporting_a_clean_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third probe's failure branch, which had only the docstring behind it.
+
+    `status is None` was the one branch of the three with no test: collapsing
+    it into the clean branch left the whole suite green while the stamp
+    printed a bare `@ <sha> (tag v1.11.2)` for a tree nobody had managed to
+    inspect. Measured against that mutant on a genuinely dirty fixture, the
+    honest line reads `+ 1 uncommitted path(s) ...` and the mutant's reads
+    `@ <sha> (tag v1.11.2)` -- an overstatement of exactly the kind this
+    ticket exists to stop, hidden by the asymmetry in the tests rather than
+    by anything in the code.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+    # Genuinely dirty, so "clean" is false of this tree however the probe goes
+    # -- the positive control for the assertion below.
+    (base / "base-ai-review-single.yml").write_text(
+        textwrap.dedent(_BASE_SINGLE_YML) + "# edited after the commit\n", encoding="utf-8"
+    )
+    assert "1 uncommitted path(s)" in describe_input_revision(base)
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="status")
+    stamp = describe_input_revision(base)
+
+    assert "uncommitted-change check failed" in stamp
+    assert "uncommitted path(s)" not in stamp
+    assert head in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_dirt_check_failed_when_it_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The timeout variant. `status` is the likeliest of the four to stall:
+    it is the only one that has to stat the whole working tree.
+
+    This docstring used to claim all three probes were covered identically
+    on both failure modes, which was false -- `tag --points-at` had only the
+    non-zero exit. The grid is now complete for all four, and the way to
+    check that is to grep the suite for `fails=` and `hangs=` and see each
+    probe named twice, rather than to trust this sentence."""
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+    (base / "base-ai-review-single.yml").write_text(
+        textwrap.dedent(_BASE_SINGLE_YML) + "# edited after the commit\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr("check_base_wrapper_drift.GIT_TIMEOUT_SECONDS", 1)
+    _break_git_on_path(tmp_path, monkeypatch, hangs="status")
+    stamp = describe_input_revision(base)
+
+    assert "uncommitted-change check failed" in stamp
+    assert "uncommitted path(s)" not in stamp
+    assert head in stamp
+
+
+def test_every_shell_interpolation_in_the_shim_is_quoted() -> None:
+    """The helper's comment says "every", so this is what makes that true.
+
+    It said "every" while `shutil.which("git")` went in raw on the `exec`
+    line -- a universal claim wider than the code, in the file whose subject
+    is that mismatch. Prose cannot hold the claim as the helper grows, so it
+    is enumerated here instead: every formatted value inside
+    `_break_git_on_path` must pass through `shlex.quote`.
+
+    Denies by default. A new interpolation is a failure until it is quoted
+    or explicitly added to the waiver below, rather than passing unnoticed
+    because nobody re-read the comment.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_break_git_on_path"
+    )
+    # Only the expressions that become shell *source*: the guard lines and
+    # the script written to disk. The PATH value handed to monkeypatch.setenv
+    # is also an f-string in this function, and quoting it would be wrong --
+    # it is an environment value, never parsed by a shell. Scoping the check
+    # to the claim keeps it from flagging something it does not mean.
+    shell_text = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) in {"guards.append", "shim.write_text"}
+    ]
+    formatted = [n for call in shell_text for n in ast.walk(call) if isinstance(n, ast.FormattedValue)]
+    unquoted = [
+        ast.unparse(n.value) for n in formatted if not ast.unparse(n.value).startswith("shlex.quote(")
+    ]
+
+    assert not unquoted, f"unquoted shell interpolation(s): {unquoted}"
+    # Control: the walk really found interpolations, so an empty `unquoted`
+    # means they were all quoted and not that none were seen.
+    assert len(formatted) >= 5, f"expected the shim's interpolations, saw {len(formatted)}"
+
+
+def test_printable_survives_an_encoding_that_cannot_hold_the_text() -> None:
+    """The stamp's own `print` is on the pre-try path too.
+
+    Found by enumerating that path rather than by review: `errors="replace"`
+    puts U+FFFD into the quoted complaint, and an ASCII-only stdout -- which
+    CI images do have -- then makes `print` raise UnicodeEncodeError before
+    `run`'s `try`, losing the line the same way the decode and the stat did.
+    Measured: U+FFFD through an `ascii`/`strict` writer raises; through
+    `backslashreplace` it does not.
+
+    The control is the UTF-8 case: a non-ASCII path must still print as
+    itself, or the fix would have cost legibility everywhere to protect one
+    locale.
+    """
+    text = "base input revision: /x @ git said: fatal: \ufffd\ufffd bad"
+
+    def writer(encoding: str) -> io.TextIOWrapper:
+        return io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors="strict")
+
+    # The unprotected text really does raise on an ASCII stdout: without this
+    # the rest of the test would pass against a problem that is not there.
+    with pytest.raises(UnicodeEncodeError):
+        print(text, file=writer("ascii"))
+
+    ascii_out = writer("ascii")
+    with contextlib.redirect_stdout(ascii_out):
+        safe = _printable(text)
+    print(safe, file=ascii_out)  # must not raise
+    assert "bad" in safe
+    assert "\ufffd" not in safe
+
+    # Control: a UTF-8 stdout leaves the text exactly as it was, so the
+    # escaping is paid for only where it is needed.
+    utf8_out = writer("utf-8")
+    with contextlib.redirect_stdout(utf8_out):
+        assert _printable(text) == text
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_the_shim_emits_exactly_the_message_it_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must plant what it says it planted.
+
+    `_break_git_on_path` interpolates into `/bin/sh`. Unquoted, a message
+    carrying a `$` or a double quote -- the shape of a real git complaint,
+    `... at "$HOME/x"` -- is expanded or terminates the word. Measured
+    before the fix, with HOME set to a sentinel: the shim emitted
+    `fatal: ... at /home/SENTINEL/x`, quotes eaten and the variable
+    expanded, while an assertion naming the planted text would have been
+    checking a different string and could still pass.
+
+    So this asserts byte-for-byte equality rather than containment: a
+    substring check is exactly what would not notice the substitution.
+    """
+    base, _ = _committed_base(tmp_path)
+    tricky = 'fatal: dubious ownership at "$HOME/x" `id` \\n end'
+    monkeypatch.setenv("HOME", "/home/SENTINEL")
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="rev-parse", fails_message=tricky)
+    stamp = describe_input_revision(base)
+
+    quoted = stamp.split("git said: ", 1)[1]
+    assert quoted == tricky, f"shim emitted {quoted!r}, not the planted {tricky!r}"
+    # The sentinel must not appear: its presence would mean $HOME expanded.
+    assert "SENTINEL" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_marks_a_complaint_whose_later_lines_were_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A multi-line complaint quoted at one line must say so.
+
+    The character cut carries a marker; the line cut did not. On the
+    dubious-ownership case the module cites, git writes four lines and the
+    three dropped ones carry the remediation
+    (`git config --global --add safe.directory <path>`), so the stamp
+    presented a fragment as the whole complaint -- the same
+    elision-without-a-marker, one axis over.
+
+    The control is the single-line complaint asserted first: a complaint
+    with nothing dropped must carry no line marker, or the marker would be
+    noise rather than information.
+    """
+    base, _ = _committed_base(tmp_path)
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="rev-parse", fails_message="fatal: just one line")
+    single = describe_input_revision(base)
+    assert "more line(s)" not in single
+
+    # Re-plant rather than monkeypatch.undo(): undo would also roll back the
+    # fixture's GIT_CONFIG_* and ceiling pins and expose this to the host.
+    _break_git_on_path(
+        tmp_path, monkeypatch, fails="rev-parse", fails_message="fatal: first\nsecond\nthird"
+    )
+    stamp = describe_input_revision(base)
+
+    assert "fatal: first" in stamp
+    assert "(+2 more line(s))" in stamp
+    assert GIT_COMPLAINT_ELLIPSIS in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_it_could_not_inspect_when_the_path_cannot_be_resolved(tmp_path: Path) -> None:
+    """`resolve()` is a filesystem call too, and it runs before the stat.
+
+    A symlink loop makes `Path.resolve()` raise `RuntimeError: Symlink loop
+    from '...'` -- not an `OSError`, so catching only that would have missed
+    it. Measured before the fix: a traceback and no revision line, the same
+    invariant the stat guard protects, one call earlier in the same
+    function, and reachable from a malformed `--base-dir`.
+
+    The stamp names the *unresolved* path, because when resolution is what
+    failed there is no resolved name to report. The control is the first
+    assertion: an ordinary directory still resolves and stamps normally.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+    assert head in describe_input_revision(base)
+
+    looping = tmp_path / "loop-a"
+    other = tmp_path / "loop-b"
+    looping.symlink_to(other)
+    other.symlink_to(looping)
+
+    stamp = describe_input_revision(looping)
+    assert "could not be inspected" in stamp
+    assert str(looping) in stamp
+    assert "no such directory" not in stamp
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses the permission check this exercises")
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_it_could_not_inspect_rather_than_that_nothing_is_there(tmp_path: Path) -> None:
+    """A stat that could not be performed is not a stat that said "absent".
+
+    The rule the other probes follow -- a probe that could not run says so,
+    never its negative answer -- did not reach the `exists()`/`is_dir()`
+    pair, which cannot express "I could not look". With the parent directory
+    chmod 000, `Path.exists()` does not quietly return False: EACCES is not
+    in `pathlib`'s ignored-errno set (ENOENT, EBADF, ENOTDIR, ELOOP), so the
+    PermissionError propagated out of `describe_input_revision` and reached
+    the stamp's `print` in `run`, which sits before `run`'s own `try`.
+    Measured before the fix: a traceback and no stamp line at all, in the
+    one check that runs before any git probe.
+
+    Two controls, because this test asserts about a directory nobody can
+    read: the target is confirmed present before the parent is locked, and
+    the "no such directory" wording is asserted absent -- the failure must
+    not be folded into the missing case it sits next to.
+    """
+    parent = tmp_path / "locked"
+    target = parent / "workflows"
+    target.mkdir(parents=True)
+    _write(target / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+    assert target.is_dir(), "control: the directory is really there before locking"
+
+    parent.chmod(0o000)
+    try:
+        stamp = describe_input_revision(target)
+    finally:
+        # Restore before pytest's own tmp_path cleanup walks it.
+        parent.chmod(0o755)
+
+    assert "could not be inspected" in stamp
+    assert "no such directory" not in stamp
+    assert str(target) in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_marks_a_git_complaint_it_had_to_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clipped complaint must not read as git's whole sentence.
+
+    `complaint` caps the quoted line, and cutting silently prints a sentence
+    ending mid-word as though that were all git said -- an output reading
+    more complete than it is, which is this module's subject. The real case
+    is `detected dubious ownership in repository at '<long path>'`, which
+    runs past the cap on any deeply nested checkout.
+
+    The control is the short-complaint test elsewhere in this file: an
+    uncut complaint must carry no marker, or the marker would say nothing.
+    """
+    base, _ = _committed_base(tmp_path)
+    long_message = "fatal: " + ("x" * (GIT_COMPLAINT_QUOTE_LIMIT * 2))
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="rev-parse", fails_message=long_message)
+    stamp = describe_input_revision(base)
+
+    assert stamp.endswith(GIT_COMPLAINT_ELLIPSIS)
+    # The quoted part is capped, and the marker is extra rather than eating
+    # into the quota -- so the reader sees the cap's worth of git's words.
+    quoted = stamp.split("git said: ", 1)[1]
+    assert len(quoted) == GIT_COMPLAINT_QUOTE_LIMIT + len(GIT_COMPLAINT_ELLIPSIS)
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_pluralises_when_two_tags_point_at_the_commit(tmp_path: Path) -> None:
+    """`tag v1.11.2, latest` invites reading the second name as not-a-tag.
+
+    A release commit routinely carries its version tag and a moving one, so
+    the plural case is ordinary rather than exotic -- and it was unexercised:
+    the existing tag test plants exactly one, which cannot tell the singular
+    wording from a correct plural one.
+
+    The control is the single-tag assertion first: "tag" must stay singular
+    where there is one, or this would be a rename rather than a plural.
+    """
+    base, _ = _committed_base(tmp_path, tag="v1.11.2")
+    single = describe_input_revision(base)
+    assert "(tag v1.11.2)" in single
+
+    _fixture_git(base, "tag", "latest")
+
+    stamp = describe_input_revision(base)
+    assert "tags " in stamp
+    assert "v1.11.2" in stamp and "latest" in stamp
+    assert "(tag v" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_survives_undecodable_bytes_from_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Undecodable stderr must not take the stamp line away.
+
+    `_git_run` runs git under `text=True`, so the decode happens inside
+    `subprocess.run`. git does not promise UTF-8 -- a path or a ref can
+    carry arbitrary bytes -- and a strict decode then raises
+    `UnicodeDecodeError`, which is a `ValueError` and so escaped a handler
+    catching only `(OSError, subprocess.SubprocessError)`. It escaped
+    `describe_input_revision` too, and reached the stamp's `print` in `run`,
+    which sits *before* `run`'s own `try`. Measured before the fix: a
+    traceback and no stamp line at all, against this function's own promise
+    that every branch produces text -- the exact shape AT-2557 exists to
+    stop, since an output missing its first line looks like a good one.
+
+    The control is the clean stamp taken first: the same fixture produces a
+    real revision line, so a line appearing below is the fix and not a
+    fixture that was degenerate to begin with.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    control = describe_input_revision(base)
+    assert head in control and "tag v1.11.2" in control
+
+    _break_git_on_path(tmp_path, monkeypatch, garbles="rev-parse")
+    stamp = describe_input_revision(base)
+
+    # A line, not an exception -- and one that still names the directory.
+    assert stamp
+    assert str(base) in stamp
+    # git's complaint comes through with the undecodable bytes replaced,
+    # rather than being dropped or taking the line with it.
+    assert "no revision resolved here" in stamp
+    assert "bad" in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_no_such_directory_rather_than_not_a_git_checkout(tmp_path: Path) -> None:
+    """A path that is not there is not a path without a checkout.
+
+    `git -C <missing> rev-parse HEAD` exits 128 with empty stdout, exactly
+    as it does for a real directory that no checkout covers, so both landed
+    on "not a git checkout (or no commit yet)". `Path.resolve()` does not
+    raise for a missing path and the stamp prints before `run`'s own error
+    handling, so nothing else caught it. Measured before the fix, the two
+    stamps were identical after the path itself -- which makes a mistyped
+    `--base-dir` read as a successfully-inspected directory that happens to
+    hold no checkout, and that is the likeliest way this ticket's defect
+    actually reaches someone.
+
+    The control is the second stamp: a directory that *does* exist with no
+    checkout in it must still get its own distinct line, or this fix would
+    have traded one wrong sentence for another. That line now quotes git
+    rather than classifying the exit code, so the control looks for git's
+    own words.
+    """
+    missing = tmp_path / "typo-in-base-dir" / "workflows"
+    assert not missing.exists()
+
+    stamp = describe_input_revision(missing)
+    assert "no such directory" in stamp
+    assert "git said" not in stamp
+
+    present_without_checkout = tmp_path / "unpacked-tarball"
+    present_without_checkout.mkdir()
+    _write(present_without_checkout / "base-ai-review-single.yml", _BASE_SINGLE_YML)
+
+    control = describe_input_revision(present_without_checkout)
+    assert "no revision resolved here" in control
+    assert "not a git repository" in control
+    assert "no such directory" not in control
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_not_a_directory_separately_from_missing(tmp_path: Path) -> None:
+    """A path that exists and is not a directory is a third fact.
+
+    `is_dir()` is false both for an absent path and for a file, a symlink to
+    a file or a device node, so `--base-dir` aimed at a single workflow file
+    -- an easy slip, since the surrounding tooling takes both -- was stamped
+    "no such directory", which is simply false about the filesystem.
+    Measured before the split: a path with `exists()` True and `is_file()`
+    True stamped `@ no such directory, so there is nothing here to
+    describe`.
+
+    The control is the first assertion: the genuinely absent path must keep
+    its own line, so the split is a split and not a rename.
+    """
+    base, _ = _committed_base(tmp_path, tag="v1.11.2")
+
+    absent = tmp_path / "not-there"
+    assert "no such directory" in describe_input_revision(absent)
+
+    a_file = base / "base-ai-review-single.yml"
+    assert a_file.is_file()
+
+    stamp = describe_input_revision(a_file)
+    assert "exists but is not a directory" in stamp
+    assert "no such directory" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_the_head_lookup_failed_rather_than_that_this_is_no_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fourth probe, and the one that decides whether the others run.
+
+    `rev-parse` was the last site still reporting a failure as its negative
+    answer: `if not head` collapsed a timeout into "not a git checkout",
+    which is a claim about the directory that a git which never ran cannot
+    support. Measured before the fix, with `rev-parse` timing out against a
+    checkout tagged v1.11.2, the stamp read
+    `@ not a git checkout (or git unavailable, or no commit yet)` -- the
+    worst of the four to guess at, because it is the one branch that
+    suppresses the SHA, the tag and the dirt count all at once.
+    """
+    base, head = _committed_base(tmp_path, tag="v1.11.2")
+
+    # Positive control: this directory really is a checkout at a tag, so
+    # "not a git checkout" is false of it however the probe ends up going.
+    control = describe_input_revision(base)
+    assert head in control and "tag v1.11.2" in control
+
+    monkeypatch.setattr("check_base_wrapper_drift.GIT_TIMEOUT_SECONDS", 1)
+    _break_git_on_path(tmp_path, monkeypatch, hangs="rev-parse")
+    stamp = describe_input_revision(base)
+
+    assert "HEAD lookup failed" in stamp
+    assert "not a git checkout" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_quotes_git_when_rev_parse_ran_and_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the split, and it quotes rather than classifies.
+
+    This test used to assert "not a git checkout" here, on the premise that a
+    non-zero `rev-parse` has answered that there is no HEAD. The premise was
+    too strong: git exits 128 for `detected dubious ownership` and for a
+    `.git` it cannot parse, both of which are checkouts, so the exit code
+    does not carry the diagnosis the sentence made. The branch now reports
+    git's own first line and claims nothing -- which still distinguishes the
+    cases, because git's words differ even where its exit code does not.
+
+    The shim's complaint stands in for whatever git would have said; the
+    stamp must carry it through rather than replace it with a conclusion.
+    """
+    base, _ = _committed_base(tmp_path)
+
+    _break_git_on_path(tmp_path, monkeypatch, fails="rev-parse")
+    stamp = describe_input_revision(base)
+
+    assert "no revision resolved here" in stamp
+    assert "forced git failure" in stamp
+    assert "not a git checkout" not in stamp
+    assert "HEAD lookup failed" not in stamp
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_says_so_when_the_input_is_not_a_git_checkout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An unpacked tarball or an artefact directory has no revision to name.
+
+    It must say that in words. A stamp that prints nothing here rebuilds the
+    hole it exists to close: the reader sees a line-less output and has no
+    way to tell "no revision" from "revision not asked for".
+
+    The words are git's own since the branch stopped classifying exit codes,
+    and for this case git's are `fatal: not a git repository` -- so the
+    plainest reading of the commonest finding survived the change to
+    quoting, which is the thing worth asserting here.
+    """
+    _, lines = _stamped_run(tmp_path, capsys, base_is_repo=False)
+    assert lines[0].startswith("base input revision:")
+    assert "no revision resolved here" in lines[0]
+    assert "not a git repository" in lines[0]
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_is_printed_even_when_the_check_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The failing output gets attached as evidence too, and a reviewer
+    rebutting a finding needs the input revision at least as much."""
+    code, lines = _stamped_run(tmp_path, capsys, with_round_cutoff=False)
+    assert code == 1
+    assert lines[0].startswith("base input revision:")
+    assert "DRIFT FOUND:" in lines
+
+
+@pytest.mark.usefixtures("git_search_ceiling")
+def test_stamp_is_printed_before_a_malformed_config_aborts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    base_dir, wrapper_dir = tmp_path / "base", tmp_path / "wrapper"
+    base_dir.mkdir()
+    wrapper_dir.mkdir()
+    correspondence = tmp_path / "correspondence.yml"
+    correspondence.write_text("steps: [unclosed\n", encoding="utf-8")
+    exceptions = tmp_path / "exceptions.yml"
+    exceptions.write_text("vars: {}\nenv: {}\n", encoding="utf-8")
+
+    assert run(base_dir, wrapper_dir, correspondence, exceptions) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("base input revision:")
+    assert "malformed drift-check config" in lines[2]
 
 
 # ---------------------------------------------------------------------------

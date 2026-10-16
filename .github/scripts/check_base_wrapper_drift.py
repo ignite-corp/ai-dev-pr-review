@@ -116,22 +116,71 @@ Exit 0 = no undeclared drift. Exit 1 = drift found or the config itself is
 malformed (unresolvable step name, exception with no reason). Findings are
 printed to stdout; every string in them is already present in one of the two
 public repos' workflow files.
+
+The first two lines of stdout name the revision each input directory was read
+at, so an output saved and attached as evidence says for itself which trees it
+answered about. That is AT-2557: wrapper PR #44 attached this check's own stdout
+as evidence of "exit 0, no drift", and every part of it was genuine -- the real
+tool, run the real way, writing its real output -- but it had been produced
+against base v1.10.0, three weeks before either axis the PR existed to satisfy
+reached base. The same pair at v1.11.2 exits 1 with seven findings. Nothing in
+the file said which base it had read, so the only way to catch it was to re-run
+four candidate versions and compare bytes.
+
+Every branch of the stamp produces text, including the awkward ones. A stamp
+that goes quiet when there is no clean answer rebuilds exactly the hole it
+closes: the incident was an output that looked like a good one, and an output
+missing its first line looks like a good one too. The same rule governs each
+probe the stamp makes -- one that could not run says so, and never borrows the
+negative answer it did not establish. `describe_input_revision` lists what each
+branch returns; `_tag_phrase` and `_dirt_phrase` carry the measurements behind
+their own probes.
 """
 
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
 from re import compile as re_compile
-from typing import Any
+from stat import S_ISDIR
+from typing import Any, NamedTuple
 
 import yaml
 
 VARS_RE = re_compile(r"vars\.([A-Z_][A-Z0-9_]*)")
+
+# One line of git's own stderr is quoted when a probe exits non-zero, so the
+# cap is a log-hygiene bound rather than a semantic one: enough for git's
+# fatal messages, short of letting an unexpected flood into Actions output.
+GIT_COMPLAINT_QUOTE_LIMIT = 200
+
+# Appended when the cap above actually cuts, so a clipped complaint cannot
+# read as git's whole sentence.
+GIT_COMPLAINT_ELLIPSIS = "..."
+
+# The stamp runs four of these per input directory, once per run: rev-parse,
+# ls-files, tag --points-at, status. The timeout is per call, not per stamp,
+# so the worst case is 8 calls for the two directories.
+#
+# Chosen against the job cap, not independently: `base-wrapper-drift.yml`
+# sets `timeout-minutes: 5` (300s) for a job that also pays for two checkouts
+# and a pip install. At 20s this stamp's worst case was 160s, over half the
+# budget, so a contended runner could push the job into the Actions timeout --
+# which kills it and produces no stdout at all, the line-less output this
+# stamp exists to prevent. At 5s the worst case is 40s, about an eighth.
+#
+# Lowered rather than raising the cap, because every probe here degrades
+# into an honest sentence when it times out ("tag lookup failed", and so on)
+# while the job timeout degrades into nothing. Bounding the stamp converts
+# the bad outcome into the designed one. 5s is still some three orders of
+# magnitude above what these calls cost on this input -- thirteen files in
+# one directory -- so it bounds a pathological stall, not a slow runner.
+GIT_TIMEOUT_SECONDS = 5
 
 
 class StepNotFoundError(LookupError):
@@ -222,6 +271,340 @@ class Exceptions:
     @classmethod
     def empty(cls) -> Exceptions:
         return cls(vars={}, env={}, outputs={})
+
+
+class _GitOutcome(NamedTuple):
+    """What a git call did, keeping "ran and said no" apart from "never ran".
+
+    The three probes that ask git a yes/no question only need to know whether
+    they got an answer, and use ``_git`` below. ``rev-parse`` needs the other
+    distinction: a timeout or a missing git binary says nothing at all about
+    the directory, while a non-zero exit at least means git looked. Measured
+    before that split existed: with ``rev-parse`` timing out, a checkout at a
+    tag stamped ``@ not a git checkout (or git unavailable, or no commit
+    yet)``.
+
+    ``stderr`` is carried for the same reason, one level finer. A non-zero
+    exit does *not* establish what is wrong -- see the ``rev-parse`` branch
+    in ``describe_input_revision`` -- so the caller quotes git instead of
+    classifying the exit code. Anything this type records, the caller can
+    report; nothing it records licenses a diagnosis.
+    """
+
+    ran: bool
+    """The process completed, whatever it exited with. False = timeout, or
+    git could not be executed at all."""
+    returncode: int
+    """-1 when it never ran."""
+    stdout: str
+    """Stripped stdout; empty unless ``returncode`` is 0."""
+    stderr: str
+    """Stripped stderr, whatever the exit status. Empty when it never ran."""
+
+    @property
+    def answered(self) -> bool:
+        """It ran and exited 0, so ``stdout`` is git's answer."""
+        return self.ran and self.returncode == 0
+
+    @property
+    def complaint(self) -> str:
+        """git's own first line of explanation, for quoting rather than
+        paraphrasing. Empty when it said nothing.
+
+        A cut carries ``GIT_COMPLAINT_ELLIPSIS``. Clipping silently would
+        print a sentence ending mid-word as though that were all git said --
+        the long-path form of ``detected dubious ownership in repository at
+        '...'`` is exactly the case that runs past the limit -- and an output
+        that reads more complete than it is is this module's whole subject.
+        """
+        if not self.stderr.strip():
+            return ""
+        lines = self.stderr.strip().splitlines()
+        first = lines[0].strip()
+        if len(first) > GIT_COMPLAINT_QUOTE_LIMIT:
+            first = first[:GIT_COMPLAINT_QUOTE_LIMIT] + GIT_COMPLAINT_ELLIPSIS
+        # Mark the line cut as well as the character cut. Measured on the
+        # dubious-ownership case this docstring cites: git writes four lines,
+        # of which the three dropped ones carry the remediation
+        # (`git config --global --add safe.directory <path>`). Quoting only
+        # the first and saying nothing presents a fragment as the whole
+        # complaint -- the same elision-without-a-marker the character cut
+        # above was fixed for, which is why it is marked the same way.
+        if len(lines) > 1:
+            first += f" {GIT_COMPLAINT_ELLIPSIS} (+{len(lines) - 1} more line(s))"
+        return first
+
+
+def _git_run(path: Path, *args: str) -> _GitOutcome:
+    """Run a read-only git command inside ``path`` and report how it went.
+
+    ``errors="replace"`` because the decode happens inside ``subprocess.run``
+    under ``text=True``, and git does not promise UTF-8: a path or a ref with
+    undecodable bytes in it makes a strict decode raise ``UnicodeDecodeError``
+    -- a ``ValueError``, so it escaped the handler below, escaped
+    ``describe_input_revision``, and reached the stamp's ``print`` in ``run``,
+    which sits before ``run``'s own ``try``. Measured: the stamp produced a
+    traceback and no line at all, against a docstring promising that every
+    branch produces text. ``ValueError`` is caught as well, so a residual
+    decode or argument error still lands on the honest ``ran=False`` wording
+    rather than taking the line away.
+    """
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(path), *args),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return _GitOutcome(ran=False, returncode=-1, stdout="", stderr="")
+    return _GitOutcome(
+        ran=True,
+        returncode=result.returncode,
+        stdout=result.stdout.strip() if result.returncode == 0 else "",
+        stderr=result.stderr.strip(),
+    )
+
+
+def _git(path: Path, *args: str) -> str | None:
+    """Run a read-only git command inside ``path``; ``None`` when it cannot.
+
+    ``None`` covers every way the answer is unavailable -- git not
+    installed, ``path`` not in a checkout, a command that exits non-zero or
+    times out -- because these callers treat them alike: they have no answer
+    to report and must say so, rather than report an empty one. Where the
+    difference matters, call ``_git_run`` and read the outcome.
+    """
+    outcome = _git_run(path, *args)
+    return outcome.stdout if outcome.answered else None
+
+
+def _tag_phrase(path: Path, head: str) -> str:
+    """How ``head`` is tagged, for the parenthesis in the stamp.
+
+    Only an exact tag is reported, never ``git describe``'s nearest-tag
+    form: ``v1.11.2-3-gabc1234`` reads as v1.11.2 at a glance, and a
+    near-miss revision passing for the right one is AT-2557's defect.
+
+    A failed lookup is kept apart from a confirmed absence. ``_git`` answers
+    ``None`` for git missing, a non-zero exit and a timeout alike, so testing
+    the result for falsity would report "no tag at this commit" about a
+    commit nothing had looked at -- and here the tag may well exist.
+    """
+    tags = _git(path, "tag", "--points-at", head)
+    if tags is None:
+        return "tag lookup failed, so this commit's tags are unknown"
+    if tags:
+        # Plural when there is more than one. A release commit routinely
+        # carries both its version tag and a moving one, and `tag v1.11.2,
+        # latest` invites reading the second name as something other than a
+        # tag -- a label narrower than its data, which is the same shape as
+        # an output narrower than its evidence.
+        names = tags.split()
+        return f"{'tag' if len(names) == 1 else 'tags'} {', '.join(names)}"
+    return "no tag at this commit"
+
+
+def _dirt_phrase(path: Path) -> str:
+    """What under ``path`` the named commit does not account for.
+
+    Appended to the stamp, empty when the tree is clean. The SHA alone
+    would be a half-truth whenever it is not: the files the check read are
+    then not the files that commit holds.
+
+    `-uall` rather than the default `--untracked-files=normal`, which
+    collapses an untracked directory into a single `?? dir/` entry: fifty
+    unpacked artefact files then report as `1 uncommitted path(s)` and
+    understate how far the tree read has departed from the named commit.
+
+    `--ignored` because without it the count is blind in exactly the case
+    the `ls-files` probe does not cover. That probe catches a directory with
+    *nothing* tracked in it; a directory holding tracked workflow files
+    *and* an ignored artefact passes it, and plain `status` says nothing
+    about the ignored half -- so the stamp would print a SHA and a tag for a
+    tree it had only partly looked at.
+
+    An earlier round rejected `--ignored` as noisy on the strength of 7
+    routine `__pycache__` / `.pytest_cache` paths, but that was measured
+    against `.github/scripts`. The inputs this check is given are
+    `.github/workflows` directories, and re-measured there `--ignored -uall`
+    reports 0 paths against 61 for `.github/scripts` -- nothing writes build
+    artefacts next to workflow YAML. The positive control for that zero:
+    planting one `__pycache__` under `.github/workflows` takes it to 1, so
+    the zero is a clean directory and not a silent failure. The noise
+    objection was about a directory this code never reads.
+
+    What the count covers, stated so the residue is not left to inference:
+    modified, staged, untracked and ignored paths under `path`, one line per
+    file. What it does not cover is anything outside `path`, which is
+    deliberate -- only what the check reads can change its answer -- and a
+    tracked file overwritten with content identical to the commit, which git
+    cannot distinguish from an untouched one and which does not change what
+    the check read either.
+    """
+    status = _git(path, "status", "--porcelain", "--ignored", "-uall", "--", ".")
+    if status is None:
+        return " + uncommitted-change check failed, so the SHA is unconfirmed"
+    if status:
+        count = len(status.splitlines())
+        return f" + {count} uncommitted path(s) under it, so the SHA is not the whole input"
+    return ""
+
+
+def _printable(text: str) -> str:
+    """``text`` rendered so ``print`` cannot raise on this stdout.
+
+    The stamp quotes git's stderr, which is decoded with ``errors="replace"``
+    and so can carry U+FFFD; a path can carry any non-ASCII besides. If
+    stdout cannot encode that -- an ASCII-only locale, which CI images do
+    have -- ``print`` raises ``UnicodeEncodeError``, and the stamp's print
+    sits before ``run``'s own ``try``, so the line would vanish exactly as
+    it did for the decode and the stat. Measured: U+FFFD through an
+    ``ascii``/``strict`` writer raises; through ``backslashreplace`` it does
+    not. Conditional on the live encoding rather than unconditional, so a
+    UTF-8 runner still prints a non-ASCII path as itself.
+    """
+    encoding = sys.stdout.encoding or "utf-8"
+    return text.encode(encoding, "backslashreplace").decode(encoding, "replace")
+
+
+def describe_input_revision(path: Path) -> str:
+    """One line naming the revision ``path``'s contents were read at (AT-2557).
+
+    The incident this exists for, and the rule every branch below follows,
+    are in the module docstring. What each branch returns:
+
+    * Could not be inspected -> says that, naming the OS error. A stat can
+      fail without answering: with an unreadable parent directory
+      ``Path.exists()`` raises rather than returning False, because EACCES
+      is not in ``pathlib``'s ignored-errno set, and the stamp then
+      produced a traceback and no line at all.
+    * No such directory -> says that. ``git -C <missing> rev-parse HEAD``
+      exits non-zero exactly as a real directory without a checkout does,
+      and this is how a mistyped ``--base-dir`` presents, so it is the most
+      reachable way to be told something confident about a directory nobody
+      found.
+    * Exists but is not a directory -> says that, separately. A third
+      fact: ``--base-dir`` aimed at a single workflow file is neither a
+      missing path nor an input tree, and calling it missing is false
+      about the filesystem.
+    * A git that ran and named no revision -> git's own first line of
+      stderr, quoted. Not "not a git checkout": a non-zero ``rev-parse``
+      does not establish that, since git exits 128 for ``detected dubious
+      ownership`` (the safe.directory check, which fires whenever a
+      checkout is read by a different UID than created it) and for a
+      ``.git`` it cannot parse, both of which are checkouts. Quoting lets
+      the reader tell those apart and keeps the stamp from diagnosing
+      what it only observed. An unpacked tarball still reads plainly,
+      because git's own words for it are ``fatal: not a git repository``.
+    * A resolvable HEAD but nothing tracked under ``path`` -> says that,
+      and names no SHA. ``git rev-parse`` walks up out of the directory it
+      is given, so an artefact unpacked into a checkout answers with that
+      checkout's HEAD; printing it would credit a commit for files it
+      never contained, which is this ticket's own defect one layer down.
+    * A resolvable HEAD -> the full SHA, plus ``tag <name>`` for every tag
+      pointing at exactly that commit, or ``no tag at this commit``. Why
+      only an exact tag, and why a failed lookup reads differently from a
+      confirmed absence: ``_tag_phrase``.
+    * Uncommitted, untracked or ignored files under ``path`` -> the count,
+      appended, one per file rather than one per untracked directory. Which
+      paths that covers, which it does not, and the measurements behind
+      ``-uall`` and ``--ignored``: ``_dirt_phrase``.
+    * A probe that could not run -> said as a failure, never as its negative
+      answer. A failed ``ls-files`` is not "nothing is tracked here", a
+      failed ``tag --points-at`` is not "no tag at this commit", and a
+      ``rev-parse`` that timed out is not "not a git checkout"; each would
+      be a positive claim about the tree resting on no evidence, which is
+      what this stamp exists to stop an output from doing. All four probes
+      are held to this, ``rev-parse`` included -- it is the one that decides
+      whether the other three run at all, so it is the worst place to guess.
+    """
+    # Absolute, because the relative path the workflow passes
+    # (``.github/workflows``) says nothing once the output is read away from
+    # the directory it ran in -- which is the whole situation this addresses.
+    #
+    # Guarded, because resolution is itself a filesystem operation that can
+    # fail: measured, a two-link symlink loop makes `resolve()` raise
+    # `RuntimeError: Symlink loop from '...'` (not an `OSError`, so both are
+    # caught), and since this runs before the stat below and the stamp prints
+    # before `run`'s own `try`, the result was a traceback and no revision
+    # line -- the same invariant the stat guard protects, one call earlier.
+    # The unresolved path is reported, because it is the only name for this
+    # input that exists when resolution is what failed.
+    try:
+        path = path.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+        return f"{path} @ could not be inspected: {reason}"
+
+    # One guarded stat, not `exists()` then `is_dir()`: those two booleans
+    # cannot say "I could not look", and they answer four distinct facts with
+    # two. The docstring's first four bullets carry the cases and the
+    # measurements behind them; this is their one home.
+    try:
+        info = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return f"{path} @ no such directory, so there is nothing here to describe"
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        return f"{path} @ could not be inspected: {reason}"
+    if not S_ISDIR(info.st_mode):
+        return f"{path} @ exists but is not a directory, so it is not an input tree"
+
+    # The fourth probe, held to the same rule as the three below: a git that
+    # never ran has said nothing about this directory, and no claim about it
+    # may be built on that silence.
+    resolved = _git_run(path, "rev-parse", "HEAD")
+    if not resolved.ran:
+        return f"{path} @ HEAD lookup failed, so this directory's revision is unknown"
+
+    # No stdout means git declined to name a revision -- a non-zero exit
+    # (stdout is blanked for those) or the pathological exit-0-with-nothing.
+    # What it does NOT mean is "there is no repository here". git exits 128
+    # for `detected dubious ownership in repository`, the safe.directory
+    # check, which fires whenever a checkout is read by a different UID than
+    # created it -- routine for an artefact unpacked by another job or a step
+    # in a container -- and for a `.git` it cannot parse. Measured: under
+    # either, a checkout at tag v1.11.2 stamped `not a git checkout (or no
+    # commit yet)`, a confident claim about a directory that was one, in the
+    # single branch that suppresses the SHA, the tag and the dirt count
+    # together. So this quotes git instead of classifying its exit code: the
+    # reader gets `fatal: not a git repository ...` or `fatal: detected
+    # dubious ownership ...` and can tell those apart, and the stamp asserts
+    # nothing it did not establish.
+    if not resolved.stdout:
+        if resolved.complaint:
+            return f"{path} @ no revision resolved here; git said: {resolved.complaint}"
+        return f"{path} @ no revision resolved here, and git gave no reason (exit {resolved.returncode})"
+    head = resolved.stdout
+
+    # `git status` is silent about ignored paths, so a directory with nothing
+    # tracked in it -- an artefact unpacked into `build/`, `tmp/` or anything
+    # else a .gitignore covers -- reports clean while `rev-parse` has already
+    # walked up and answered with the surrounding repository's HEAD. Asking
+    # what git actually tracks here is what closes that. The dirt probe's
+    # `--ignored` narrows this case but does not replace this one: it appends
+    # a count while the line still reads `@ <sha> (tag v1.11.2)`, leaving on
+    # display the near-miss revision this check exists to refuse. The noise
+    # measurement that flag once rested on is recounted in one place only,
+    # at the dirt probe below; it is not re-argued here.
+    #
+    # A failed probe is not an empty one. `_git` returns None for git missing,
+    # a non-zero exit and a timeout alike, and reading that as "nothing is
+    # tracked here" would print a positive claim about the tree that was never
+    # established -- and suppress a SHA `rev-parse` had already resolved. That
+    # is this ticket's own defect, an output reading better than its evidence,
+    # so each probe below keeps its failure apart from its negative answer the
+    # way the dirt check already does.
+    tracked = _git(path, "ls-files", "--", ".")
+    if tracked is None:
+        return f"{path} @ {head} (tracked-content check failed, so the SHA is unconfirmed)"
+    if not tracked:
+        return f"{path} @ no tracked content here, so the nearest checkout's HEAD does not describe it"
+
+    return f"{path} @ {head} ({_tag_phrase(path, head)}){_dirt_phrase(path)}"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -613,6 +996,12 @@ def check_vars_consumed(
 
 
 def run(base_dir: Path, wrapper_dir: Path, correspondence_path: Path, exceptions_path: Path) -> int:
+    # Before anything that can abort: this output gets saved and attached as
+    # evidence, and a failing run's output is attached as often as a passing
+    # one. See describe_input_revision for why it is stamped at all.
+    print(_printable(f"base input revision: {describe_input_revision(base_dir)}"))
+    print(_printable(f"wrapper input revision: {describe_input_revision(wrapper_dir)}"))
+
     try:
         config = load_correspondence(correspondence_path)
         exceptions = load_exceptions(exceptions_path)
