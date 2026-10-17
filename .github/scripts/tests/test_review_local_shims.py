@@ -108,6 +108,42 @@ def test_the_composite_is_read_rather_than_restated():
     assert claude.allowed_tools()
 
 
+def test_claude_invocation_restricts_tools_and_configuration(tree, monkeypatch):
+    captured = fake_spawn(monkeypatch, claude, stdout="{}")
+    claude.run_cli("prompt", "model")
+    args = captured["argv"]
+    assert args[args.index("--tools") + 1] == "Read,Glob,Grep"
+    assert args[args.index("--setting-sources") + 1] == "user"
+    assert json.loads(args[args.index("--settings") + 1]) == {"disableAllHooks": True}
+    assert json.loads(args[args.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert "--strict-mcp-config" in args
+    assert "--disable-slash-commands" in args
+    assert json.loads(args[args.index("--json-schema") + 1])["type"] == "object"
+
+
+def test_claude_structured_result_is_written_by_the_shim(tree, monkeypatch):
+    review = {
+        "summary": "structured",
+        "status": "ok",
+        "early_exit": False,
+        "issues": [],
+    }
+    fake_spawn(
+        monkeypatch,
+        claude,
+        stdout=json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "structured_output": review,
+            }
+        ),
+    )
+    claude.review()
+    assert json.loads((tree / "review-claude.json").read_text()) == review
+
+
 def test_a_folded_composite_value_resolves_instead_of_leaking_the_expression(
     tmp_path, monkeypatch
 ):

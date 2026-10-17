@@ -168,7 +168,7 @@ class TestCompositeDefault:
 
     def test_step_consumes_the_input_not_a_literal(self) -> None:
         doc = _load_yaml(ACTION_YML)
-        step = doc["runs"]["steps"][0]
+        step = next(s for s in doc["runs"]["steps"] if s.get("id") == "claude-review")
         assert step["with"]["allowed_bots"] == "${{ inputs.allowed_bots }}"
 
     def test_default_admits_the_regressed_actor(self) -> None:

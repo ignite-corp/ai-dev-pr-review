@@ -292,6 +292,32 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      # Codex runs with write access through `--sandbox workspace-write`.
+      # Claude has only Read/Glob/Grep; a host step writes its verdict.
+      # .ai-dev-pr-review is checked out INSIDE that workspace, and the
+      # steps after the model run its scripts -- promote_legacy_verdict.sh,
+      # extract_*.py, post_inline_comments.py with GH_TOKEN,
+      # switch_claude_auth.py with the corp App token -- so a model steered
+      # by a prompt injection in the diff could rewrite the code those
+      # steps execute (AT-2941). Every `run:` below therefore executes the
+      # scripts from this copy under RUNNER_TEMP, taken before any model
+      # starts: outside the workspace codex's sandbox makes writable.
+      # Copying alone is not a Claude filesystem sandbox: its tool whitelist
+      # removes writes and execution, and repository settings are excluded.
+      # Codex's sandbox also admits $TMPDIR, so 'Run Codex review' pins
+      # TMPDIR to a subdirectory of its own rather than trusting the runner
+      # not to point it at RUNNER_TEMP.
+      #
+      # The workspace checkout stays for the one consumer that cannot take
+      # an absolute path: `uses: ./.ai-dev-pr-review/.github/actions/
+      # claude-review`, which the runner loads before the model starts.
+      - name: Copy ai-dev-pr-review scripts outside the workspace
+        run: |
+          set -euo pipefail
+          TRUSTED="${RUNNER_TEMP}/ai-dev-pr-review"
+          rm -rf -- "$TRUSTED"
+          cp -a -- .ai-dev-pr-review "$TRUSTED"
+
       - name: Download review context
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -371,7 +397,7 @@ jobs:
             echo "2. Security -- OWASP Top 10 (injection, broken auth, hardcoded secrets, insecure config, input validation)"
             echo "3. Spec Compliance -- Clean Architecture boundaries, API/DB spec alignment, naming conventions"
             echo ""
-            echo "Write ONLY the following JSON to \`review-claude.json\` (no other output):"
+            echo "Return the following JSON as your final structured output. Do not write files:"
             echo "{"
             echo "  \"summary\": \"<summary>\","
             echo "  \"status\": \"<ok | early_exit>\","
@@ -465,7 +491,7 @@ jobs:
           # is the whole job here -- no legacy name has to be promoted
           # onto the canonical one, which is what the codex path loses
           # with the script and why it fails closed by skipping instead.
-          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           if [ -f "$PROMOTE" ]; then
             bash "$PROMOTE" clear "review-${REVIEWER}.json"
           else
@@ -543,7 +569,7 @@ jobs:
           if [ -f "${RUNNER_TEMP}/${REVIEWER}-start" ]; then
             exit 0
           fi
-          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           # rm -rf, not rm -f: a directory at that name fails a plain
           # rm, which under the runner's bash -e takes the step down. It
           # is the fallback for BOTH ways the removal can fail to happen:
@@ -565,16 +591,17 @@ jobs:
         continue-on-error: true
         env:
           EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
         run: |
           if [ -f "review-claude.json" ]; then
             echo "review-claude.json already exists, skipping fallback"
             exit 0
           fi
-          if [ -z "$EXEC_FILE" ] || [ ! -f "$EXEC_FILE" ]; then
+          if [ -z "$STRUCTURED_OUTPUT" ] && { [ -z "$EXEC_FILE" ] || [ ! -f "$EXEC_FILE" ]; }; then
             echo "No execution file found, cannot extract review"
             exit 0
           fi
-          python3 .ai-dev-pr-review/.github/scripts/extract_claude_review.py "$EXEC_FILE"
+          python3 "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/extract_claude_review.py" "$EXEC_FILE"
 
       # When the Claude action dies before writing a verdict (e.g. its
       # non-human-actor guard rejecting a dependabot-triggered run), no
@@ -659,7 +686,7 @@ jobs:
           EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
           GH_TOKEN: ${{ steps.auth_token_corp.outputs.token }}
         run: |
-          SCRIPT=".ai-dev-pr-review/.github/scripts/switch_claude_auth.py"
+          SCRIPT="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/switch_claude_auth.py"
           if [ ! -f "$SCRIPT" ]; then
             echo "switch_claude_auth.py not in pinned checkout, skipping"
             exit 0
@@ -671,11 +698,11 @@ jobs:
         if: inputs.reviewer == 'gemini'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
-          python-version-file: ".ai-dev-pr-review/.github/scripts/.python-version"
+          python-version-file: "${{ runner.temp }}/ai-dev-pr-review/.github/scripts/.python-version"
 
       - name: Install dependencies (Gemini)
         if: inputs.reviewer == 'gemini'
-        run: pip install -r .ai-dev-pr-review/.github/scripts/requirements.txt
+        run: pip install -r "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/requirements.txt"
 
       # review-gemini.json is a path the PR under review can commit, for
       # the reason given above 'Clear Claude verdict file' (AT-2614).
@@ -701,7 +728,7 @@ jobs:
           # is the whole job here -- no legacy name has to be promoted
           # onto the canonical one, which is what the codex path loses
           # with the script and why it fails closed by skipping instead.
-          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           if [ -f "$PROMOTE" ]; then
             bash "$PROMOTE" clear "review-${REVIEWER}.json"
           else
@@ -728,7 +755,7 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-pro' }}
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
-        run: python .ai-dev-pr-review/.github/scripts/review_gemini.py
+        run: python "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/review_gemini.py"
 
       # The net for a clear that never ran -- the note above 'Clear
       # unowned Claude verdict file'. It must come before 'Emit Gemini
@@ -752,7 +779,7 @@ jobs:
           if [ -f "${RUNNER_TEMP}/${REVIEWER}-start" ]; then
             exit 0
           fi
-          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           # rm -rf, not rm -f: a directory at that name fails a plain
           # rm, which under the runner's bash -e takes the step down. It
           # is the fallback for BOTH ways the removal can fail to happen:
@@ -873,7 +900,7 @@ jobs:
           # The reusable-workflow checkout pins to the ref that the caller
           # pinned in `uses:`, so this prompt is trusted by construction --
           # PRs in the caller repo cannot mutate it.
-          cp .ai-dev-pr-review/.github/scripts/review_prompt.md "${RUNNER_TEMP}/review_prompt.md"
+          cp "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/review_prompt.md" "${RUNNER_TEMP}/review_prompt.md"
 
       # Why continue-on-error and its cost: the note above 'Run Claude
       # review'.
@@ -885,6 +912,9 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_MODEL: ${{ vars.CODEX_MODEL || 'gpt-5.6-luna' }}
+          # The sandbox makes $TMPDIR writable; pinned so it cannot be
+          # RUNNER_TEMP, which holds the scripts copy (AT-2941).
+          TMPDIR: ${{ runner.temp }}/codex-tmp
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
         run: |
@@ -958,7 +988,7 @@ jobs:
           # cost the verdict its meaning, because the direct-write branch
           # below needs no script and would read a review-codex.json the
           # PR committed as this run's result.
-          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           if [ ! -f "$PROMOTE" ]; then
             echo "::error::promote_legacy_verdict.sh is not in the pinned" \
               "checkout; skipping the Codex review, because the provenance" \
@@ -996,6 +1026,7 @@ jobs:
           # it, so anything found at that name afterwards was written by
           # this run. Marked only after the clear actually happened.
           : > "${RUNNER_TEMP}/codex-start"
+          mkdir -p -- "$TMPDIR"
           # `codex exec` 0.147.0 rejects `--full-auto` (removed upstream);
           # `--sandbox workspace-write` alone preserves the prior behavior.
           codex exec \
@@ -1052,7 +1083,7 @@ jobs:
             fi
           elif [ "$EXIT_CODE" -eq 0 ]; then
             # gpt-5-mini / low-reasoning models don't use sandbox tools -- extract JSON from stdout
-            python3 .ai-dev-pr-review/.github/scripts/extract_codex_json.py \
+            python3 "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/extract_codex_json.py" \
               "${RUNNER_TEMP}/codex-run.log" \
               review-codex.json \
             && echo "::notice::Extracted Codex verdict JSON from stdout" \
@@ -1133,7 +1164,7 @@ jobs:
           # answering the same question the opposite way is how a
           # PR-committed verdict survived on the one path where no
           # infrastructure verdict exists to displace it either.
-          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           if [ -f "${RUNNER_TEMP}/codex-start" ]; then
             if [ -f "$PROMOTE" ]; then
               # --target-is-ours: the run step already adjudicated that
@@ -1197,7 +1228,7 @@ jobs:
         run: |
           REVIEW_FILE="review-${REVIEWER}.json"
           if [ -f "$REVIEW_FILE" ]; then
-            python3 .ai-dev-pr-review/.github/scripts/post_inline_comments.py \
+            python3 "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/post_inline_comments.py" \
               --issues "$REVIEW_FILE" \
               --diff pr.diff \
               --reviewer "$REVIEWER"
