@@ -2275,6 +2275,10 @@ POST_PIN_STEPS = frozenset(
         ("base-ai-review-prepare.yml", "Resolve target PR head"),  # AT-2520
         ("base-ai-review-single.yml", "Resolve review target"),  # AT-2520
         ("base-ai-review-aggregate.yml", "Resolve review target"),  # AT-2520
+        ("base-ai-review-single.yml", "Clear Claude verdict file"),  # AT-2614
+        ("base-ai-review-single.yml", "Clear unowned Claude verdict file"),  # AT-2614
+        ("base-ai-review-single.yml", "Clear Gemini verdict file"),  # AT-2614
+        ("base-ai-review-single.yml", "Clear unowned Gemini verdict file"),  # AT-2614
     }
 )
 

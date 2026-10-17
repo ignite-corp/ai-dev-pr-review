@@ -3,9 +3,17 @@
 # Every base step that carries an `env:` block must appear here (the check
 # fails on an unmapped one). A step maps either to the wrapper step(s) that
 # reimplement it -- the union of their env keys must cover the base step's --
-# or to no wrapper step at all, in which case `reason` is mandatory and states
-# why the single-job wrapper legitimately has no counterpart. `if:` conditions
-# are deliberately not compared (see the script's module docstring).
+# or to no wrapper step at all, in which case `reason` is mandatory. `if:`
+# conditions are deliberately not compared (see the script's module
+# docstring).
+#
+# A no-counterpart `reason` is one of the two kinds exceptions.yml names, and
+# it must say which:
+#   - by design: the single-job wrapper legitimately never needs the step;
+#   - open drift: a real gap with a ticket, listed so the check stays green
+#     while the port is decided. The lockstep order is base release ->
+#     wrapper port, so a base PR that adds a step cannot close its own gap.
+#     Replace the entry with the wrapper step names when the port lands.
 #
 # Step names are the join key on both sides, so renaming a step in either
 # repo must be mirrored here; a stale name fails the check rather than
@@ -120,6 +128,39 @@ steps:
     base_step: Build Claude prompt with existing threads
     wrapper_file: wrapper.yml
     wrapper_steps: [Build Claude prompt with existing threads]
+  # The four AT-2614 verdict-provenance steps. The wrapper runs on the pilot
+  # consumer's own tree, so review-<name>.json is a path the PR under review
+  # can commit there too and the port is owed; it is not on wrapper main yet.
+  - base_file: base-ai-review-single.yml
+    base_step: Clear Claude verdict file
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2614. The provenance clear is new on base and the
+      wrapper has not ported it; base release -> wrapper port means this
+      base PR cannot close its own gap. Replace with the wrapper step
+      name once the port lands.
+  - base_file: base-ai-review-single.yml
+    base_step: Clear unowned Claude verdict file
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2614; see 'Clear Claude verdict file'. This is the
+      always() net of that same clear.
+  - base_file: base-ai-review-single.yml
+    base_step: Clear Gemini verdict file
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2614; see 'Clear Claude verdict file'. Same step on
+      the gemini path.
+  - base_file: base-ai-review-single.yml
+    base_step: Clear unowned Gemini verdict file
+    wrapper_file: wrapper.yml
+    wrapper_steps: []
+    reason: >-
+      Open drift, AT-2614; see 'Clear Claude verdict file'. This is the
+      always() net of the gemini clear.
   - base_file: base-ai-review-single.yml
     base_step: Extract Claude review from execution log (fallback)
     wrapper_file: wrapper.yml

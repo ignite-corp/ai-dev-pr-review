@@ -435,6 +435,49 @@ jobs:
             echo "CLAUDE_PROMPT_EOF"
           } >> "$GITHUB_ENV"
 
+      # Only a verdict file THIS run produced may stand as the verdict
+      # (AT-2614). The caller repo is checked out at the workspace root
+      # with no `path:`, so review-claude.json is a path the PR under
+      # review can commit; left in place it is what 'Emit Claude error
+      # verdict' finds when the action dies, and what the uploader ships
+      # as this run's artifact. Clearing it immediately before the action
+      # makes existence itself the proof of provenance -- the reasoning
+      # the codex path already carries, and the reason no timestamp test
+      # can stand in for it, is in promote_legacy_verdict.sh.
+      #
+      # Body shared verbatim with 'Clear Gemini verdict file': the two
+      # differ only in the step's name and gate, so a change made to one
+      # and not the other shows up as a diff hunk instead of hiding in a
+      # near-copy -- the failure promote_legacy_verdict.sh's own header
+      # records, and the one these copies had already started (the
+      # rationale below was on this step alone).
+      - name: Clear Claude verdict file
+        if: inputs.reviewer == 'claude'
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+        run: |
+          set -euo pipefail
+          # Guarded on the script being in the pinned checkout, the same
+          # way the codex clear is: scripts come from the release tag
+          # while this YAML can come from a PR (self-review.yml), so a
+          # script added in that PR is not there yet. The fallback is the
+          # removal alone and not a skipped review, because the removal
+          # is the whole job here -- no legacy name has to be promoted
+          # onto the canonical one, which is what the codex path loses
+          # with the script and why it fails closed by skipping instead.
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          if [ -f "$PROMOTE" ]; then
+            bash "$PROMOTE" clear "review-${REVIEWER}.json"
+          else
+            # rm -rf, not rm -f: a directory at that name fails a plain
+            # rm, which under the runner's bash -e takes the step down.
+            rm -rf -- "review-${REVIEWER}.json"
+          fi
+          # This step has taken responsibility for review-${REVIEWER}.json,
+          # so anything found at that name afterwards was written by this
+          # run. Marked only after the clear actually happened.
+          : > "${RUNNER_TEMP}/${REVIEWER}-start"
+
       # continue-on-error here and on the gemini/codex reviewer steps
       # means a reviewer's own death does not fail the job at that step.
       # It is not what keeps the chain alive: the orchestrator's
@@ -478,6 +521,44 @@ jobs:
           # test_claude_review_allowed_bots.py.
           allowed_bots: ${{ vars.CLAUDE_ALLOWED_BOTS || 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]' }}
           prompt: ${{ env.CLAUDE_PROMPT }}
+
+      # The net for a clear that never ran: an earlier step in this job
+      # failed, or the job was cancelled between the checkout and the
+      # clear. Nothing on disk is then ours, including a review-claude.json
+      # the PR committed -- which 'Emit Claude error verdict' below would
+      # otherwise report as a verdict present, and the uploader would ship.
+      # It must come before that step, not after: after, it would delete
+      # the honest error verdict that step had just written.
+      #
+      # Body shared verbatim with 'Clear unowned Gemini verdict file', for
+      # the reason given above 'Clear Claude verdict file'.
+      - name: Clear unowned Claude verdict file
+        if: inputs.reviewer == 'claude' && always()
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+        run: |
+          set -euo pipefail
+          # The marker says the pre-run clear took responsibility for the
+          # canonical name, so whatever is there now was written by this run.
+          if [ -f "${RUNNER_TEMP}/${REVIEWER}-start" ]; then
+            exit 0
+          fi
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          # rm -rf, not rm -f: a directory at that name fails a plain
+          # rm, which under the runner's bash -e takes the step down. It
+          # is the fallback for BOTH ways the removal can fail to happen:
+          # the script missing from the pinned checkout, and the script
+          # present but exiting non-zero. Without the `||` the second case
+          # aborts this step under set -e and the PR-committed file
+          # survives the one step whose entire job is to remove it, which
+          # is the same outcome as having no net at all. The net fails
+          # closed.
+          if [ -f "$PROMOTE" ]; then
+            bash "$PROMOTE" clear "review-${REVIEWER}.json" \
+              || rm -rf -- "review-${REVIEWER}.json"
+          else
+            rm -rf -- "review-${REVIEWER}.json"
+          fi
 
       - name: Extract Claude review from execution log (fallback)
         if: inputs.reviewer == 'claude' && always()
@@ -596,8 +677,47 @@ jobs:
         if: inputs.reviewer == 'gemini'
         run: pip install -r .ai-dev-pr-review/.github/scripts/requirements.txt
 
+      # review-gemini.json is a path the PR under review can commit, for
+      # the reason given above 'Clear Claude verdict file' (AT-2614).
+      # review_gemini.py writes the canonical name on nearly every path,
+      # but not on all of them: load_files() and the schema load run
+      # before the try whose branches converge on the single write, so a
+      # raise there exits non-zero having written nothing -- and the
+      # uploader then ships the PR's own file as gemini's verdict.
+      #
+      # Body shared verbatim with 'Clear Claude verdict file'; see the note
+      # there.
+      - name: Clear Gemini verdict file
+        if: inputs.reviewer == 'gemini'
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+        run: |
+          set -euo pipefail
+          # Guarded on the script being in the pinned checkout, the same
+          # way the codex clear is: scripts come from the release tag
+          # while this YAML can come from a PR (self-review.yml), so a
+          # script added in that PR is not there yet. The fallback is the
+          # removal alone and not a skipped review, because the removal
+          # is the whole job here -- no legacy name has to be promoted
+          # onto the canonical one, which is what the codex path loses
+          # with the script and why it fails closed by skipping instead.
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          if [ -f "$PROMOTE" ]; then
+            bash "$PROMOTE" clear "review-${REVIEWER}.json"
+          else
+            # rm -rf, not rm -f: a directory at that name fails a plain
+            # rm, which under the runner's bash -e takes the step down.
+            rm -rf -- "review-${REVIEWER}.json"
+          fi
+          # This step has taken responsibility for review-${REVIEWER}.json,
+          # so anything found at that name afterwards was written by this
+          # run. Marked only after the clear actually happened.
+          : > "${RUNNER_TEMP}/${REVIEWER}-start"
+
       # Why continue-on-error and its cost: the note above 'Run Claude
-      # review'. The always() net for this path is the step after it.
+      # review'. The always() steps for this path are the two below:
+      # the provenance clear (AT-2614), then the error verdict that
+      # records the death (AT-2539).
       - name: Run Gemini review
         if: inputs.reviewer == 'gemini'
         id: gemini-review
@@ -609,6 +729,45 @@ jobs:
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
         run: python .ai-dev-pr-review/.github/scripts/review_gemini.py
+
+      # The net for a clear that never ran -- the note above 'Clear
+      # unowned Claude verdict file'. It must come before 'Emit Gemini
+      # error verdict' below: that step stands down when a valid single
+      # JSON object is at the canonical name, and a file the PR committed
+      # can be exactly that, so clearing first is what makes its honest
+      # script_invocation_failed the verdict instead. After that step it
+      # would delete the verdict the step had just written -- the ordering
+      # test_verdict_file_provenance.py asserts, for gemini as well as
+      # claude now that AT-2539 has landed.
+      #
+      # Body shared verbatim with 'Clear unowned Claude verdict file'.
+      - name: Clear unowned Gemini verdict file
+        if: inputs.reviewer == 'gemini' && always()
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+        run: |
+          set -euo pipefail
+          # The marker says the pre-run clear took responsibility for the
+          # canonical name, so whatever is there now was written by this run.
+          if [ -f "${RUNNER_TEMP}/${REVIEWER}-start" ]; then
+            exit 0
+          fi
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          # rm -rf, not rm -f: a directory at that name fails a plain
+          # rm, which under the runner's bash -e takes the step down. It
+          # is the fallback for BOTH ways the removal can fail to happen:
+          # the script missing from the pinned checkout, and the script
+          # present but exiting non-zero. Without the `||` the second case
+          # aborts this step under set -e and the PR-committed file
+          # survives the one step whose entire job is to remove it, which
+          # is the same outcome as having no net at all. The net fails
+          # closed.
+          if [ -f "$PROMOTE" ]; then
+            bash "$PROMOTE" clear "review-${REVIEWER}.json" \
+              || rm -rf -- "review-${REVIEWER}.json"
+          else
+            rm -rf -- "review-${REVIEWER}.json"
+          fi
 
       # review_gemini.py records its own failures, but only from inside its
       # try/except: a step killed by its timeout-minutes, or dead before
@@ -987,12 +1146,17 @@ jobs:
               bash "$PROMOTE" promote --target-is-ours "review-${REVIEWER}.json"
             fi
           elif [ -f "$PROMOTE" ]; then
-            bash "$PROMOTE" clear "review-${REVIEWER}.json"
+            # `||` for the same reason the claude and gemini nets carry it:
+            # a script that exists but exits non-zero would otherwise abort
+            # this step under set -e and leave the PR's file standing, which
+            # is exactly what the comment above says this path must prevent.
+            bash "$PROMOTE" clear "review-${REVIEWER}.json" \
+              || rm -rf -- "review-${REVIEWER}.json"
           else
             # Only the canonical name, because that is the one this step
             # owns and the only one any later step reads; the legacy names
             # are inert without a promotion to carry them.
-            rm -rf "review-${REVIEWER}.json"
+            rm -rf -- "review-${REVIEWER}.json"
           fi
 
       - name: Verify Codex verdict file

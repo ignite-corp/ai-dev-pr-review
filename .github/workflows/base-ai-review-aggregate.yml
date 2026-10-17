@@ -261,6 +261,47 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      # The caller checkout above puts the PR's tree at the workspace root
+      # and the downloads below land in that same directory, so
+      # review-<name>.json is a path the PR under review controls and
+      # aggregate_reviews.py reads from the CWD (AT-2614). No dead
+      # reviewer step is needed here: each download is
+      # continue-on-error, so an artifact that is merely ABSENT leaves the
+      # committed file standing as that reviewer's verdict -- and a claude
+      # early_exit skips both downstream jobs by design, which makes two
+      # absent artifacts the ordinary sequential outcome, not an outage.
+      - name: Clear verdict files the PR checked out
+        run: |
+          set -euo pipefail
+          PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+          # The names `clear` sweeps besides its target, the script's own
+          # LEGACY_VERDICT_FILES. Both fallbacks below remove them too, so
+          # what this CWD holds afterwards does not depend on which path
+          # ran -- and the script-missing path is a real one in
+          # self-review, where this YAML comes from the PR and the scripts
+          # from the release tag.
+          legacy=(verdict-openai.json verdict-codex.json)
+          for reviewer in claude gemini codex; do
+            # rm -rf, not rm -f: a directory committed at that name
+            # fails a plain rm, which under the runner's bash -e takes
+            # this step down and leaves the PR with no verdict posted at
+            # all -- a denial the PR under review would get to choose.
+            # It is the fallback for BOTH ways the removal can fail: the
+            # script missing from the pinned checkout, and the script
+            # present but exiting non-zero -- on a committed directory,
+            # the very cause named above. Without the `||` that case
+            # aborts the loop at its first name under set -e, so the
+            # remaining reviewers are never swept and every committed file
+            # reaches load_reviews(). This step is the only removal site
+            # with no always() net behind it, so it fails closed here.
+            if [ -f "$PROMOTE" ]; then
+              bash "$PROMOTE" clear "review-${reviewer}.json" \
+                || rm -rf -- "review-${reviewer}.json" "${legacy[@]}"
+            else
+              rm -rf -- "review-${reviewer}.json" "${legacy[@]}"
+            fi
+          done
+
       - name: Download Claude review
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
