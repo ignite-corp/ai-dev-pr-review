@@ -641,7 +641,9 @@ def _run_net_body(
     if marker:
         (runner_temp / f"{reviewer}-start").touch()
     if promote is not None:
-        script = tmp_path / ".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+        # The scripts copy under RUNNER_TEMP, which is what the net runs
+        # (AT-2941), not the workspace checkout.
+        script = runner_temp / "ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
         script.parent.mkdir(parents=True)
         script.write_text(promote, encoding="utf-8")
         script.chmod(0o755)
