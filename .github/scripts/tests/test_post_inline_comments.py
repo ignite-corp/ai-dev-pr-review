@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,6 +30,35 @@ from post_inline_comments import (
     post_cutoff_summary,
     round_cutoff_round,
 )
+
+# The consumer of the round-cutoff comment: cutoff_findings in the plugin's
+# SKILL.md, the function the merge gate pastes into a shell. Its path has one
+# anchor, in the drill's test, and so does the way it is carved out of the
+# file -- gate_function runs the drill's own extract() -- so the two cannot
+# disagree about where it is or about what it is.
+from test_gate_headline_drill import gate_function
+
+
+def _cutoff_findings(
+    run: Any, function_file: Path, body: str
+) -> subprocess.CompletedProcess[str]:
+    """Feed one Bot comment carrying ``body`` to the real cutoff_findings, nothing answering it."""
+    comments = json.dumps(
+        [{"id": 1, "type": "Bot", "created_at": "2026-10-13T00:00:00Z", "body": body}]
+    )
+    return run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; printf "%s" "$2" | cutoff_findings ""',
+            "bash",
+            str(function_file),
+            comments,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
 
 def _thread(path: str, body: str, line: int | None = None) -> dict[str, Any]:
@@ -402,6 +434,45 @@ class TestPostCutoffSummary:
         assert "recommended for follow-up" in body
         assert "a.py:3" in body
         assert "b.py:9" in body
+
+    def test_marker_line_is_what_the_skill_consumer_anchors_on(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """The emitted marker line is found by cutoff_findings in SKILL.md, and only whole.
+
+        The consumer captures the marker as a whole line. The body the producer
+        emits must block there (nothing answers it); the control appends a suffix
+        to that one line and the same consumer then reports no cutoff comment and
+        passes -- the silent pass _CUTOFF_MARKER's comment warns about.
+        """
+        assert shutil.which("jq"), "jq must be on PATH: cutoff_findings is a jq program"
+        real_run = subprocess.run
+        # Extracted before subprocess.run is patched below: gate_function
+        # runs the drill's own extract() through it.
+        function_file = tmp_path / "cutoff_findings.sh"
+        function_file.write_text(gate_function("cutoff_findings"), encoding="utf-8")
+        recorded: dict[str, Any] = {}
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+            if cmd[:2] == ["gh", "api"]:
+                return SimpleNamespace(returncode=0, stdout="0", stderr="")
+            recorded["body"] = kwargs.get("input")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        post_cutoff_summary("o/r", "7", "claude", 6, self._COMMENTS)
+        body = recorded["body"]
+
+        real = _cutoff_findings(real_run, function_file, body)
+        found = re.match(r"\(c\) BLOCK: (\S+) \(comment 1, ", real.stdout)
+        assert found is not None, real.stdout + real.stderr
+        assert real.returncode == 1
+        marker_line, rest = body.split("\n", 1)
+        assert found.group(1) in marker_line
+
+        control = _cutoff_findings(real_run, function_file, marker_line + " (2 items)\n" + rest)
+        assert control.returncode == 0, control.stdout + control.stderr
+        assert control.stdout.strip() == "(c) no round-cutoff comment on this round's surface"
 
     def test_existing_marker_skips_post(self, monkeypatch: Any) -> None:
         posted: list[list[str]] = []

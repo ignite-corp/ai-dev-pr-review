@@ -508,16 +508,16 @@ lockstep이 필요한 이유는 래퍼가 이 레포의 재사용 워크플로�
 
 ## PR 응대 스킬 (Claude Code)
 
-리뷰어는 findings를 게시하지만, 실제 PR을 리뷰→수정→머지 사이클로 몰아가는 건 개발자 몫입니다. 정본 `pr-response-cycle` Claude Code 스킬이 여기 [`.claude/skills/pr-response-cycle/`](.claude/skills/pr-response-cycle/SKILL.md)에 있습니다. 10단계 체크리스트로 PR을 구동합니다: 리뷰 스레드 일괄 분류(Fixed / Deferred / Won't fix / Duplicate / Outdated), 증거 기반 답글, 타임라인 3종(스레드 + 이슈 코멘트 + 리뷰 바디) 관리, fixup-rebase, 머지 상태(CLEAN / BLOCKED / BEHIND / DIRTY) 판단, 정책 허용 시 merge commit(절대 squash 아님)으로 머지.
+리뷰어는 findings를 게시하지만, 실제 PR을 리뷰→수정→머지 사이클로 몰아가는 건 개발자 몫입니다. 정본 `pr-response-cycle` Claude Code 스킬이 여기 [`plugins/pr-response-cycle/skills/pr-response-cycle/`](plugins/pr-response-cycle/skills/pr-response-cycle/SKILL.md)에 있습니다. 10단계 체크리스트로 PR을 구동합니다: 리뷰 스레드 일괄 분류(Fixed / Deferred / Won't fix / Duplicate / Outdated), 증거 기반 답글, 타임라인 3종(스레드 + 이슈 코멘트 + 리뷰 바디) 관리, fixup-rebase, 머지 상태(CLEAN / BLOCKED / BEHIND / DIRTY) 판단, 그리고 레포가 해석한 방식으로 머지 — 해석 절차는 스킬의 **Merge strategy** 절에 있으며, 레포의 머지 설정이 모든 답을 한정하고, 어느 것도 답하지 않으면 merge commit이 기본값입니다.
 
 **리뷰어 설정 repo에서 쓰려면** 스킬 폴더를 아래 중 한 곳에 복사하세요:
 
 ```bash
 # repo 단위 (그 repo 작업자 전원 사용 가능)
-cp -R .claude/skills/pr-response-cycle <consumer-repo>/.claude/skills/
+cp -R plugins/pr-response-cycle/skills/pr-response-cycle <consumer-repo>/.claude/skills/
 
 # 또는 개발자 단위 (본인은 모든 곳에서 사용)
-cp -R .claude/skills/pr-response-cycle ~/.claude/skills/
+cp -R plugins/pr-response-cycle/skills/pr-response-cycle ~/.claude/skills/
 ```
 
 이후 Claude Code에서 `/pr-response-cycle`을 호출하거나, PR 번호와 함께 "PR 리뷰 처리" / "process the review"라고 말하면 됩니다. repo의 `~/.claude/projects/<cwd>/memory/` 프로젝트 정책이 스킬 기본값과 충돌하면 정책이 우선합니다. 이 사본을 source of truth로 유지하고, 변경 시 다시 복사하세요.

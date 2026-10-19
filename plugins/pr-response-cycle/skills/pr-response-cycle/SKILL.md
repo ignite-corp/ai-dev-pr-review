@@ -1,6 +1,6 @@
 ---
 name: pr-response-cycle
-description: Drive a GitHub pull request through the full review-fix-merge cycle following the project's established 10-step checklist — bulk-classify review threads (Fixed / Deferred / Won't fix / Duplicate / Outdated), post evidence-based replies, manage all three PR timeline item types (review threads + issue comments + review bodies), apply fixup-rebase for review-driven code changes, navigate merge state (CLEAN / BLOCKED / BEHIND / DIRTY), update branches, and merge with merge commit (never squash) when policy conditions are met. Use this skill whenever the user asks to "process review", "respond to threads", "merge PR", "handle PR feedback", "PR 리뷰 처리", "thread 정리", "봇 코멘트 처리", or mentions a PR number/URL with any review/merge action — even without explicit "respond to all threads". Trigger strongly when multiple review threads need consistent handling, when bot reviewers (gemini-code-assist, claude, codex) post repeated patterns across PRs, when the user wants to push a PR to merge after CI completion, or when a session has multiple in-flight PRs needing coordinated cleanup.
+description: Load this whenever a PR number or URL is in play with any review, thread, or merge action — a PR being taken to merge after CI, bot review comments (gemini-code-assist, claude, codex) needing handling, multiple threads or several in-flight PRs needing consistent cleanup. It applies even when the user never named the skill, because AGENTS.md Non-Negotiable 8 makes the cycle mandatory for PR work, not opt-in. Explicit asks include "process review", "respond to threads", "merge PR", "handle PR feedback", "PR 리뷰 처리", "thread 정리", "봇 코멘트 처리" — and it triggers without an explicit "respond to all threads". The cycle it drives, per the project's 10-step checklist — bulk-classify review threads (Fixed / Deferred / Won't fix / Duplicate / Outdated), post evidence-based replies, manage all three PR timeline item types (review threads + issue comments + review bodies), apply fixup-rebase for review-driven code changes, navigate merge state (CLEAN / BLOCKED / BEHIND / DIRTY), update branches, and merge with the project's own merge method when policy conditions are met.
 ---
 
 # PR response cycle
@@ -33,9 +33,9 @@ ls "$PROJECT_MEMORY"/*.md 2>/dev/null
 
 If the directory doesn't exist (new project, standalone repo), apply this skill's defaults as written. Surface to user that no project memory was found — they may need to bootstrap one or accept the generic defaults explicitly.
 
-Key memory entries that affect this cycle:
+Key memory entries that affect this cycle. **All eight are qa-partner's** — every one exists only under `~/.claude/projects/-*-ai-dev-qa-partner/memory/` (the underscore filenames are the tell; other projects use hyphens). In any other project they are precedent, not authority: read them for the reasoning, then decide from what the current repository actually has — its own project memory, its enforced settings (branch protection, `allow_*_merge`), its own history — in that order, and say which one decided it.
 - `process_review_push_checklist.md` — the canonical 10-step ordering (also the spine of this skill)
-- `feedback_merge_strategy.md` — merge commit, NEVER `--squash` at merge time
+- `feedback_merge_strategy.md` — merge commit, never `--squash` at merge time (elsewhere, resolve it: **Merge strategy**, Stage 5)
 - `feedback_no_admin_merge.md` — `--admin` per-PR explicit only; REST API merge as gh-CLI workaround when APPROVED
 - `feedback_no_admin_merge_option.md` — admin merge MUST NOT appear in status reports as a fallback path
 - `feedback_amend_over_close.md` — scope change → amend (force-push), never close+new
@@ -44,10 +44,10 @@ Key memory entries that affect this cycle:
 - `feedback_spawn_freely.md` — safe teammate spawn doesn't need per-PR confirm
 
 AGENTS.md (global) sections that apply:
-- Non-Negotiables #1 (no AI attribution), #2 (English only), #5 (PR workflow only), #7 (leader-vs-teammate)
+- Non-Negotiables #1 (no AI attribution), #2 (English only), #5 (PR workflow only), #7 (leader-vs-teammate), #8 (review before merge, this cycle mandatory)
 - `## PR Standards` (commits, comment management, resolve policy)
 - Phase 9 (push: rebase before push, PR description reflects latest)
-- Phase 10 (feedback: `git commit --fixup` + `git rebase --autosquash`)
+- Phase 10 (feedback: `git commit --fixup` + autosquash — canonical form under **Stage 5, step 9**)
 
 ## Conventions (apply throughout the cycle)
 
@@ -63,7 +63,7 @@ These rules apply to every artifact this skill produces — commits, PR titles, 
 
 **Commit format** (AGENTS.md PR Standards):
 ```
-type(JIRA-TICKET): brief imperative description
+type(TICKET): brief imperative description
 ```
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `perf`, `chore`
 - Imperative mood, lowercase after colon, under 72 chars, no trailing period
@@ -71,7 +71,7 @@ type(JIRA-TICKET): brief imperative description
 
 **Branch naming** (Phase 2):
 ```
-task/<JIRA-TICKET>          # e.g., task/QAYAK-346
+task/<TICKET>               # e.g., task/QAYAK-346, task/42
 task/<short-description>    # when no ticket
 ```
 
@@ -86,17 +86,18 @@ task/<short-description>    # when no ticket
 - [ ] <verification step 1>
 - [ ] <verification step 2>
 
-Closes <JIRA-TICKET>
+Closes AT-1234      # Jira: the bare key
+Fixes #37           # GitHub issues: the "#" is required
 ```
 
-The closing keyword (`Closes JIRA-TICKET` or `Fixes #N`) lets GitHub/Jira auto-transition the linked ticket on merge — include it in the body, not just the commit message.
+Use the line that matches the repository's tracker and delete the other. The two are not interchangeable: on a GitHub-issue repository `Closes 37` links nothing while still reading as if it had, so the issue stays open after the merge that closed it. Whichever form applies, it belongs in the body — not only in the commit message.
 
 When PR scope changes mid-flight (per `feedback_amend_over_close.md`), update the body to reflect the latest state — Phase 9: "Ensure PR description reflects the latest changes". Don't leave a stale Summary describing the original scope.
 
 **Autosquash vs squash merge** (commonly confused):
-- `git rebase -i --autosquash <base>` (LOCAL, post-fixup) — **REQUIRED** by checklist step 9
-- `gh pr merge --squash` (REMOTE, at merge time) — **FORBIDDEN** by `feedback_merge_strategy.md`
-- They're different operations. Local autosquash collapses fixup commits into their target before push. Squash merge collapses ALL commits into one at merge — that's the prohibited one.
+- Local autosquash (post-fixup) — **REQUIRED** by checklist step 9; canonical form under **Stage 5, step 9**
+- `gh pr merge --squash` (REMOTE, at merge time) — **not this skill's call**: forbidden where the project says so (qa-partner does, via `feedback_merge_strategy.md`), allowed where it doesn't. Resolve it per **Merge strategy**, Stage 5
+- They're different operations. Local autosquash collapses fixup commits into their target before push. Squash merge collapses ALL commits into one at merge — that's the one a merge-strategy decision is about.
 
 ## The canonical 10-step ordering
 
@@ -110,16 +111,18 @@ Per `process_review_push_checklist.md`, every push (after review feedback) follo
 5.  By-design user confirm — minor+ by-design needs user OK
 6.  Stale minimize/dismiss — minimize prior aggregate, dismiss ALL prior reviews
 7.  Issue-comment full sweep — confirm 0 un-minimized bot comments
-8.  Check running workflow — surface to user if any
-9.  Rebase (GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>)
+8.  Review round completed on the head SHA — canonical form under Stage 5, step 8
+9.  Rebase — autosquash per Stage 5, step 9 (exact form + post-check)
 10. Push (alone, last step)
 ```
+
+**These are labels, not an order, and 8 is the one that differs**: the numbering comes from `process_review_push_checklist.md` and is kept so the two documents can be read against each other, but the gate at 8 **runs after 9 and 10**, never before. Its subject is the SHA that ends up on the remote, and 9 and 10 are what decide that SHA — checking before them asks about a commit the push is about to replace, which is the whole failure this gate exists to stop. Executed order within a round: **1-7, then 9, 10, then 8, then the merge gate (Stage 5, Standard merge), then merge.**
 
 **Critical ordering rule — cleanup BEFORE push within each round**:
 
 1. Make all code edits locally (steps 1-2: fix + fixup commit)
 2. Do thread/issue/review-body cleanup (steps 3-7) — reply, resolve, minimize, dismiss
-3. THEN rebase --autosquash (step 9) and push (step 10)
+3. THEN autosquash (step 9) and push (step 10)
 
 Why this order:
 - Each push triggers a new bot review round on the NEW HEAD. If you push before cleanup, the OLD round's threads get auto-dismissed/superseded chaotically with the NEW round's threads.
@@ -136,7 +139,7 @@ The AGENTS.md guideline "Do not interleave code fixes with comment cleanup" appl
 | 2. Classify | (pre-checklist decision) | Decide dispositions |
 | 3. Code change via teammate | 1, 2 | Fix + fixup LOCAL only — no push yet |
 | 4. Apply all dispositions | 3, 4, 5, 6, 7 | Reply, resolve, minimize, dismiss BEFORE push |
-| 5. Finalize + navigate + merge | 8, 9, 10, merge gates | Workflow check, rebase, push, merge |
+| 5. Finalize + navigate + merge | 8, 9, 10, merge gates | Rebase, push, head-SHA review gate, merge |
 
 The order matters: Stage 3 must NOT push. Stage 4 cleans up the existing round's comments. Stage 5 then rebases + pushes (which triggers next bot round) and proceeds to merge gates.
 
@@ -173,8 +176,8 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!) {
 ```
 
 Capture `headRefOid` and `baseRefName`:
-- **`headRefOid`** is the PR HEAD SHA at snapshot time. Re-check this after Stage 4 — if it changed, a concurrent push happened and the cleanup may be stale; restart from Stage 1.
-- **`baseRefName`** is the actual base branch — don't assume `main`. Use this everywhere later commands say `origin/main` (e.g., `gh pr update-branch`, `git rebase --autosquash`).
+- **`headRefOid`** is the PR HEAD SHA at snapshot time. Re-check this after Stage 4 — if it changed, a concurrent push happened and the cleanup may be stale; restart from Stage 1. This snapshot value is never the one the merge gate uses: **Stage 5, step 8** re-reads the head for itself, immediately before merging.
+- **`baseRefName`** is the actual base branch — don't assume `main`. Use this everywhere later commands say `origin/main` (e.g., `gh pr update-branch`, the step 9 autosquash rebase).
 
 If `totalCount > 50`, use cursor pagination (`before:`/`startCursor`) — don't silently miss items.
 
@@ -217,8 +220,8 @@ The issue-comment quoted-response pattern triggers specifically when: the bot's 
 | Condition | Reply pattern | When |
 |-----------|--------------|------|
 | **Fixed** | `Fixed: <what changed>` + file:line reference | Code change addresses the issue |
-| **Deferred** | `Deferred to TICKET-XXX` (ticket MUST exist + verified before posting — **NEVER "will defer later" / "follow-up will be filed" without an actual ticket key**) | Valid issue but out of scope for this PR — only after a real Jira ticket exists |
-| **Won't fix** | `By design: <rationale>` with reasoning | Intentional decision — explain why |
+| **Deferred** | `Deferred to TICKET-XXX` (ticket MUST exist + verified before posting — **NEVER "will defer later" / "follow-up will be filed" without an actual ticket key**) | Valid issue but out of scope for this PR — only after a real ticket exists |
+| **Won't fix** | `By design: <rationale>` with reasoning — or `Won't fix: below threshold` for an item *Fix in round, or close below threshold* puts under the line | Intentional decision — explain why; a below-threshold close is pre-authorized and skips the human gate |
 | **Duplicate** | `Handled in thread #N` with thread reference | Same issue raised in another thread |
 | **Outdated** | (Minimize via `minimizeComment`, no reply needed) | Superseded by newer review round |
 
@@ -228,22 +231,74 @@ Critical rules from AGENTS.md `## Resolve Policy`:
 - Deferring requires the target ticket to actually exist
 - Bot duplicates (same issue across review rounds) → resolve as **Duplicate** referencing the canonical thread
 
-For **Deferred** disposition: the target ticket **MUST exist as a real Jira / GitHub issue with a concrete key** before posting the reply. Phrases like "will defer to a future ticket", "follow-up will be filed", "deferred to next sprint", or "별 ticket 으로 처리" without a key are **NOT valid Deferred replies** — they ship a promise nobody will track. Two-step procedure:
+### Fix in round, or close below threshold — which items may leave this PR
+
+A review lane can chase its own tail, and the table above cannot see it happening. Measured on `ignite-corp/ai-dev-infra-max#1`: the reviewer approved every round while each fix push produced one or two new test-hardening items, and after five rounds the lane had not converged — because the queue was fixing every item, and the surface of "properties a hand-written assertion test could have" is unbounded. Five parallel lanes ran rounds 5..11 that week and three of them independently reported the same shape without being asked to look for it: **the later rounds' findings were against the code the previous round's fixes had added.** One PR grew from config-plus-wording to config plus two test modules plus a conftest.
+
+So every item a round raises gets one question before it reaches the disposition table:
+
+- **Fix in round** — critical, major, and any minor that changes what the code or the guard will catch. Correctness and security included, always.
+- **Close below threshold** — items that only change how a test is written, and every *other* minor: a nit, a wording, naming or `작성 방식` item, anything the line above does not already send back into the round. Reply `Won't fix: below threshold` and resolve by the table above. **No ticket.** A finding worth a ticket is worth its own summary naming the defect, so there are no `PR #N follow-up`, `PR #N RN 잔여` or `리뷰 suggestion 묶음` tickets.
+
+**The boundary is not test-vs-code.** That is the obvious wording and it is the wrong one. The same week's *test-level* items included a harness defect where two inversions of equal length shared a `.pyc`, so a failure was attributed to the previous case and one guard was not actually proven for several rounds; a coverage gate that passed with nothing analysed (`filesAnalyzed=0 expected=0`, exit 0), rebuilding the very defect its own ticket existed to close; and a policy table whose tests all fabricated the second file it declared facts about. A rule that defers "test-hardening" defers those three — each of which changes what is caught, and two of which had already let a real defect through. Ask this instead, in these words:
+
+> does the item change what the code or the guard will catch, or only how the test is written?
+
+- **Changes what is caught — fix in round**: "add a case for X" where X is a reachable failure the guard misses; a test whose assertion never exercised the path it names; a gate that passes on an empty input set; a fixture shared where the cases must not share one.
+- **Only how the test is written — close below threshold**: "rename the fixture", "assert the whole string instead of a prefix", "extract the helper", "add `-> None`".
+
+**Two conditions, pre-authorized** (user decision, 2026-10-16, superseding 2026-10-08). An item that meets **both** is closed `Won't fix: below threshold` without asking:
+
+1. the item does not change what the code or the guard catches;
+2. the item is, in substance, a minor or a suggestion — the only two severities this carve-out admits. Critical, major, correctness and security never close below threshold, whatever label the reviewer put on them, and neither does a severity this line does not name: anything not admitted here is refused by default and reaches the gate below.
+
+Those two replace the per-item question for that one shape of item and nothing else. **Everything outside them keeps the human gate below** — every `Deferred`, every other `Won't fix`, every intentional hold or skip.
+
+**Security needs a judge, not a label.** Reviewers do file security findings as `minor` — an internal-visibility guard arrived that way on `ai-dev-pr-review#202`, 2026-10-16 — so the severity the reviewer typed does not settle condition 2. An item whose security relevance is ambiguous is **not** below threshold: it goes to the human gate, where the skill already sends every security judgment.
+
+**Why the batch ticket went away.** Until 2026-10-16 this section batched those items into one follow-up ticket per PR and closed each `Deferred to <KEY>`. Measured that day, the owner's To Do held 181 assigned tickets, about 40 of them that batch shape — `PR #N 후속`, `RN 잔여`, `suggestion 묶음` — and the recursion the old rule claimed would terminate did not: each batch ticket got its own PR, that PR got its own rounds, and each round batched again. A below-threshold item that matters is raised again by the next round on that file; that is the reviewer's job, and it costs nothing to carry. A ticket is for a defect worth its own summary.
+
+### Human gate on punt decisions (Deferred / Won't fix / intentional hold) — MANDATORY
+
+The agent must NOT unilaterally decide to punt a valid finding down the road. **Deferred, Won't fix, and any "나중에 / later / 의도적 보류 / intentional skip" disposition is a human-judgment decision, not an agent decision** — surface it and get explicit human sign-off on the *decision to punt itself* BEFORE posting the reply and resolving. Verifying a ticket exists is necessary but NOT sufficient: the human must agree the finding *should* be punted rather than fixed now.
+
+Why this rule exists: a deferred/held finding is invisible after merge — it lives only in a ticket nobody re-opens. The AT-1839 class (a real `validation-canary` failure recorded as "의도적 보류 — 비핵심" during a DR drill, then silently red for ~4 weeks and hiding 4 downstream stacks) is exactly this failure mode: an agent-or-human punt that no human deliberately re-affirmed. The recurrence cost dwarfs the confirm cost.
+
+One carve-out, and only one: the below-threshold close in *Fix in round, or close below threshold* is pre-authorized (user decision, 2026-10-16), so an item meeting both of its conditions is closed `Won't fix: below threshold` without coming here. The conditions are stated there and nowhere else. Every other `Won't fix`, and every `Deferred` without exception, reaches this gate.
+
+Concretely, before Deferred or Won't fix on anything the two conditions above do not put below the threshold (and ALWAYS for correctness/security findings, including any item whose security relevance is ambiguous):
+1. **State the punt as a decision, not a fact**: "이 finding은 지금 고치지 않고 <TICKET>으로 미루려 합니다 — 사유: <why out-of-scope>. 진행할까요?" — present it via `AskUserQuestion` (or an explicit inline ask), never as an already-decided line in a status report.
+2. **Get the human's answer** on the punt itself. If they say fix-now, re-classify to Fixed (dispatch the change). Only on explicit agreement do you post the Deferred/Won't-fix reply.
+3. **Record who decided and when** in the reply and the ticket, so the punt is auditable ("Deferred to AT-XXXX per <user> 2026-MM-DD").
+
+The existing step-5 "By-design user confirm" (minor+ intentional choices need user OK) is this same gate for Won't fix; this rule generalizes it to **Deferred and every hold/skip**, and makes the confirmation about the *decision*, not just the ticket's existence. Trivial cosmetic Outdated-class items and pure Duplicates are exempt (they punt nothing — the issue is already handled or gone).
+
+For **Deferred** disposition: the target ticket **MUST exist in the repository's tracker with a concrete key** before posting the reply. Phrases like "will defer to a future ticket", "follow-up will be filed", "deferred to next sprint", or "별 ticket 으로 처리" without a key are **NOT valid Deferred replies** — they ship a promise nobody will track. Two-step procedure:
 
 **Step 1 — Create the ticket first (if it doesn't exist)**
-If the ticket doesn't exist yet, create it via Atlassian MCP (`mcp__claude_ai_Atlassian__createJiraIssue`) or `gh issue create` BEFORE posting the thread reply. Capture the new key.
+If the ticket doesn't exist yet, create it in whichever tracker the repository's `AGENTS.md` names - `gh issue create`, or the Atlassian MCP where that is the tracker - BEFORE posting the thread reply. Capture the new key.
 
 **Step 2 — Verify the key exists, then reply**
+Verify the key against whichever tracker the repository names:
+
 ```bash
-# Jira
+# a tracker reached through the Atlassian MCP
 mcp__claude_ai_Atlassian__getJiraIssue cloudId=<id> issueIdOrKey=<TICKET>
 # or: gh api "https://<site>.atlassian.net/rest/api/3/issue/<TICKET>" 2>/dev/null
 
-# GitHub issue
-gh api repos/O/R/issues/<N> --jq .number 2>/dev/null
+# GitHub issue. Compared, not merely run: /issues/<N> also serves pull
+# requests, so the bare lookup accepts the PR you are working on as its own
+# deferral target. Filtering the PR out empties the output but leaves the exit
+# status at 0, so a caller reading only `$?` still cannot tell the two apart.
+# Measured against this repository: #48 is a PR and #37 is an issue.
+#
+#   --jq 'select(...)|.number'   #48 -> out="" rc=0   #37 -> out=37 rc=0
+#   compared to <N>              #48 -> rejected      #37 -> accepted
+#
+[ "$(gh api repos/O/R/issues/<N> --jq 'select(.pull_request==null)|.number' 2>/dev/null)" = "<N>" ]
 ```
 
-If either lookup fails — the ticket key is invalid or doesn't exist — **pick a different disposition** (Fixed / Won't fix / Duplicate). Never post a Deferred reply pointing at a phantom key. A deferred-to-nothing reply ships a lie that gets merged.
+If a lookup fails or the comparison does not hold — the key is invalid, absent, or names a pull request rather than an issue — **pick a different disposition** (Fixed / Won't fix / Duplicate). Never post a Deferred reply pointing at a phantom key. A deferred-to-nothing reply ships a lie that gets merged.
 
 Acceptable Deferred reply format:
 ```
@@ -275,74 +330,32 @@ For Fixed-class items requiring code change:
    git commit --fixup=<target SHA>
    # NO push here — Stage 4 cleanup must finish first
    ```
-3. **Leader integrates** the teammate's branch back into the PR branch (still local, no push). For the default flow (teammate didn't push), use **Cross-worktree fixup integration** below — no fetch needed since worktrees share `$GIT_COMMON_DIR/objects/`. If the teammate explicitly pushed their branch (non-default path), use the fetch form:
-   ```bash
-   git fetch origin <teammate-branch>:<teammate-branch>
-   git checkout <pr-branch>
-   git merge --ff-only <teammate-branch>   # if teammate worked on a sibling branch
-   # OR if teammate worked directly on the PR branch:
-   git pull --rebase origin <pr-branch>
-   ```
-4. **Defer rebase + push to Stage 5** — checklist steps 9 (rebase --autosquash) and 10 (push) run AFTER Stage 4 cleanup. Stage 3 ends with the fixup commit local, no remote update.
+3. **Leader integrates** the teammate's fixup into the PR branch (still local, no push). Two paths, told apart by what the teammate reports it did — the SHA of its fixup and whether it pushed — not by what the leader expects:
+   - **The fixup is local only** (step 2's rule, so the usual case): there is no remote ref to fetch. A worktree-isolated teammate shares this repository's object store, so its commit is reachable by SHA from the PR branch's checkout:
+     ```bash
+     git worktree list                  # the teammate's worktree and the branch it committed on
+     git checkout <pr-branch>           # refused while another worktree holds the branch — below
+     git merge --ff-only <fixup-sha>    # the teammate branched from the PR head
+     # OR, when the PR branch has moved since the teammate branched from it:
+     git cherry-pick <fixup-sha>        # a conflict or an empty pick stops here — below
+     ```
+   - **The teammate pushed a sibling branch** (it was told to, or it works from a separate clone): the remote ref exists, so fetch it:
+     ```bash
+     git fetch origin <teammate-branch>:<teammate-branch>
+     git checkout <pr-branch>
+     git merge --ff-only <teammate-branch>
+     ```
+   A `fixup!` subject survives both paths, so Stage 5, step 9 squashes it the same. A teammate that pushed to the PR branch itself has already started the round this stage exists to hold back — that is a step-2 breach to report, not a third path.
 
-**Cross-worktree fixup integration** (common when the teammate worked on a `worktree-agent-<id>` branch, not on the PR branch directly):
+   Where the local path stops, and what to do there. The multi-worktree case is the expected one — `git worktree list` is the first line because of it — and the checkout is where it shows:
+   - `error: 'task/X' is already used by worktree at /path/Y` — the PR branch is checked out in another worktree: an earlier teammate's, or the original spawn's. Either integrate from that worktree (`cd /path/Y`, then the merge or cherry-pick line), or override the dual-checkout lock from here with `git checkout --ignore-other-worktrees <pr-branch>` — every worktree keeps its own HEAD, so the flag bypasses the lock and nothing else. Round 2 of ignite-corp/ai-dev-pr-review#194 stopped on exactly this refusal, after the recipe that named the case had been removed.
+   - `error: could not apply <sha>...` from `git cherry-pick` — a conflict applying the fixup. Resolve the markers, `git add <files>`, then `git cherry-pick --continue`; `git cherry-pick --abort` backs out entirely.
+   - `The previous cherry-pick is now empty, possibly due to conflict resolution` — the fixup's diff is already on this branch (picked once before, or both branches made the same change): `git cherry-pick --skip` drops the empty commit.
+4. **Defer rebase + push to Stage 5** — checklist steps 9 (autosquash) and 10 (push) run AFTER Stage 4 cleanup. Stage 3 ends with the fixup commit local, no remote update.
 
-If the teammate replies with a fixup commit SHA on their own worktree branch (not on `task/<TICKET>`), the leader integrates via cherry-pick into a worktree that owns the PR branch:
+Trivial exceptions where leader edits directly: reply posts to review threads (text only), ticket comments, PR descriptions. NOT code/config/doc files.
 
-```bash
-# 1. The PR branch may already be held in another worktree (a leftover from
-#    an earlier teammate, or the original spawn). Find it:
-git worktree list | grep '<pr-branch>'
-
-# 2. If a worktree owns the branch, cd there. Otherwise pick any worktree
-#    and use `--ignore-other-worktrees` to override the dual-checkout lock
-#    (the flag overrides the safety lock; each worktree still keeps its own
-#    HEAD at `$GIT_COMMON_DIR/worktrees/<id>/HEAD`):
-git checkout --ignore-other-worktrees <pr-branch>
-
-# 3. Cherry-pick the teammate's fixup commit. No `git fetch` needed —
-#    Stage 3 says the teammate does NOT push, and all worktrees share
-#    `$GIT_COMMON_DIR/objects/`, so the fixup SHA is already reachable
-#    locally via the agent's worktree.
-git cherry-pick <fixup-sha>
-#    If cherry-pick reports `error: could not apply <sha>...`, it hit a merge
-#    conflict during patch application. Resolve the conflict markers in the
-#    affected files, then `git add <conflicted-files>` followed by
-#    `git cherry-pick --continue`. To abort entirely: `git cherry-pick --abort`.
-#
-#    A separate, distinct pre-flight error message `error: Your local changes
-#    to the following files would be overwritten by merge` indicates the
-#    current worktree has uncommitted changes that would be overwritten — that
-#    one is fixed by `git stash` first, then retry. Each worktree has its own
-#    isolated index, so uncommitted edits in another worktree cannot cause a
-#    cherry-pick conflict in the current worktree.
-#
-#    If cherry-pick says "The previous cherry-pick is now empty, possibly
-#    due to conflict resolution" with a hint to use `git cherry-pick --skip`,
-#    the fixup's diff is already on this branch (already applied in a prior
-#    cherry-pick, or both branches independently arrived at the same change)
-#    — `git cherry-pick --skip` to drop the empty commit and proceed.
-
-# 4. Defer Autosquash + push to Stage 5 (Do NOT run these until Stage 4
-#    cleanup is complete):
-# GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash origin/<baseRefName>
-# git push --force-with-lease origin <pr-branch>
-```
-
-This is necessary because:
-- `Agent(isolation: "worktree")` creates a fresh worktree on a `worktree-agent-<id>` branch by default, NOT the PR branch.
-- When the teammate runs `git commit --fixup=<sha>`, the fixup lands on the agent's worktree branch, not the PR branch.
-- All worktrees in the same repo share `$GIT_COMMON_DIR/objects/`, so the leader can cherry-pick the teammate's local-only commit without any remote round-trip.
-
-If the teammate explicitly checked out the PR branch (e.g., via `--ignore-other-worktrees`), the fixup is already on the right branch — skip cherry-pick, just rebase + push.
-
-**Worktree race troubleshooting**:
-- `error: 'task/X' is already used by worktree at /path/Y` — another worktree holds the branch. Either `cd` to that worktree and work there, or use `--ignore-other-worktrees` to override (the worktrees still keep separate HEADs; the override just bypasses the dual-checkout safety lock).
-- Cherry-pick reports empty commit / suggests `--skip` — the fixup diff is already on this branch. Run `git cherry-pick --skip` to drop the empty commit and proceed to autosquash.
-
-Trivial exceptions where leader edits directly: reply posts to review threads (text only), Jira comments, PR descriptions. NOT code/config/doc files.
-
-For **PR scope changes** (rename, restructure, new requirements): per `feedback_amend_over_close.md`, **amend the existing PR** (force-push history rewrite). NEVER close + open new PR. The existing review threads (resolved + unresolved) and Jira link continuity are why. Update the PR body too (Phase 9).
+For **PR scope changes** (rename, restructure, new requirements): per `feedback_amend_over_close.md`, **amend the existing PR** (force-push history rewrite). NEVER close + open new PR. The existing review threads (resolved + unresolved) and the continuity of the ticket link are why. Update the PR body too (Phase 9).
 
 ### Stage 4 — Apply all dispositions (checklist steps 3, 4, 5, 6, 7)
 
@@ -393,7 +406,7 @@ gh api --method POST repos/OWNER/REPO/pulls/N/requested_reviewers \
   -f reviewers='["<human-reviewer-login>"]'
 ```
 
-**Review body dismiss rule (strict)**: when code changes are made on the PR (any fixup commit, any new push affecting reviewable code), ALL prior review bodies must be dismissed — both APPROVED and CHANGES_REQUESTED. The new HEAD has not been re-reviewed, so prior approvals are stale by definition.
+**Review body dismiss rule (strict)**: when code changes are made on the PR (any fixup commit, any new push affecting reviewable code), ALL prior review bodies must be dismissed — both APPROVED and CHANGES_REQUESTED. The new HEAD has not been re-reviewed, so prior approvals are stale by definition. The review workflow's own aggregate is a review body on a consumer with `ALLOW_AUTO_APPROVE` on (step 8's shape table), and it is what the merge gate's kind (i) reads there — on the new head, in state `APPROVED` or `CHANGES_REQUESTED` — the only two the producer reviews with. This loop never reaches it when run where this stage places it, before the push: that aggregate is posted by the round the push starts, so it does not exist yet, and the reviews the loop finds are the previous head's — and this loop is what dismisses them. The producer folds only its own `CHANGES_REQUESTED` marker reviews (`aggregate_reviews.py`, `_minimize_stale_bot_items`, at ai-dev-pr-review d554aee) and never an approval; on the three PRs step 8's shape table cites, every dismissed approval was dismissed by this account — `review_dismissed` timeline events read 2026-10-02: ai-dev-cab #515 at 19:54:06Z, ai-dev-qa-partner #1195 at 07:17:40Z, ai-dev-infra-common #876 at 10:05:02Z, all `hyuk-hur`, none carrying the producer's `Superseded by new review` message. On a consumer that does not run this loop the previous head's approval stays `APPROVED`, and the gate's `commit_id` equality is the only thing that refuses it. Re-running the loop after the push would dismiss the new head's aggregate; the gate then refuses kind (i) and falls to kind (ii) — closed, not open — so restart from Stage 1 rather than re-running this loop on a head whose round has posted.
 
 **Issue comment quoted-response format** (per `process_review_push_checklist.md` step 4):
 ```
@@ -422,17 +435,61 @@ If the HEAD changed, your replies likely landed on stale threads (new bot review
 
 ### Stage 5 — Finalize + navigate merge state + merge (checklist steps 8, 9, 10 + merge gates)
 
-**Step 9 — local rebase --autosquash IS MANDATORY before push** (use `baseRefName` from Stage 1):
+**Step 9 — local autosquash IS MANDATORY before push** — this block is the recipe's only home; every other mention, in this skill and in `claude/AGENTS.md` Phase 10, points here (use `baseRefName` from Stage 1). The rebase and its post-check are one sequence — paste the whole block; `pre`, captured before the rebase, is what the check after it compares against. The squash targets `$mb`, the branch's own merge-base with the base, so nothing inside this block moves the base:
 ```bash
-GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash origin/<baseRefName>
+[ ! -d "$(git rev-parse --git-path rebase-merge)" ] && [ ! -d "$(git rev-parse --git-path rebase-apply)" ] \
+  || { echo "ERROR: a rebase is already in progress — finish or abort it before autosquashing"; exit 1; }
+mb=$(git merge-base origin/<baseRefName> HEAD) \
+  || { echo "ERROR: cannot find the merge-base with origin/<baseRefName> — is it fetched?"; exit 1; }
+pre=$(git rev-parse HEAD)
+# Both editors stubbed: GIT_SEQUENCE_EDITOR for the todo list, GIT_EDITOR for the
+# commit message a squash! opens. The default combined message is the target's
+# plus the squash! body, which is what --squash= asked for, and the tree check
+# below proves the squash rewrote no content -- do not drop a stub to review it.
+rc=0; GIT_SEQUENCE_EDITOR=true GIT_EDITOR=true git rebase -i --autosquash "$mb" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+    orig=$(cat "$(git rev-parse --git-path rebase-merge)/orig-head" 2>/dev/null \
+        || cat "$(git rev-parse --git-path rebase-apply)/orig-head" 2>/dev/null)
+    [ -n "$orig" ] \
+      || { echo "ERROR: rebase state on disk has no readable orig-head — inspect git status and clean up by hand"; exit 1; }
+    [ "$orig" = "$pre" ] \
+      || { echo "ERROR: a rebase not started by this block is in progress (orig-head ≠ $pre) — not touching it; finish or abort it by hand"; exit 1; }
+    git rebase --abort \
+      || { echo "ERROR: autosquash failed AND git rebase --abort failed — rebase state is still on disk; inspect git status and clean up by hand before anything else"; exit 1; }
+    echo "ERROR: autosquash stopped mid-replay — the fixup cannot be replayed cleanly in place. Aborted; re-target it at the most recent commit in the branch that touches those hunks, do not resolve by hand, do not push"
+  else
+    echo "ERROR: autosquash did not start (exit $rc) — read git's output above: unfetched base ref, invalid ref, or a failing hook; nothing to abort, do not push"
+  fi
+  exit 1
+fi
+[ ! -d "$(git rev-parse --git-path rebase-merge)" ] && [ ! -d "$(git rev-parse --git-path rebase-apply)" ] \
+  || { echo "ERROR: a rebase is still in progress — HEAD is a partially rebuilt branch, not a squashed one"; exit 1; }
+git diff --quiet "$pre" HEAD \
+  || { echo "ERROR: the tree changed across the autosquash — a squash rewrites history, never content"; exit 1; }
+subjects="$(git log --format=%s origin/<baseRefName>..HEAD)" \
+  || { echo "ERROR: could not read origin/<baseRefName>..HEAD — is the base ref fetched?"; exit 1; }
+if printf '%s\n' "$subjects" | grep -qE '^(fixup|squash|amend)!'; then
+  echo "ERROR: fixup/squash/amend commits not squashed — run autosquash first"; exit 1
+fi
+echo "OK — clean history, $(printf '%s\n' "$subjects" | grep -c .) commit(s) checked"
 ```
 
-This collapses `fixup! <original>` commits into their target commits. Without this step, pushing leaves literal `fixup! <message>` commit titles in remote history — visible in PR commit list, ugly in `git log`, and hard for reviewers to follow. The autosquash is non-optional; verify before push:
-```bash
-git log --oneline origin/<baseRefName>..HEAD | grep -i '^[a-f0-9]* fixup!' \
-  && echo "ERROR: fixup commits not squashed — run autosquash first" \
-  || echo "OK — clean history"
-```
+Precondition, not something the block can verify: no other session rebases this worktree while the block runs (AGENTS.md Multi-Agent Safety: one worktree per teammate). git keeps no owner on rebase state, so the `orig-head` comparison is the strongest signal available; a second rebase started at the same HEAD inside the window is indistinguishable, and the rule, not the block, is what excludes it.
+
+Then, if `origin/<baseRefName>` is ahead of `$mb`, `git rebase origin/<baseRefName>` — an ordinary rebase whose conflicts are ordinary conflicts, outside the squash check; re-run the whole block afterwards; it captures a fresh `$mb` against the updated base. `$mb` is the squash upstream only; the subject check reads `origin/<baseRefName>..HEAD` because that is what reaches the remote — the two coincide when there is one merge-base and differ with several, where only the origin range answers the question.
+
+`GIT_SEQUENCE_EDITOR=true` is what makes `-i` non-interactive: it stubs out the todo-list editor so the rebase never opens one. `GIT_EDITOR=true` stubs the other editor the rebase can open: a `squash!` commit — `git commit --squash=<sha>`, one of the three prefixes the check enumerates — makes the rebase combine the two messages and open the commit-message editor, which `GIT_SEQUENCE_EDITOR` does not reach. Measured on round 6 of ignite-corp/ai-dev-pr-review#194 (2026-10-14, git 2.43, a branch holding one `squash!`, `GIT_EDITOR` unset, stdin not a terminal): the rebase launched the default editor, the editor refused the non-terminal input, `git commit` failed with *There was a problem with the editor*, and the rebase stopped at `Could not apply … squash! …` with `rebase-merge` on disk — which the block's failure branch then reports as a replay conflict it is not; an editor that waits instead of refusing hangs the shell at that point. With both stubs the same branch rebased to a clean history, the target carrying the combined message, tree unchanged. The shell the block was first run in had `GIT_EDITOR=true` in its environment already, which is why the defect did not show there and will not show in any shell that pre-sets it. Keep all three — `-i` and the two stubs — none is noise, and without the stubs the `-i` would wait on an editor that never opens. Version dependence: git 2.44+ honours `--autosquash` without `-i`, but 2.43 (what Ubuntu noble ships) exits 0 and squashes nothing.
+
+This collapses the autosquash-prefixed commits into their target commits. Without it, pushing leaves those literal titles in remote history — visible in PR commit list, ugly in `git log`, and hard for reviewers to follow. The autosquash is non-optional, and because it can fail silently the check that follows the rebase in the block is part of the recipe rather than an extra — it is version-independent, so it runs after every autosquash, before push.
+
+Eleven properties, all load-bearing, because a check for a silent failure must not have one of its own: a rebase already in progress before the block starts is loud and exits non-zero; rebase state found after a failure is aborted only when its `orig-head` is the HEAD this block captured as `pre`, so a rebase another session started — before the block, or in the window after its precondition — is left untouched, loud, and exits non-zero, and state with no readable `orig-head` at all is reported as exactly that rather than as someone else's; a merge-base that cannot be found — base ref unfetched or misspelt — is loud and exits non-zero before anything runs; a rebase that stopped mid-replay is aborted, loud, and exits non-zero; an abort that itself fails is loud, exits non-zero, and says the state is still on disk rather than claiming a clean abort; a rebase that never started — unfetched base ref, invalid ref, failing hook — is loud, exits non-zero with git's own output above it, and aborts nothing; a rebase directory still present is loud and exits non-zero; a tree that differs from `pre` is loud and exits non-zero; a range that could not be read is loud and exits non-zero; an autosquash-prefixed subject is loud and exits non-zero; only a range actually read and actually clean prints OK. An empty range — a branch with no commits ahead of base — is legitimate, and reports `0 commit(s) checked`, which a failed read never reaches.
+
+The exit-status guard and the two assertions ahead of the grep exist because the grep alone passed on a rebase that had stopped: on 2026-09-07, on hyukhur3680 (the factory-system-builder session, ignite-pilot-org/factory-system-builder PR #18), an autosquash halted on a conflict, the fixups not yet replayed sat outside `<base>..HEAD` — HEAD was the partially rebuilt branch — so the old check reported a clean history and 2 of 5 commits were force-pushed. A conflict here means the fixup cannot be replayed cleanly in place — abort, then re-target it at the most recent commit in the branch that touches those hunks: the later commit when the original target was right but a later one overlaps it, the right commit when the target was simply wrong. Resolving by hand inside the autosquash authors content in a step that must change none. The tree check is about the squash alone: the rebase targets `$mb`, the branch's own merge-base, so a base that moved since the last sync cannot change the tree inside this block — updating onto it is the separate, ordinary rebase above, deliberately outside the check, because inside it a moved base would fail a good squash.
+
+The alternation above is the only place the prefixes are enumerated; everything else defers to it. There are three, not two: `git commit --fixup=<sha>` writes `fixup!`, `git commit --squash=<sha>` writes `squash!`, and `git commit --fixup=amend:<sha>` — with `--fixup=reword:<sha>` as its shorthand — writes `amend!`. `--autosquash` collapses all three, so all three reach the remote unsquashed under the same silent no-op, and a check that matches only the first two reports clean history with an `amend!` commit sitting in the range.
+
+Two details in the shape are deliberate. Reading into `subjects` first makes the range read a step that can fail: piping `git log` straight into `grep -q` swallows the failure, since `grep` then finds no match, exits 1, and an `|| echo "OK"` tail reports clean history having inspected nothing. And the match is on `--format=%s` rather than `--oneline`: a `log.decorate` setting inserts `(HEAD -> branch)` between the SHA and the subject, so an anchored pattern skips the very commit it exists to find.
 
 **Step 10 — push** (single push at end of round, force-with-lease for amended history):
 ```bash
@@ -440,34 +497,967 @@ git push --force-with-lease origin <branch>
 ```
 Always `--force-with-lease`, never `--force`. Lease guards against silently overwriting concurrent updates.
 
-**Step 8 — running workflow check** (before merge gate):
+**Step 8 — a verdict on the exact head SHA** — the run read below is the gate's only home for the review workflow's run; the merge state table below and the anti-pattern list both point here. A run is one of the two verdict kinds the Standard merge gate accepts: kind (i) is this run, completed/success, **and** the aggregate it posted — an issue comment or a review, by the consumer's configuration (the shape table below) — reporting every configured reviewer — the gate block reads that roster, because a green job is not a full round (#140, below); kind (ii) is a local-review verdict comment naming the SHA, read in the gate block itself, because a run that produced no verdict is not a review and a local review is then required (*Review routing*, global AGENTS.md).
+
+The question is not *"is anything running?"* but **"has a review round completed against the commit I am about to merge?"** The difference is when each can be answered wrongly. A branch-scoped `gh run list --branch <branch> --status in_progress` returns the same empty list whether the branch is genuinely idle or the push's run has simply not registered yet — and a run registers seconds after the push. An empty answer inside that window reads as *quiet* when it means *not visible yet*, and the gate opens on a head nothing has looked at. A question that names the SHA has no such window: a commit with no run has no run, whenever you ask it.
+
 ```bash
-gh run list --repo OWNER/REPO --branch <branch> --status in_progress --limit 5
+HEAD_SHA=$(gh pr view N --repo OWNER/REPO --json headRefOid --jq .headRefOid)
+gh run list --repo OWNER/REPO --commit "$HEAD_SHA" \
+  --json databaseId,workflowName,status,conclusion
 ```
-If any are running, surface to user and wait — don't merge while CI is mid-flight. Also wait for the post-push bot review round to complete (which becomes the NEXT round's input if it adds threads).
+
+**Know the review workflow's name before you read the output.** The gate is not "some run completed", it is "the *review* round completed": a repository's lint, build, or deploy workflow can be green on a head no reviewer has looked at, and a result list full of those is indistinguishable from a review round unless you are matching a name. Get it from `gh workflow list --repo OWNER/REPO`, or from the repository's own `AGENTS.md` / `.github/workflows/`, and read it from the repository you are merging into, not from an example: in a consumer repository wired per `ignite-corp/ai-dev-pr-review`'s README — the minimal thin trigger, `.github/workflows/ai-review.yml` — it is `AI Code Review`; in `ignite-corp/ai-dev-pr-review` itself it is `AI Code Review (self)` (`.github/workflows/self-review.yml`), and that repository has no `ai-review.yml`. The gate block checks the name you fill in before anything reads it — `review_workflow_known`, against this head's run list and the repository's workflow list — so a name copied from the wrong repository stops the gate rather than quietly shortening (c)'s cutoff window. Read the reviewer count from the same place, for the gate's `EXPECTED_REVIEWERS`: it is the number of reviewers the orchestrator the workflow `uses:` configures — `ignite-corp/ai-dev-pr-review`'s `base-ai-review-orchestrator.yml@v1` from a consumer, the same file by local path from `self-review.yml` — one per reviewer key, claude, codex and gemini, the same three the workflow's own preflight job names by key, and not one per job: that file declares two jobs per reviewer and runs one of them (the note on (d) under *Standard merge* below, measured on #172), so counting jobs fills `6` and `headline_roster` then refuses every full `3/3` headline on its denominator — so `3`. The headline's denominator cannot stand in for it: `2/2` is a full roster of two, and the gate has no other way to know three were configured. Where a repository has no review workflow at all, that is a fact to state, not a gate to pass — say so and let the human decide.
+
+`--commit` is what makes this a question about a commit. Do not substitute `--branch`, do not add `--status`, and do not sweep `--limit N` without `--commit` and filter for the SHA afterwards — an unscoped sweep silently answers "none" once the SHA falls off the end of the page. With `--commit` the list is already one SHA's, so a `--limit` there only bounds how many of that SHA's runs are read, which is how the merge-gate block below uses it. `--status in_progress` is the narrower trap: it matches neither a run that has not registered yet **nor one sitting in `queued`**, so it reports quiet on a head whose round is already scheduled. Measured on PR #93 while this section was being written — the branch-scoped in-progress query returned empty at `11:32:56Z`, and the SHA-named query returned a run on that same head at `11:33:00Z`, four seconds later.
+
+Where `gh run list --commit` is unavailable, `gh api repos/OWNER/REPO/commits/$HEAD_SHA/check-runs` names the SHA in the URL path and is scoped to the same commit — but it is **job-level, not workflow-level**: its `name` is the job's name (`review / aggregate / Aggregate & Verdict`), not the workflow's. Apply the same name discrimination the table below asks for, against the job name the review workflow's job carries, and do not read a `name` there as a `workflowName`.
+
+Every branch of the result is a decision, and one of them is a block:
+
+| Result | Meaning | Action |
+|--------|---------|--------|
+| `[]` | **No review has run on what you are about to merge.** This is not "quiet" | **BLOCK.** Wait and re-ask. If it stays empty for minutes, the workflow did not trigger on this push — find out why. Do not merge on a run that is not there. Where the workflow cannot run at all — Actions blocked on the account, workflow disabled — *Review routing* requires a local review, and its verdict comment on this SHA is what the gate's kind (ii) reads |
+| entries present, but **none** has the review workflow's `workflowName` | other CI ran on this head; the review did not | **BLOCK — identical to `[]`.** A green lint or build run is not a review. Read the names, not the count |
+| the review workflow's entry has `status` other than `completed` | the round is in flight on this SHA | **WAIT**, re-asking until it is `completed` |
+| the review workflow's entry is `completed` with `conclusion: success` | a round ran on this head and the job ended green — which is not yet "every reviewer reported": a reviewer cut at the step cap leaves the job `success` (AT-2511) | **the only row that can open the gate** — continue to the merge state table; the Standard merge gate then reads this run's aggregate, on whichever surface the shape table below says it lands, and counts the run as a verdict only when its roster is full |
+| the review workflow's entry is `completed` with `conclusion` `failure` / `cancelled` / `timed_out` **and the run posted a verdict** | a round ran and did not pass | a failing check: read it, fix the cause |
+| the review workflow's entry is `completed` with `conclusion: failure` but **posted no verdict** — the review job never started (0 steps, runner unassigned, GitHub's *"The job was not started because recent account payments have failed"* annotation), or every reviewer was skipped (`Review skipped -- PR too large`) | **no verdict — not a rejection.** The check is red because a required check that never reports stays pending forever, not because the change was judged | **BLOCK on kind (i), and not a negative verdict**: *Review routing* requires a local review, whose comment on this SHA is the gate's kind (ii). Do not read the red check as the reviewer's answer, and do not count it as running for (d) — its status is `completed`. The two observed shapes are under the gate block below |
+| the review workflow's entry is `completed` with **any other** `conclusion` — `skipped`, `neutral`, `action_required`, `stale` | the round produced no usable result. A conditional `if:` that evaluated false reports `skipped`, and a skipped review is an absent review | **BLOCK.** Find out why it did not run before merging. Read this row as the default: `success` is the only value that opens the gate, and every other completed conclusion lands here |
+
+The aggregate the success row sends the gate to read lands on one of two surfaces under one of two identities, chosen by the consumer's configuration of `base-ai-review-aggregate.yml` — the `ALLOW_AUTO_APPROVE` repository variable and the `REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY` App credentials. Three shapes, measured 2026-10-02 on each consumer's newest merged PR (#174):
+
+| configuration | surface | identity | bound to the run by | measured on |
+|---|---|---|---|---|
+| `ALLOW_AUTO_APPROVE` off | issue comment; the headline carries, for example, `posted as comment (auto-approve off)` — that segment is appended to an approve or request-changes verdict only, not to `Comment Only` | `github-actions[bot]` | time — created inside the run's `createdAt`..`updatedAt` | hyuk-hur/dev-dotfiles #168, ignite-corp/ai-dev-pr-review |
+| on, no App key | review, state `APPROVED`; the previous head's review is `DISMISSED` | `github-actions[bot]` | commit — `commit_id` is the head, state `APPROVED` or `CHANGES_REQUESTED` | ignite-corp/ai-dev-qa-partner #1195 |
+| on, with the App | review, state `APPROVED` / `DISMISSED` | `ignite-ai-review-approver[bot]` | commit — the same | ignite-corp/ai-dev-infra-common #876, ignite-corp/ai-dev-cab #515 |
+
+Both identities have `user.type` `Bot`; the gate's `AGG_AUTHORS` lists exactly those two, and a marker body by any other login is not an aggregate on either surface. The rows are the approval's shape, and identity is per verdict, not per repository (LENS, `aggregate_reviews.py` `post_verdict`, 2026-10-02): a `Changes Requested` review is posted with the default token, so it is `github-actions[bot]`'s on the App repositories too; a `Comment Only` verdict, and the fallback after a review-API failure or a timeout, is an issue comment whatever the killswitch says — the failure one carries a `> [!] Intended verdict: **<v>** (review API failed, posted as comment)` note after the body and the timeout one carries no note at all (AT-2597); and the App mint step is `continue-on-error`, so the `github-actions[bot]` review shape is reachable on an App repository whenever minting fails. The gate therefore applies both logins to both surfaces, reads the marker and the headline, and keys on no note; it never derives an identity from the repository. Why the review surface binds on `commit_id` rather than on the window is in the kind (i) paragraph after the gate block.
+
+**This answer has no memory.** It is about one SHA and stops being an answer the moment the head is a different SHA, so it cannot be carried from earlier in the cycle: re-read `HEAD_SHA` and re-run the query *immediately* before the merge call. The Standard merge block below therefore *contains* this query, and the REST fallback runs that block before its own call — a comment telling the reader to re-check is not a re-check. Then pin the SHA into the merge call itself with `--match-head-commit "$HEAD_SHA"` (Standard merge, below) or REST `-f sha=`, so a head that moves in the last seconds is refused by GitHub rather than by your timing. The pin closes the window after a passing check; it does not establish that a check happened, so it replaces neither the query nor the reading of it. Carrying a stale answer forward is the same defect on a different clock.
+
+Why the block is absolute here rather than advisory: **there is no post-merge recovery.** The review workflow computes `git diff origin/<base>...HEAD`; once the PR is merged that merge-base *is* the head, so the diff is empty and the round reviews nothing — including a round re-triggered by hand afterwards. The only moment the review can happen is before the merge.
+
+A bot *reviewer* that declines to re-review is a different thing from a review *run* that has not completed — see the force-push entry in **Anti-patterns**. A verdict is required — the completed run, or, where it produced none, the local-review comment; any particular bot's review event is not.
 
 After steps 9, 10, 8, re-snapshot. Act on state:
 
 | State | Diagnosis | Action |
 |-------|-----------|--------|
-| `CLEAN + APPROVED` | Ready | Merge (see below) |
-| `BEHIND` | Branch behind base | `gh pr update-branch N` then re-snapshot |
+| `CLEAN + APPROVED` | Ready — but `APPROVED` says nothing about *this* head: where `dismiss_stale_reviews_on_push` is false the approval is **carried** from the old head, not re-earned (ai-dev-cab#488, 2026-09-11: `reviewDecision: APPROVED` on the update-branch head before its round had run). `reviewDecision` is never evidence a round ran on this SHA; only a verdict on the SHA — Standard merge, condition (a) — is | Merge gate, then merge (see below) |
+| `CLEAN + empty` (no APPROVED review) | Normal in a repo whose branch protection does not require an approving review. But `CLEAN` is a statement about **mergeability only** — where there is no ruleset it is not evidence that any review ran, least of all on this head, because there was no server-side gate for it to satisfy. The merging session is the only thing that waits for the round, and after the merge the round can no longer be obtained. So **condition (a)'s verdict-on-the-head-SHA check is this row's precondition, not a nicety**: a `CLEAN` PR whose head has no verdict is a block | Merge gate, then merge (see below) — every condition of it, on the current head |
+| `BEHIND` | Branch behind base | `gh pr update-branch N` then re-snapshot. **Update-branch is a push**: it produces a new head (cab#488: `a5df4fa` → `1ed509d`) and triggers a round on it, so the whole merge gate restarts on the new SHA — everything verified a minute earlier described a commit that no longer exists |
 | `BLOCKED + APPROVED + 0 unresolved` | Required check failing/pending | Identify check, fix root cause; if check passes but `gh pr merge` still refuses, see REST API fallback below |
 | `BLOCKED + REVIEW_REQUIRED` (or `reviewDecision: empty`) | **First, verify with raw data — `mergeStateStatus` / `reviewDecision` can be stale cache.** Run `gh api repos/.../pulls/N/reviews --paginate --jq '.[] | select(.state=="APPROVED") \| {commit_id, user: .user.login}'`. If at least one APPROVED's `commit_id == headRefOid`, the ruleset is actually satisfied — try REST API merge directly (see fallback below). Bot reviewers (`github-actions[bot]`, `claude[bot]`, etc.) count toward `required_approving_review_count` unless CODEOWNERS or `required_reviewers` explicitly excludes them. ONLY if zero fresh APPROVED on current HEAD: wait for reviewer. **Do NOT propose admin merge.** Per `feedback_no_admin_merge_option.md`: admin merge MUST NOT appear in status reports as a path/fallback |
 | `UNSTABLE` | Non-required check failed | Often mergeable; verify per-project. For flaky CI: `gh run rerun <run-id> --failed` — only retry transient failures (network, runner provisioning), not legitimate test failures |
 | `DIRTY` | Merge conflict | Rebase or merge base; resolve conflicts |
 
-#### Standard merge
+#### Convergence — the round that ends the lane
+
+Converged is a property of a round's findings, not of a round number. **When a round's findings are all against code the previous round added and none of them affects behaviour, the lane has converged**: stop, close the remainder below threshold per *Fix in round, or close below threshold* (Stage 2), merge. A count cap is a backstop and never the test: a cap stops a lane that is still finding real things at round 3, and lets the tail-chasing one run to 7. The five parallel lanes run over rounds 5..11 in 2026-10-06..08 are why the test is by kind — three of them reported the tail-chasing shape unprompted, and no round number separated them from the two that did not.
+
+Two things have to hold of a round before it can be the one that ends the lane, and both are default-deny.
+
+**It must be a full round.** A short-roster round reads as "no new findings" if nothing says otherwise, so a starved round looks like convergence — and the reviewer has been returning 2/3 intermittently on shared capacity, so starved rounds are the common case, not the exotic one. The fraction that decides it is the same one `headline_roster` already reads for kind (i): `N/M reviewers` and `N/M LLM responses` against `EXPECTED_REVIEWERS`. A round short on either is not a round, so it cannot be the round that shows nothing new — the gate refuses it as a verdict, and the lane must refuse it as convergence for the same reason.
+
+**The round report must state, beside the roster, whether the round's findings affect behaviour.** That statement is what made the tail-chasing shape visible in the first place, and nothing else enforces the paragraph above: without it, "these findings are all cosmetic" is an impression rather than a claim someone wrote down and can be held to. A report that does not say is not a report that said no.
+
+`convergence_round` is that decision. It needs `headline_roster` and `EXPECTED_REVIEWERS`, so define those two from the gate block below first — the `EXPECTED_REVIEWERS=` line and the `headline_roster` function, not the whole block: its top-level `exit 1` tails close an interactive shell on the first refusal:
 
 ```bash
-gh pr merge N --repo OWNER/REPO --merge
+convergence_round() {
+  local h=$1 effect=${2:-}
+  headline_roster "$h" \
+    || { echo "convergence: refused — this round's roster is short, zero or missing, so it is not a round, and a round that is not a round cannot be the one that shows nothing new"; return 1; }
+  case $effect in
+    no-behaviour)
+      echo "convergence: full roster, and the round report states these findings do not affect behaviour — converged: close the remainder below threshold and merge"; return 0 ;;
+    behaviour)
+      echo "convergence: full roster, and the round report states these findings affect behaviour — not converged: fix them in this round"; return 1 ;;
+    *)
+      echo "convergence: refused — the round report must state whether this round's findings affect behaviour, 'behaviour' or 'no-behaviour', and it says '$effect'"; return 1 ;;
+  esac
+}
 ```
 
-**`--merge` (merge commit), NEVER `--squash` or `--rebase`** — per `feedback_merge_strategy.md`. Individual commit history must be preserved.
+A refusal here is not a merge block: it says this round is not the one that ends the lane, so the lane runs another round — Stage 2 for the items it raised, fixed in round or closed below threshold by the boundary question. `.github/scripts/gate_headline_drill.sh` in `ignite-corp/ai-dev-pr-review` (deployed as `bin/gate-headline-drill` from `hyuk-hur/dev-dotfiles`) extracts this function from this file by name and runs the measured headlines through it, as it does the gate's own.
+
+#### Standard merge
+
+The merge call runs only when, **on the same head SHA, read immediately before the call**: (a) at least one verdict exists on that SHA — a completed/success run of the review workflow whose aggregate — a comment or a review, step 8's shape table — reports every configured reviewer, kind (i), or a local-review verdict comment opening with the repository's verdict header for that SHA whose newest instance approves, kind (ii); (b) that head's threads are all resolved; (c) every item each verdict raised has a disposition; and (d) no check on that SHA is still running. Each is a block on its own; a failed one means no merge — back to Stage 2 for the new items (reply + resolve, or a fixup, which pushes a new head, starts a new round, and brings you back to this gate). This block is the gate's only home; paste it whole. (a), (b) and (d) decide for themselves and exit non-zero, loud, on anything but a pass — the step 9 shape, because a query that does not block is not a gate. (c) is a read of the verdicts (a) named, so the merge call is a separate block after it — except the major items a verdict lists in the aggregate's item shape, the aggregate's unreviewed majors and a local verdict's items in that same shape, which the block checks itself on every verdict (a) named and exits non-zero on; what (c) can no longer do is read an empty list as a pass, because (a) refuses to reach it without a verdict.
+
+**Where (c) reads a round's findings: on the verdict comment's body, on the aggregate's body, and on any `round-cutoff-*` comment the round posted — never on the thread count.** (b) returning zero unresolved threads is a statement about threads, and not about findings: from the convergence cutoff onward a round folds its remaining items into a cutoff comment, and those items carry no thread id at all, so a PR that has finished its reply pass reads 0 unresolved while carrying findings nobody has dispositioned. Observed on four PRs over 2026-10-06..08; the clearest had 11 threads and 0 unresolved, and then a round produced three findings, none of them a thread. A cutoff item is dispositioned instead by a quoted-response comment, Stage 4's issue-comment pattern, which names the cutoff comment it answers. The worked example to read rather than a description of one: `ignite-corp/ai-dev-pr-review#188`, comment `6015452260` at 2026-10-06T11:39:40Z — three items quoted with their round and their source (`(claude, R7 cutoff comment)` twice, `(claude, R7 verdict body)` once), two `Fixed:` with file:line, one `By design:`, and the cutoff comment it names now minimized `OUTDATED`. `cutoff_findings` in the block below is that read, and it blocks.
+
+What counts as a verdict is the repository's `AGENTS.md`'s to declare, not this skill's: the review workflow's name, which step 8 already requires, and, for a local review, the header its verdict comment opens with. The two kinds are bound differently, and the block below does both. Kind (i)'s aggregate is bound to an identity — `github-actions[bot]` or `ignite-ai-review-approver[bot]`, user type `Bot`, the workflow's own token or its App's — because those are identities no session's account can post under, so they tell the workflow's comment or review from everyone else's. Kind (ii)'s verdict cannot be: every session posts as one account, so an author list there — `Bot`, a `[bot]` suffix, `github-actions`, a login — would be a list of whom to trust rather than of what was said, and the gate carries none for it. With identity unavailable, the content check is the only thing that separates a verdict from a request that quotes one, so kind (ii) is a contract of **position and form, default-deny**: the comment's first non-empty line, whole, is `## LENS 판정 — **<word>** · head `<40-char SHA>`` — `LENS verdict` is accepted in the same slot — with the full head SHA, a prefix being no name. The captured word is the verdict, and it approves only when it is exactly `승인` or, case-insensitively, `APPROVE` / `APPROVED`. Any other word — `차단 1건`, `승인 보류`, `승인 아님`, `CHANGES REQUESTED` — is a verdict that does not approve, and it blocks. A comment whose first line is any other shape is not a verdict, whatever its body says: a review request, a quotation of a verdict, a gate record never count — and must never be posted in the header shape, because the shape is the whole of what the gate reads. On one head the newest verdict decides: an approval followed by a non-approval blocks. This is the contract a local reviewer posts to; the defaults below are LENS's actual header, and a repository that declares its own overrides both regexes. When both kinds exist on the same head, both are dispositioned: two reviewers, not duplicates. What a kind (ii) verdict leaves to the operator it lists in the aggregate's item shape, `- + **major** `<path>[:<line>]` -- <description>`, and the gate checks those the way it checks the aggregate's own: `verdict_dispositions` below runs `major_dispositions` on every verdict (a) named, whichever kind, so an approval that lists an item nobody answered blocks on either path. An item in any other shape is the human read (c) prints, and the verdict word is the reviewer's own disposition of it — a hand verdict has no `Approved with N` headline, so nothing but its item lines can count its majors.
+
+```bash
+# Nothing here is carried forward: every condition is read on the head that
+# exists NOW, and the merge call names that head.
+HEAD_SHA=$(gh pr view N --repo OWNER/REPO --json headRefOid --jq .headRefOid) \
+  || { echo "ERROR: could not read the PR head"; exit 1; }
+[ "${#HEAD_SHA}" -eq 40 ] || { echo "ERROR: need the full 40-char head SHA, got '$HEAD_SHA'"; exit 1; }
+
+# What counts as a verdict is the repository's AGENTS.md's to declare (Review
+# routing, rule 5): the review workflow's name — step 8's literal — and, for a
+# local review, the header its verdict comment opens with. The two regexes
+# below are the defaults where it declares none. VERDICT_RE must match the
+# comment's FIRST non-empty line, whole, with <HEAD_SHA> substituted; the word
+# it captures is the verdict, and it approves only if APPROVE_WORDS matches
+# that word whole. A first line in any other shape is not a verdict, whatever
+# the body says — default-deny, no negative list.
+REVIEW_WF='<review workflow name>'
+EXPECTED_REVIEWERS='<n>'
+AGG_MARKER='<!-- multi-llm-review -->'
+AGG_AUTHORS='github-actions[bot] ignite-ai-review-approver[bot]'
+VERDICT_RE='^##\s*LENS (?:판정|verdict)\s*—\s*\*\*(?<word>[^*]+)\*\*\s*·\s*head\s*`?<HEAD_SHA>`?\s*$'
+APPROVE_WORDS='^(?:승인|(?i:approved?))$'
+
+# Kind (i)'s roster. The aggregate's headline is the only place on the PR
+# where the configured reviewers are counted (AT-2511): a reviewer cut at the
+# step cap leaves the job success, and only here does the cut show. Prints
+# the headline's fractions; returns 0 only when the Result word is Approved
+# and every configured reviewer AND every LLM response is present. Any other
+# Result word — Changes Requested, Comment Only, Review did not run, Review
+# skipped — and any short, zero or missing fraction returns 1. `Approved with
+# N unreviewed major issue(s)` is not refused here: N is left in agg_majors
+# for (c), where each of them needs a disposition. Both denominators must
+# equal EXPECTED_REVIEWERS, the count step 8 has the operator read from the
+# review workflow: `2/2` is full only against a roster of two, and the
+# headline cannot say how many were configured.
+# .github/scripts/gate_headline_drill.sh extracts this function from this
+# file by name and runs the measured headlines through it — edit it here, and
+# the drill follows.
+headline_roster() {
+  local h=$1 rv_n rv_m llm_n llm_m
+  [[ ${EXPECTED_REVIEWERS:-} =~ ^[1-9][0-9]*$ ]] \
+    || { echo "(a) kind (i) refused: EXPECTED_REVIEWERS is '${EXPECTED_REVIEWERS:-}', not a positive count — fill it from the review workflow (step 8) before the roster can be judged"; return 1; }
+  local result_re='^\*\*Result: \[(OK|!)\] Approved( with ([0-9]+) unreviewed major issue\(s\))?( \|[^*]*)?\*\* -- '
+  local rev_re='([0-9]+)/([0-9]+) reviewers'
+  local llm_re='([0-9]+)/([0-9]+) LLM responses'
+  [[ $h =~ $result_re ]] \
+    || { echo "(a) kind (i) refused: the aggregate's Result is not Approved — not a verdict that approves: $h"; return 1; }
+  agg_majors=${BASH_REMATCH[3]:-0}
+  [[ $h =~ $rev_re ]] \
+    || { echo "(a) kind (i) refused: no 'N/M reviewers' fraction in the aggregate headline — no roster, no verdict: $h"; return 1; }
+  rv_n=${BASH_REMATCH[1]}; rv_m=${BASH_REMATCH[2]}
+  [[ $h =~ $llm_re ]] \
+    || { echo "(a) kind (i) refused: no 'N/M LLM responses' fraction in the aggregate headline — no roster, no verdict: $h"; return 1; }
+  llm_n=${BASH_REMATCH[1]}; llm_m=${BASH_REMATCH[2]}
+  echo "(a) kind (i) roster: reviewers $rv_n/$rv_m, LLM responses $llm_n/$llm_m, unreviewed major issues $agg_majors"
+  [[ $rv_m -eq $EXPECTED_REVIEWERS && $llm_m -eq $EXPECTED_REVIEWERS ]] \
+    || { echo "(a) kind (i) refused: denominators $rv_m reviewers / $llm_m LLM responses, but $EXPECTED_REVIEWERS reviewers are configured — the round was not the configured round"; return 1; }
+  [[ $rv_n -eq $rv_m ]] \
+    || { echo "(a) kind (i) refused: $rv_n/$rv_m reviewers — a configured reviewer did not report (AT-2511); the job is green, the round is not complete"; return 1; }
+  [[ $llm_n -eq $llm_m ]] \
+    || { echo "(a) kind (i) refused: $llm_n/$llm_m LLM responses — a reviewer ran and produced no response; the job is green, the round is not complete"; return 1; }
+  return 0
+}
+
+# Kind (i)'s comment-surface window. A comment aggregate is bound to the
+# run by time, so both bounds must exist: a run whose updatedAt is null —
+# still being written, or a field the API left out — has no closing edge,
+# and a window with no closing edge admits every later comment on the PR.
+# Prints the two bounds; returns 1, loud, when either is not a timestamp.
+# Extracted by name by the drill, like the functions below.
+window_bounds() {
+  local s=$1 e=$2 ts_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  [[ $s =~ $ts_re ]] || { echo "(a) kind (i) refused: the run's createdAt is '$s', not a timestamp — no window"; return 1; }
+  [[ $e =~ $ts_re ]] || { echo "(a) kind (i) refused: the run's updatedAt is '$e', not a timestamp — the window has no closing edge, so it admits nothing (AT-2511)"; return 1; }
+  printf '%s %s\n' "$s" "$e"
+}
+
+# Kind (i)'s aggregate, on either surface the workflow posts it to. The
+# consumer's configuration chooses surface and identity (step 8's shape
+# table): ALLOW_AUTO_APPROVE off posts an issue comment as
+# github-actions[bot]; on, an approval as a review by github-actions[bot];
+# on with an App key, by ignite-ai-review-approver[bot]. That is the
+# approval alone: a request_changes review is always github-actions[bot]'s,
+# and a comment verdict or the fallback after a review-API failure or
+# timeout is an issue comment on any configuration — so the author list
+# applies to both surfaces and nothing here maps a repository to an
+# identity. On both surfaces the author is one of AGG_AUTHORS with
+# user.type Bot and the body carries AGG_MARKER. A comment names no SHA, so it is bound to the run by time:
+# created inside the run's createdAt..updatedAt. A review names its head,
+# so it is bound by commit: commit_id equal to the head, and in a state
+# the producer posts it in -- APPROVED or CHANGES_REQUESTED, the two events
+# post_verdict passes `gh pr review`; every other outcome of a round is an
+# issue comment, and the producer's only COMMENTED review is the inline
+# one, whose body is empty. A COMMENTED marker review is therefore no
+# aggregate, whatever its headline says. The two clauses do different work. The commit equality is what refuses
+# the previous head's approval: the producer folds only its own
+# CHANGES_REQUESTED marker reviews and never an approval, and on every
+# measured PR the previous head's approval was dismissed by this account's
+# Stage 4 loop, not by the workflow — a consumer that does not run that
+# loop keeps it APPROVED. The state clause, beyond refusing COMMENTED, is
+# what refuses a review on THIS head that has been folded (DISMISSED): the operator's approval after a Stage 4
+# re-run on a posted head, or the producer's own superseded
+# CHANGES_REQUESTED. A candidate with no timestamp is refused: it could not be
+# ordered against the others, and (c) reads what came after it. Reads two
+# JSON documents on stdin, the comment list then the review list, both in
+# the normalised shape the gate builds; prints the newest candidate across
+# both surfaces with its surface named, or nothing. Extracted by name by
+# the drill, like the functions around it.
+select_aggregate() {
+  local head=$1 s=$2 e=$3
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  jq -cs --arg m "$AGG_MARKER" --arg a "$AGG_AUTHORS" --arg h "$head" --arg s "$s" --arg e "$e" \
+    '($a | split(" ")) as $as
+     | def ours: .type == "Bot" and ((.author as $x | $as | index($x)) != null)
+                 and ((.created_at | type) == "string") and (.body | contains($m));
+     ( [.[0][] | select(ours and .created_at >= $s and .created_at <= $e) | . + {surface: "comment", state: "comment"}]
+     + [.[1][] | select(ours and .commit_id == $h and (.state == "APPROVED" or .state == "CHANGES_REQUESTED")) | . + {surface: "review"}] )
+     | sort_by(.created_at) | last // empty'
+}
+
+# The review list must be complete, the way the comment list must: the
+# producer spares approvals when it folds, so two runs on one head can
+# leave an APPROVED marker review under a newer CHANGES_REQUESTED one, both
+# non-dismissed on HEAD_SHA, and newest-wins picks the block — unless a
+# dropped page lost the newer one, which promotes the approval. Reads the
+# review list on stdin and the PR's own review count; prints the two, or
+# blocks, loud, when they differ or the count is not a number. Extracted
+# by name by the drill.
+reviews_complete() {
+  local total=$1 seen
+  seen=$(jq length) || { echo "BLOCK (a): could not count the reviews read"; return 1; }
+  [ "$seen" -eq "$total" ] 2> /dev/null \
+    || { echo "BLOCK (a): read $seen reviews but the PR counts '$total' — a page was missed or a review landed mid-read; re-run"; return 1; }
+  echo "(a) reviews: $seen read, $total on the PR"
+}
+
+# The aggregate's headline: the first `**Result:` line of its body, on
+# either surface. What the producer appends after the body is not read —
+# `> [!] Intended verdict: **<v>** (review API failed, posted as comment)`
+# on a review-API failure, `> [!] Auto-approve withheld …` on a short
+# quorum — and the gate keys on no note: the timeout fallback posts the
+# body bare, byte-identical to a comment-only post (AT-2597, producer
+# side), so a marker-and-headline comment with no note is the aggregate,
+# present. Reads the candidate on stdin; prints the headline, or nothing.
+# Extracted by name by the drill.
+aggregate_headline() {
+  jq -r '.body | gsub("\r"; "") | split("\n") | map(select(startswith("**Result:"))) | .[0] // ""'
+}
+
+# Does a review thread answer a major? Threads arrive one per line as
+# path, the thread's line(s) comma-joined (its current line and its original
+# one), `replied` or `unreplied`, and the first comment's first line — the
+# (b) query's shape — with the fields separated by the unit separator
+# (0x1f), not a tab: a tab is IFS whitespace, so `read` collapses a run of
+# them and an empty field vanishes. A file-level thread has no line, and
+# its row read as path, `replied` in the lines field and the body in the
+# reply field, so the reply guard skipped it, and the description route —
+# the only one a line-less thread has — was unreachable for exactly the
+# threads it exists for (#194 round 10). A thread answers only if its path
+# is the item's AND it carries a reply from a non-Bot account — a thread
+# resolved with no reply is a silent close, which Resolve Policy forbids, so
+# the gate does not count it — AND either its line equals the finding's
+# line or its first comment IS the producer's rendering of the finding: the
+# line post_inline_comments.py's build_comments writes first,
+# `<icon> **<severity>** (<reviewer>): <description>`, with a major's own
+# icon and severity and the description whole to the end of the line; the
+# suggestion the producer appends sits two lines down and is not read. The
+# description is compared by equality once the prefix has matched, not
+# searched for — a substring of free text is not a binding: until round 10
+# of #194 the test was `*"$desc"*`, so a same-path thread whose first
+# comment mentioned the description in passing answered the finding
+# (codex), the class round 5 closed for the cutoff response and round 7 for
+# the marker. The second match is content-bound, not distance-bound: the
+# producer posts no thread when the line is outside the diff or when a
+# similar thread sits within five lines (post_inline_comments.py), so an
+# answered major can be re-listed a few lines from the thread that answered
+# it, and a distance rule would admit an unrelated thread at the same
+# distance.
+thread_answers() {
+  local threads=$1 path=$2 lineno=$3 desc=$4 t_path t_lines t_rep t_body
+  local finding_re='^\+ \*\*major\*\* \([^)]+\): (.*)$'
+  while IFS=$'\x1f' read -r t_path t_lines t_rep t_body; do
+    [ "$t_path" = "$path" ] || continue
+    [ "$t_rep" = replied ] || continue
+    if [ -n "$lineno" ] && [[ ",$t_lines," == *",$lineno,"* ]]; then return 0; fi
+    if [ -n "$desc" ] && [[ $t_body =~ $finding_re ]] && [ "${BASH_REMATCH[1]}" = "$desc" ]; then return 0; fi
+  done <<<"$threads"
+  return 1
+}
+
+# (c)'s mechanical half for kind (i). The aggregate lists each major as
+# `- + **major** `<path>[:<line>]` -- <description>` (the path is optional:
+# `file: null` is a legal payload and renders without the path part). An
+# item is answered when thread_answers finds a replied thread for it —
+# resolved, since (b) already demanded zero unresolved — or when a later
+# comment from someone other than the workflow quotes it with `>`: the quote
+# must carry the item's whole rendered text from `**major**` to the end of
+# its description line, verbatim — one needle for every item, path or not.
+# Nothing shorter is the item's own: a description prefix is shared by
+# near-identical findings and repeated by other findings' prose, and a
+# backticked `path:line` is a token reviewers routinely write inside OTHER
+# items' descriptions when they refer to a location, so quoting item 2 whose
+# prose mentions item 1's key would answer item 1. Starting the needle at
+# `**major**` rather than at the bullet lets a quote survive the bullet
+# being stripped, re-indented, or nested under a second `>`. An item with
+# no path has only the quote route: there is no position for a thread to be
+# at. The key splits into path and line only when what follows
+# the last colon is a number — a path may itself contain colons. Anything
+# else is a block, and so is a body that lists fewer majors than its
+# headline counted: an item the gate cannot find is an item nobody
+# answered. Arguments: the aggregate body, the headline's count, the thread
+# lines in thread_answers' shape, the `>` lines from later non-workflow
+# comments one per line. Extracted by name by the drill, like
+# headline_roster.
+major_dispositions() {
+  local body=$1 want=$2 threads=$3 quotes=$4 line key path lineno desc needle n=0 bad=0
+  # shellcheck disable=SC2016  # the backticks are the aggregate's own
+  local item_re='^- \+ \*\*major\*\* `([^`]+)` -- (.*)$'
+  local nopath_re='^- \+ \*\*major\*\* -- (.+)$'
+  local loc_re='^(.*):([0-9]+)$'
+  local quote quote_re='^[[:space:]>+-]*(\*\*major\*\*.*)$'
+  while IFS= read -r line; do
+    [[ $line == '- + **major**'* ]] || continue
+    n=$((n + 1))
+    if [[ $line =~ $item_re ]]; then
+      key=${BASH_REMATCH[1]}; desc=${BASH_REMATCH[2]}
+      if [[ $key =~ $loc_re ]]; then path=${BASH_REMATCH[1]}; lineno=${BASH_REMATCH[2]}; else path=$key; lineno=""; fi
+    elif [[ $line =~ $nopath_re ]]; then
+      key=""; desc=${BASH_REMATCH[1]}; path=""; lineno=""
+    else
+      echo "(c) BLOCK: a major item in a shape the gate cannot key — answer it, then re-run: $line"; bad=$((bad + 1)); continue
+    fi
+    # The needle is the line itself minus its bullet — one derivation for
+    # both shapes, so neither re-assembles the separators from captures and
+    # the two cannot drift apart.
+    needle=${line#- + }
+    if [ -n "$path" ] && thread_answers "$threads" "$path" "$lineno" "$desc"; then
+      echo "(c) major answered by a replied thread on $path: $line"
+    elif (
+      while IFS= read -r quote; do
+        [[ $quote =~ $quote_re ]] && [ "${BASH_REMATCH[1]}" = "$needle" ] && exit 0
+      done <<<"$quotes"
+      exit 1
+    ); then
+      echo "(c) major answered by a later quoted reply: $line"
+    else
+      echo "(c) BLOCK: major with neither a replied thread on its path at its line or opening with the producer's rendering of it, nor a later reply quoting '$needle': $line"; bad=$((bad + 1))
+    fi
+  done <<<"$body"
+  [ "$n" -eq "$want" ] \
+    || { echo "(c) BLOCK: the headline names $want unreviewed major issue(s) but the body lists $n — cannot show each was answered"; return 1; }
+  [ "$bad" -eq 0 ]
+}
+
+# (c)'s one call site, for every verdict (a) named. Reads the source list
+# (a) built — one record per verdict kind this head has: kind, a label
+# naming its surface and id, created_at, since (where its round's comments
+# start: the run's createdAt for kind (i), the first verdict's timestamp
+# for kind (ii)), body, and want, the major count the verdict declares —
+# null where nothing declares one, and the body's own item lines are then
+# counted: kind (i)'s headline counts, a kind (ii) verdict has no headline,
+# so for it the tally inside major_dispositions cannot catch a short body
+# and the per-item checks are the whole of the mechanical half. For every
+# source, whichever kind: when it names majors, major_dispositions reads
+# its body against the thread lines and the `>` lines of every later
+# non-Bot comment, and a block is a block; then the source and every
+# comment from its round's start are printed for the human half of (c).
+# Nothing here asks which kind a source is. Until round 9 of #194 the
+# majors check sat under `if [ -n "$kind_i" ]`, so a kind (ii) approval
+# listing a major reached the merge block with the item only printed
+# (codex) — the fourth check the local path did not reach, after the
+# window's flag (round 5), its run list (round 8) and the cutoff reader's
+# author filter (AT-2803); one loop over a list (a) builds is what a fifth
+# instance would have to be added to on purpose. Every read carries the
+# failure tail: an unreadable list is not an empty one, and an empty
+# source list here is a read that failed, since (a) exits without a
+# verdict. Arguments: the thread lines in thread_answers' shape, the source
+# list, the comment list in the shape the gate builds. Extracted by name by
+# the drill, like the functions above.
+verdict_dispositions() {
+  local threads=$1 sources=$2 comments=$3 n rows src fields kind label at since want body quotes rc=0
+  local ts_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  n=$(printf '%s' "$sources" | jq length) \
+    || { echo "ERROR: could not count the verdict sources — an unreadable list is not 'no verdict'"; return 1; }
+  [ "$n" -gt 0 ] \
+    || { echo "ERROR: no verdict source reached (c) although (a) passed — nothing to read is not nothing to answer"; return 1; }
+  rows=$(printf '%s' "$sources" | jq -c '.[]') \
+    || { echo "ERROR: could not read the verdict sources one by one"; return 1; }
+  while IFS= read -r src; do
+    # Joined by the unit separator, as thread_answers' rows are: a null
+    # timestamp is an empty field, and a tab-separated read would collapse
+    # it and shift the fields after it, so the refusal below would name the
+    # wrong value as missing.
+    fields=$(printf '%s' "$src" | jq -r \
+      '[.kind, .label, .created_at, .since,
+        ((.want // (.body | gsub("\r"; "") | split("\n") | map(select(startswith("- + **major**"))) | length)) | tostring)]
+       | join("\u001f")') \
+      || { echo "ERROR: could not read a verdict source's fields"; return 1; }
+    IFS=$'\x1f' read -r kind label at since want <<<"$fields"
+    # An empty or malformed timestamp would admit every quote on the PR as
+    # later than the verdict, and an empty round start would print nothing
+    # as 'no comments'; a source the gate cannot place is refused, not read.
+    [[ $at =~ $ts_re && $since =~ $ts_re && $want =~ ^[0-9]+$ ]] \
+      || { echo "ERROR: verdict source $label (kind $kind) has no timestamp, no round start or no major count — '$at', '$since', '$want'"; return 1; }
+    body=$(printf '%s' "$src" | jq -r '.body | gsub("\r"; "")') \
+      || { echo "ERROR: could not read the body of verdict source $label"; return 1; }
+    quotes=$(printf '%s' "$comments" | jq -r --arg t "$at" \
+      '.[] | select(.created_at > $t and .type != "Bot") | .body | gsub("\r"; "") | split("\n")[] | select(startswith(">"))') \
+      || { echo "ERROR: could not read the quoted lines after verdict source $label — unreadable is not 'nothing quoted'"; return 1; }
+    if [ "$want" -gt 0 ]; then
+      echo "(c) verdict kind ($kind) $label names $want major item(s) — an approval is not a pass on those; each must already be answered:"
+      major_dispositions "$body" "$want" "$threads" "$quotes" \
+        || { echo "BLOCK (c): a major item of verdict kind ($kind) $label has no disposition — back to Stage 2"; rc=1; }
+    fi
+    echo "(c) READ kind ($kind) $label — the verdict, then the comments since its round started at $since; every item without an inline thread needs a quoted response (Stage 4's issue-comment pattern) in a comment after it, or it is a block:"
+    printf '%s\n' "$body"
+    printf '%s' "$comments" | jq --arg t "$since" '[.[] | select(.created_at >= $t)]' \
+      || { echo "ERROR: could not print the comments since $since — an unprinted list is not 'no comments'"; return 1; }
+  done <<<"$rows"
+  return $rc
+}
+
+# (c)'s cutoff window start. Reads the run list on stdin — every run on
+# HEAD_SHA as (a) fetched it, every workflow and every conclusion — and
+# takes the review workflow's name and the first local-review verdict's
+# timestamp, empty when the head has none. Prints the earliest of every
+# review-workflow run's createdAt and that timestamp; prints nothing when
+# the head has neither, which is a result; returns 1, loud, when the list
+# cannot be read or a review-workflow run's createdAt is not a timestamp —
+# a run dropped for want of one could be the earliest, and a window that
+# starts after it is the defect (c) records.
+# The invariant this holds: the window includes every round-cutoff-*
+# comment on this head, whatever any run's conclusion and however many
+# runs there are. The producer posts a cutoff comment from inside a
+# review-workflow run on this head, so every such comment is created at or
+# after the earliest such run's createdAt; the conclusion that run reaches
+# later and the runs that follow it do not move when it started. The list
+# is read with no filter but the workflow's name, so no refusal in (a) —
+# roster, conclusion, aggregate — can narrow it: rounds 5 and 8 of #194
+# each found the start read off a value something else selected (the
+# roster flag; the success-filtered run list), and this reads it off none.
+# What remains is the list's completeness, which the limit check beside
+# its fetch holds, and the name itself, which review_workflow_known holds
+# before anything reads it: a name no run carries leaves $starts empty,
+# and this reads an empty $starts as "no run on this head" — the result
+# when the name is right, and the first verdict alone when it is not.
+# Extracted by name by the drill, like the functions above.
+cutoff_window_start() {
+  local wf=$1 first_verdict=$2
+  jq -r --arg wf "$wf" --arg v "$first_verdict" \
+    '[ .[] | select(.workflowName == $wf) | .createdAt ] as $starts
+     | if any($starts[]; type != "string" or (test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not))
+       then error("a \($wf) run on this head has no createdAt timestamp") else . end
+     | ($starts + [ $v | select(. != "") ]) | sort | first // empty' \
+    || { echo "ERROR: could not read the cutoff window start from the run list — an unreadable list, or a '$wf' run whose createdAt is not a timestamp, is not 'no run'"; return 1; }
+}
+
+# REVIEW_WF, before anything reads it. Every reader below — run_window's
+# filter, cutoff_window_start's, the (a) lines that name it — matches the
+# name by equality, and each reads a name that matches nothing as "no run":
+# the placeholder this block ships with, `<review workflow name>`, matches
+# nothing, and so does a name copied from the wrong repository, and until
+# round 12 of #194 nothing checked either (claude). Kind (i) then never
+# holds, which blocks only until a local verdict is posted, and then (c)'s
+# cutoff window starts at that verdict rather than at the review run's
+# createdAt — the class rounds 5 and 8 closed, through a different
+# selector, the name filter. Takes the name and the repository's workflow
+# names one per line — the list step 8 has the operator read the name
+# from — and reads the run list on stdin. An empty name or one still in
+# angle brackets is refused, as headline_roster refuses EXPECTED_REVIEWERS'
+# placeholder. A name some run on this head carries needs nothing else:
+# the list proves it. A name no run carries is checked against the
+# repository: a name the repository lacks cannot be the review workflow's
+# and is refused; a name it has with no run on this head is step 8's first
+# two rows — `[]`, and "entries present, none the review workflow's", the
+# same state — printed here and left to (a), which blocks without a kind
+# (ii) verdict and passes with one, Review routing's path where the
+# workflow cannot run. That state is not refused here because the run list
+# cannot tell a review workflow that did not trigger from one that is
+# disabled, and the window start is right either way: no run on this head
+# posted a cutoff comment, so the first verdict is the earliest thing on
+# the surface. Extracted by name by the drill, like the functions above.
+review_workflow_known() {
+  local wf=$1 names=$2 runs on_head seen
+  if [ -z "$wf" ] || [[ $wf == '<'*'>' ]]; then
+    echo "ERROR: REVIEW_WF is '$wf', not a workflow name — fill it from the review workflow (step 8) before the gate can place the review round"; return 1
+  fi
+  runs=$(cat) || { echo "ERROR: could not read the run list for '$wf' runs"; return 1; }
+  on_head=$(printf '%s' "$runs" | jq --arg wf "$wf" '[ .[] | select(.workflowName == $wf) ] | length') \
+    || { echo "ERROR: could not read the run list for '$wf' runs — an unreadable list is not 'no run'"; return 1; }
+  if [ "$on_head" -gt 0 ]; then echo "(a) '$wf': $on_head run(s) on this head"; return 0; fi
+  printf '%s\n' "$names" | grep -qxF -- "$wf" \
+    || { echo "ERROR: REVIEW_WF is '$wf', which names no workflow in this repository and no run on this head — a name the repository lacks cannot be the review workflow's; fill it from gh workflow list (step 8)"; return 1; }
+  seen=$(printf '%s' "$runs" | jq -r '[ .[] | .workflowName ] | unique | join(", ")') \
+    || { echo "ERROR: could not read the workflow names on this head"; return 1; }
+  echo "(a) no '$wf' run on this head — step 8's no-review-run rows: the review did not run on what you are about to merge (runs here: ${seen:-none}); kind (i) cannot hold, and (a) blocks below unless a local verdict stands (Review routing)"
+}
+
+# (c)'s other surface: the items a convergence cutoff folded out of the
+# threads. Measured on ignite-corp/ai-dev-pr-review#188 — comment
+# 6015282943 by github-actions[bot], first line `<!-- round-cutoff-claude-r7
+# -->`, listing two items that were never threads, on a PR whose reply pass
+# was finished. The format is the producer's — in ignite-corp/ai-dev-pr-review
+# `.github/scripts/post_inline_comments.py`, `_CUTOFF_MARKER` defines it and
+# `post_cutoff_summary` emits it as the comment's first line, through
+# `_post_folded_comment`, which writes the marker it is handed on line one —
+# so a suffix appended there falls outside the anchored regex below and this
+# read misses the comment and passes. So (b)'s zero unresolved is not zero
+# findings, and this is the read that says so.
+# A cutoff comment is answered by later comments from non-Bot accounts,
+# none of them a cutoff comment itself, that, between them, **name the
+# cutoff comment's own marker** and quote every item it lists, each
+# identified by its location — #188's comment 6015452260 answering
+# 6015282943 is the shape. Naming the marker binds the
+# response to this surface rather than to the threads. The location binds
+# the response to the item: the producer renders each item as
+# `- **<path>:<line>** -- <severity> (<reviewer>): <text>`, so every item
+# opens with a location, and the measured response names both of #188's
+# (`.github/scripts/aggregate_reviews.py:61` and
+# `.github/scripts/tests/test_aggregate_reviews.py:44`, once each, on its
+# `>` lines) while rewriting the item text as it quotes it — which is why a
+# verbatim needle like major_dispositions' would refuse that response and a
+# `path:line` needle does not. Until round 5 of #194 the binding was the
+# marker plus any `>` line, so a reply that named the marker and quoted
+# something unrelated answered the whole comment (codex). The location must
+# sit on a `>` line and match whole — `x.py:6` is not `x.py:61` — and the
+# union across replies is what counts, not one reply, because dispositions
+# split across comments legitimately; at least one of them must still name
+# the marker, and that is the whole of what the marker scan asks of a
+# reply. Until round 10 of #194 it also asked that same reply for a `>`
+# line, round 5's remnant, so a split with the marker in one reply and the
+# quotes in a sibling blocked against the union this comment promised
+# (codex). The `>` requirement is Stage 4's quoting form and not a second
+# binding: the location check below carries it, refusing a location
+# mentioned in prose, nothing more. What this asserts is only that each
+# item was addressed by name; whether the disposition is adequate stays the
+# human read in (c), which is why the gate prints these. A cutoff comment
+# with no parseable item has no location to bind and naming the marker
+# alone decides; the item count is printed so a changed producer format
+# shows up as a 0 here.
+# Reads the comment list on stdin, in the shape the gate builds.
+# Arguments: the window start, as cutoff_window_start prints it — the
+# earliest review-workflow run's createdAt on the head or the first verdict's
+# timestamp, whichever is earlier, so no round's cutoff is missed. Prints
+# one line per cutoff comment at or after it and returns 1 for any with no
+# such response. The marker scan's own
+# `select` is the only thing that decides what is a cutoff comment, so a
+# comment with no marker — the aggregate's own, every other bot comment in the
+# window — never reaches the loop; a second guard inside the loop would make
+# the scan unfalsifiable, which is what the drill's control found. The scan
+# is author-blind, and must be: the same producer runs under three
+# identities — `github-actions[bot]`, the reviewer App, and the operator's
+# own `gh` login via `review_pr_local.py`, whose author type is `User` —
+# so an author filter on `.type == "Bot"` dropped a locally-driven round's
+# cutoff comment, printed `no round-cutoff comment on this round's
+# surface` and let (c) pass over findings nobody dispositioned (AT-2803;
+# reachable, not yet observed, because the cutoff only fires at
+# ROUND_CUTOFF_N and `fetch_round_count` counts Bot verdicts only — a
+# mixed drive reaches it). What stands in for the author is the producer's
+# signature, `cutoff_marker`: the first line is nothing but the
+# marker's HTML comment, which only the producer writes. That shape is
+# also what keeps the regress out — a disposition comment names the marker
+# inline in backticks, never as a line of its own, so it stays an answer
+# and is never mistaken for the thing it answers. The reply scans exclude
+# it by the same shape rather than by author, for the same reason: under
+# the local driver a producer comment is a `User` too, and
+# `.type != "Bot"` alone would let the producer's next cutoff comment
+# answer its own earlier one. Extracted by name by the drill, like the
+# functions above.
+cutoff_findings() {
+  local since=$1 comments markers rc=0 id at marker items n_items missing rx
+  # jq's regex-escape for the two literals the reply is bound to below, the
+  # marker and each item's location, and the producer's own signature: a
+  # first line that is nothing but the marker's HTML comment. One
+  # definition each, prepended to all three programs.
+  # shellcheck disable=SC2016  # jq's own text, not shell
+  rx='def rx: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\])"; "\\" + .c);
+      def cutoff_marker: ((((.body // "") | gsub("\r"; "") | split("\n") | (.[0] // "")
+        | [capture("^<!--\\s*(?<m>round-cutoff-\\S+?)\\s*-->$") | .m]) | .[0]) // "");'
+  comments=$(cat) || { echo "(c) BLOCK: could not read the comments for the cutoff surface"; return 1; }
+  markers=$(printf '%s' "$comments" | jq -r --arg s "$since" "$rx"'
+     [ .[]
+       | select((.created_at | type) == "string" and .created_at >= $s)
+       | [ (.id | tostring), .created_at, cutoff_marker ]
+       | select(.[2] != "")
+     ] | .[] | @tsv') \
+    || { echo "(c) BLOCK: could not read the cutoff comments"; return 1; }
+  [ -n "$markers" ] || { echo "(c) no round-cutoff comment on this round's surface"; return 0; }
+  while IFS=$'\t' read -r id at marker; do
+    # The marker is named whole: not followed by a digit. Markers are
+    # `round-cutoff-<reviewer>-r<n>`, so one round's is a prefix of another's
+    # whenever the numbers are — r1 of r10 — and a bare substring let a reply
+    # naming r10 answer r1 (#194 round 7; #188 carries r7 and r9, so a tenth
+    # round on any PR collides). The digit is the whole of that class: every
+    # marker opens with `round-cutoff-`, so none is a suffix of another, and
+    # the reviewer set is fixed, so a longer marker differs from a shorter
+    # only by digits appended — the guard the location test below already
+    # uses. A word boundary was refused: jq's `\b` is Unicode-aware, so a
+    # Korean particle attached to the marker without a space would not
+    # satisfy it.
+    if ! printf '%s' "$comments" | jq -e --arg t "$at" --arg m "$marker" "$rx"'
+       [ .[]
+         | select(.type != "Bot")
+         | select(cutoff_marker == "")
+         | select((.created_at | type) == "string" and .created_at > $t)
+         | select((.body // "") | test(($m | rx) + "(?![0-9])"))
+       ] | length > 0' > /dev/null; then
+      echo "(c) BLOCK: $marker (comment $id, $at) carries findings that have no thread id, and no later non-Bot comment names it — zero unresolved threads is not zero findings"
+      rc=1; continue
+    fi
+    # Each item's location against the `>` lines of every later non-Bot
+    # comment, matched whole: not preceded by a path character, not
+    # followed by a digit. Prints the item count and the locations no reply
+    # quoted.
+    items=$(printf '%s' "$comments" | jq -r --arg t "$at" --arg i "$id" "$rx"'
+       ([ .[] | select((.id | tostring) == $i) ] | first | (.body // "") | gsub("\r"; "") | split("\n")
+          | map(capture("^- \\*\\*(?<loc>[^*]+)\\*\\* -- ") | .loc)) as $locs
+       | ([ .[]
+            | select(.type != "Bot")
+            | select(cutoff_marker == "")
+            | select((.created_at | type) == "string" and .created_at > $t)
+            | (.body // "") | gsub("\r"; "") | split("\n")[]
+            | select(startswith(">"))
+          ] | join("\n")) as $quoted
+       | [ $locs[] | select(. as $l | $quoted | test("(?<![\\w./-])" + ($l | rx) + "(?![0-9])") | not) ]
+       | "\($locs | length)\t\(join(", "))"') \
+      || { echo "(c) BLOCK: could not read the items of $marker (comment $id)"; rc=1; continue; }
+    IFS=$'\t' read -r n_items missing <<<"$items"
+    [ -z "$missing" ] || { echo "(c) BLOCK: $marker (comment $id, $at): a later non-Bot comment names it, but no later non-Bot comment quotes these item(s) by location: $missing — an item not quoted by location is an item nobody answered"; rc=1; continue; }
+    echo "(c) $marker (comment $id, $at): answered by a later quoted response naming it; $n_items item(s), each quoted by location in a later non-Bot comment"
+  done <<<"$markers"
+  return $rc
+}
+
+# (a) at least one verdict on this SHA. Kind (i): a completed/success run of
+#     the review workflow — step 8's only row that can open the gate — AND
+#     the aggregate that run posted — a comment or a review, step 8's shape
+#     table — with every configured reviewer on its headline. Kind (ii): the NEWEST local-review verdict comment on
+#     this SHA, and it must approve — an older approval under a newer
+#     non-approval is a block. Zero of either is a block: no verdict is not
+#     "nothing to answer".
+runs=$(gh run list --repo OWNER/REPO --commit "$HEAD_SHA" --limit 100 \
+  --json databaseId,workflowName,status,conclusion,createdAt,updatedAt) \
+  || { echo "ERROR: could not list runs on $HEAD_SHA"; exit 1; }
+# A list that fills its limit may have lost the oldest runs, and (c)'s
+# cutoff window starts at the oldest review-workflow run — so a full list
+# stops here rather than start the window late.
+n_runs=$(printf '%s' "$runs" | jq length) \
+  || { echo "ERROR: could not count the runs on $HEAD_SHA"; exit 1; }
+[ "$n_runs" -lt 100 ] \
+  || { echo "ERROR: $n_runs runs on $HEAD_SHA fill the list's limit of 100 — the oldest may be missing, and cutoff_window_start reads the earliest from this list; raise --limit and re-run"; exit 1; }
+# The name, before its first reader: the repository's workflow list is the
+# one step 8 has the operator read REVIEW_WF from, and review_workflow_known
+# checks what was filled in against it and against this head's runs.
+wf_names=$(gh api --paginate repos/OWNER/REPO/actions/workflows --jq '.workflows[].name') \
+  || { echo "ERROR: could not list the repository's workflows — an unreadable list is not 'no such workflow'"; exit 1; }
+printf '%s' "$runs" | review_workflow_known "$REVIEW_WF" "$wf_names" || exit 1
+run_window=$(printf '%s' "$runs" | jq -r --arg wf "$REVIEW_WF" \
+  '[.[] | select(.workflowName==$wf and .status=="completed" and .conclusion=="success")]
+   | sort_by(.createdAt) | last | if . == null then empty else "\(.createdAt) \(.updatedAt // "")" end') \
+  || { echo "ERROR: could not read the review workflow's run window from the run list on $HEAD_SHA — an unreadable run list is not 'no completed run'"; exit 1; }
+# Every read below that a condition decides on carries that tail: a jq or
+# gh that fails exits non-zero with nothing on stdout, and nothing on stdout
+# is also what a legitimately empty result looks like — no completed run, no
+# aggregate, no threads, nothing pending — so without the tail a failure is
+# read as the empty result and the condition passes — three such reads in
+# the verdict path at #194 round 5, two more in the run-list path at round
+# 7, each fixed by the instance until round 7 asked for the class. The tail
+# separates the two: an empty result exits 0 and is read; a failure exits
+# non-zero and stops here.
+# Two variables for two meanings. run_start is the newest completed/success
+# run's createdAt, and with run_end it binds kind (i)'s comment-surface
+# aggregate in select_aggregate, and is kind (i)'s round start for (c)'s
+# print — nothing else reads it. kind_i says
+# whether kind (i) holds: every refusal below clears it, and only refusals
+# touch it. Until round 5 of #194 one variable carried both, and the roster
+# refusal that cleared the flag also erased the timestamp (c)'s cutoff
+# window then read; round 8 found that window still read off this
+# success-filtered list — see cutoff_window_start, which reads it off the
+# unfiltered one, and the window computation in (c) for what each cost.
+read -r run_start run_end <<<"$run_window"
+kind_i=""
+if [ -n "$run_start" ]; then
+  if w=$(window_bounds "$run_start" "$run_end"); then kind_i=yes; else echo "$w"; fi
+fi
+c_total=$(gh api repos/OWNER/REPO/issues/N --jq .comments) \
+  || { echo "ERROR: could not read the comment count"; exit 1; }
+raw=$(gh api --paginate repos/OWNER/REPO/issues/N/comments \
+  --jq '.[] | {id, created_at, author: .user.login, type: .user.type, body: (.body // "")} | @json') \
+  || { echo "ERROR: could not read the comments"; exit 1; }
+comments=$(printf '%s\n' "$raw" | jq -s .) \
+  || { echo "ERROR: could not assemble the comment list"; exit 1; }
+c_seen=$(printf '%s' "$comments" | jq length) \
+  || { echo "ERROR: could not count the comments read"; exit 1; }
+[ "$c_seen" -eq "$c_total" ] \
+  || { echo "BLOCK (a): read $c_seen comments but the PR counts $c_total — a page was missed or a comment landed mid-read; re-run"; exit 1; }
+# Reviews, kind (i)'s other surface, in the same shape with the review's
+# submitted_at as its created_at plus its state and commit_id, and the same
+# completeness check: the PR's review count comes from GraphQL, where the
+# comment count came from the issue object, and a short list is a block.
+r_total=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!) {
+  repository(owner:$o,name:$r) { pullRequest(number:$n) { reviews(first:1) { totalCount } } }
+}' -F o=OWNER -F r=REPO -F n=N --jq '.data.repository.pullRequest.reviews.totalCount') \
+  || { echo "ERROR: could not read the review count"; exit 1; }
+raw_r=$(gh api --paginate repos/OWNER/REPO/pulls/N/reviews \
+  --jq '.[] | {id, created_at: .submitted_at, author: .user.login, type: .user.type, state, commit_id, body: (.body // "")} | @json') \
+  || { echo "ERROR: could not read the reviews"; exit 1; }
+reviews=$(printf '%s\n' "$raw_r" | jq -s .) \
+  || { echo "ERROR: could not assemble the review list"; exit 1; }
+printf '%s' "$reviews" | reviews_complete "$r_total" || exit 1
+verdict_re=${VERDICT_RE//<HEAD_SHA>/$HEAD_SHA}
+verdicts=$(printf '%s' "$comments" | jq -c --arg re "$verdict_re" --arg aw "$APPROVE_WORDS" \
+  '[.[] | ((.body | split("\n") | map(select(test("\\S"))) | .[0]) // "") as $first
+        | select($first | test($re))
+        | ($first | capture($re) | .word | gsub("^\\s+|\\s+$"; "")) as $word
+        | {id, created_at, author, body, first: $first, word: $word, approve: ($word | test($aw))}]
+   | sort_by(.created_at)') \
+  || { echo "ERROR: could not read the local-review verdicts on $HEAD_SHA — jq rejected VERDICT_RE or APPROVE_WORDS (an invalid regex, or one with no 'word' group); an unreadable verdict list is not 'no non-approval found'"; exit 1; }
+n_verdicts=$(printf '%s' "$verdicts" | jq length) \
+  || { echo "ERROR: could not count the local-review verdicts on $HEAD_SHA"; exit 1; }
+newest_ok=$(printf '%s' "$verdicts" | jq -r 'if length == 0 then "none" else (last | .approve | tostring) end') \
+  || { echo "ERROR: could not read the newest local-review verdict on $HEAD_SHA"; exit 1; }
+[ "$n_verdicts" -eq 0 ] || { echo "(a) local-review verdicts on $HEAD_SHA, oldest first — the newest decides:"; \
+  printf '%s' "$verdicts" | jq -c '.[] | {created_at, id, word, approve}'; }
+[ "$newest_ok" != "false" ] \
+  || { echo "BLOCK (a): the newest local-review verdict on $HEAD_SHA does not approve — back to Stage 2"; exit 1; }
+# Kind (i) is the run AND its roster. The workflow posts the aggregate with
+# its own token or its App's, as one of AGG_AUTHORS with user.type Bot —
+# identities no session's account can post under, which is why an author
+# check is right here and wrong for kind (ii) — on one of two surfaces by
+# the consumer's configuration (step 8's shape table), and select_aggregate
+# reads both. A comment names no SHA, so it is bound to the run by time:
+# created between the run's createdAt and its updatedAt, from inside the
+# run — a late aggregate from the previous head's round lands after this
+# run's updatedAt and is outside it. A review names its head, so it is
+# bound by commit: commit_id equal to HEAD_SHA, state APPROVED or
+# CHANGES_REQUESTED (the only events the producer reviews with) — the
+# equality refuses the previous head's review whatever its state, since
+# nothing but this account's Stage 4 loop folds a previous head's approval
+# (the producer folds only its own CHANGES_REQUESTED), and the state
+# clause refuses a folded review on this head and a COMMENTED one. --commit already scoped the run to HEAD_SHA, so a second run on the same
+# head is a second candidate, and the newest across both surfaces decides.
+# A marker comment or review from any other author is not an aggregate,
+# whatever it says. No aggregate on either surface, no headline, or a
+# headline whose roster is short is no kind (i) verdict — kind_i is
+# cleared, and the decision below falls to kind (ii), which Review routing
+# requires in exactly that case.
+if [ -n "$kind_i" ]; then
+  agg=$(printf '%s\n%s\n' "$comments" "$reviews" | select_aggregate "$HEAD_SHA" "$run_start" "$run_end") \
+    || { echo "ERROR: could not read the aggregate candidates on $HEAD_SHA — an unreadable list is not 'no aggregate'"; exit 1; }
+  if [ -z "$agg" ]; then
+    echo "(a) kind (i) refused: '$REVIEW_WF' completed/success on $HEAD_SHA (created $run_start, updated $run_end) posted no aggregate the gate can read: no comment by one of $AGG_AUTHORS (type Bot) carrying '$AGG_MARKER' inside that window, and no review by one of them carrying it on $HEAD_SHA in state APPROVED or CHANGES_REQUESTED — a green job with no aggregate is not a verdict (AT-2511); marker comments and reviews by anyone else were ignored"
+    kind_i=""
+  else
+    headline=$(printf '%s' "$agg" | aggregate_headline) \
+      || { echo "ERROR: could not read the aggregate's headline — an unreadable body is not 'no headline'"; exit 1; }
+    echo "(a) kind (i) aggregate on $HEAD_SHA: $(printf '%s' "$agg" | jq -r '"\(.surface) \(.id), state \(.state), by \(.author) (\(.type)), at \(.created_at)"')"
+    if [ -z "$headline" ]; then
+      echo "(a) kind (i) refused: that aggregate carries no '**Result:' headline — no roster, no verdict"
+      kind_i=""
+    else
+      echo "    $headline"
+      headline_roster "$headline" || kind_i=""
+    fi
+  fi
+fi
+if [ -z "$kind_i" ] && [ "$newest_ok" != "true" ]; then
+  echo "BLOCK (a): no verdict on $HEAD_SHA — no completed/success '$REVIEW_WF' run whose aggregate reports every configured reviewer (read the kind (i) lines above and step 8's table against the runs below) and none of $c_total comments opens with the verdict header for this SHA. Per Review routing a local review is required now, delivered as such a comment:"
+  printf '%s\n' "$runs"; exit 1
+fi
+[ -z "$kind_i" ] || echo "(a) verdict kind (i): '$REVIEW_WF' completed/success on $HEAD_SHA, run created $run_start, every configured reviewer on its aggregate"
+[ "$newest_ok" != "true" ] || echo "(a) verdict kind (ii): the newest local-review verdict on $HEAD_SHA approves"
+# The first verdict's timestamp, read once: kind (ii)'s round starts there
+# for (c)'s print, and so does the cutoff window when it is the earlier
+# bound. Empty when there is no verdict, which is a result and not a failure.
+first_verdict=$(printf '%s' "$verdicts" | jq -r 'if length == 0 then empty else .[0].created_at end') \
+  || { echo "ERROR: could not read the first local-review verdict's timestamp"; exit 1; }
+# The verdict sources (c) reads, in the shape verdict_dispositions takes:
+# one record per kind this head has. Kind (i) is the aggregate, with its
+# headline's major count and the run's createdAt as its round start; kind
+# (ii) is the newest verdict comment, with no declared count — it has no
+# headline, so verdict_dispositions counts its item lines off its body —
+# and the first verdict's timestamp as its round start. Both are appended
+# when both kinds hold: two reviewers, not duplicates. (a) has exited
+# above unless at least one is appended, so (c) never reads an empty list.
+sources='[]'
+if [ -n "$kind_i" ]; then
+  sources=$(printf '%s\n%s\n' "$sources" "$agg" | jq -cs --arg s "$run_start" --argjson w "${agg_majors:-0}" \
+    '.[0] + [ .[1] | {kind: "i", label: "aggregate \(.surface) \(.id) by \(.author)", created_at, since: $s, body, want: $w} ]') \
+    || { echo "ERROR: could not build the kind (i) verdict source — an unreadable aggregate is not 'nothing to answer'"; exit 1; }
+fi
+if [ "$newest_ok" = "true" ]; then
+  sources=$(printf '%s\n%s\n' "$sources" "$verdicts" | jq -cs --arg s "$first_verdict" \
+    '.[0] + [ .[1] | last | {kind: "ii", label: "comment \(.id) by \(.author)", created_at, since: $s, body, want: null} ]') \
+    || { echo "ERROR: could not build the kind (ii) verdict source — an unreadable verdict is not 'nothing to answer'"; exit 1; }
+fi
+
+# (b) 0 unresolved threads — a fresh snapshot, not Stage 4's. Any id listed
+#     is a block, whatever its severity label; a count past the window is a
+#     block too — cursor-paginate as in Stage 1 before deciding.
+snap_json=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!) {
+  repository(owner:$o,name:$r) { pullRequest(number:$n) {
+    headRefOid
+    reviewThreads(last:50) { totalCount nodes { id isResolved path line originalLine
+      comments(first:100) { totalCount nodes { body author { login __typename } } } } }
+  } }
+}' -F o=OWNER -F r=REPO -F n=N --jq '.data.repository.pullRequest') \
+  || { echo "ERROR: could not read the threads"; exit 1; }
+snap=$(printf '%s' "$snap_json" | jq -r \
+  '"\(.headRefOid) \(.reviewThreads.totalCount) \([.reviewThreads.nodes[] | select(.isResolved|not) | .id] | join(" "))"') \
+  || { echo "ERROR: could not read the head, thread count and unresolved ids from the snapshot"; exit 1; }
+# Every thread, resolved or not, one per line in thread_answers' shape:
+# path, its line and original line comma-joined, `replied` when any comment
+# after the first is by a non-Bot account, and the first comment's first
+# line — the producer's finding line; its suggestion follows a blank line
+# and is not read — the fields joined by the unit separator, which `read`
+# does not collapse the way it collapses tabs, so a thread with no line
+# keeps its empty field. An empty first comment keeps its field too: jq's
+# split of "" is [], whose first element is null, and a null fed to gsub
+# aborts the whole read as an unreadable thread list (#194 round 12,
+# claude) — the `// ""` the sibling reads already carry. (c) matches the
+# aggregate's major items against it after this condition has required
+# that none is unresolved.
+thread_data=$(printf '%s' "$snap_json" | jq -r \
+  '.reviewThreads.nodes[]
+   | [ .path,
+       ([.line, .originalLine] | map(select(. != null)) | unique | map(tostring) | join(",")),
+       (if ([.comments.nodes[1:][] | select(.author.__typename != "Bot")] | length) > 0 then "replied" else "unreplied" end),
+       ((.comments.nodes[0].body // "") | gsub("\r"; "") | split("\n") | (.[0] // "") | gsub("\u001f"; "")) ]
+   | join("\u001f")') \
+  || { echo "ERROR: could not read the threads in thread_answers' shape — an unreadable thread list is not 'no threads'"; exit 1; }
+read -r thr_head thr_total unresolved <<<"$snap"
+[ "$thr_head" = "$HEAD_SHA" ] || { echo "BLOCK (b): head moved to $thr_head during the gate — restart it"; exit 1; }
+[ "$thr_total" -le 50 ] || { echo "BLOCK (b): $thr_total threads exceed this query's window of 50 — paginate before deciding"; exit 1; }
+# (c)'s thread_answers reads each thread's replies off this same snapshot,
+# so a reply past the comment page is not a missing reply, it is an unread
+# one: a thread whose count exceeds what the page returned blocks here and
+# says so, rather than reading as `unreplied` below and reaching
+# major_dispositions as "not answered" — the page was 5 and the scan was
+# all of it until round 5 of #194 (codex), so a sixth-comment reply was a
+# false block with the wrong reason, and a gate that blocks answered work
+# gets overridden by hand.
+short=$(printf '%s' "$snap_json" | jq -r \
+  '.reviewThreads.nodes[] | select(.comments.totalCount > (.comments.nodes | length))
+   | "\(.id): read \(.comments.nodes | length) of \(.comments.totalCount) comments"') \
+  || { echo "ERROR: could not compare each thread's comment count with what was read"; exit 1; }
+[ -z "$short" ] || { echo "BLOCK (b): could not read all comments on these threads — a reply the gate did not read is not a missing reply; paginate their comments before deciding whether they were answered:"; printf '%s\n' "$short" | sed 's/^/  /'; exit 1; }
+[ -z "$unresolved" ] || { echo "BLOCK (b): unresolved threads on $HEAD_SHA — back to Stage 2:"; printf '  %s\n' $unresolved; exit 1; }
+
+# (d) 0 checks still running on this SHA — not only the review workflow.
+#     Read on two surfaces, whichever sees it first: the SHA's check runs,
+#     and the run list (a) already fetched — every workflow on the SHA, not
+#     only REVIEW_WF — since a run and the check runs its jobs register are
+#     not one record (step 8's "not visible yet" window). Either surface
+#     naming anything not completed refuses.
+running=$(gh api --paginate repos/OWNER/REPO/commits/"$HEAD_SHA"/check-runs \
+  --jq '.check_runs[] | select(.status!="completed") | "\(.name):\(.status)"') \
+  || { echo "ERROR: could not list check-runs on $HEAD_SHA"; exit 1; }
+pending=$(printf '%s' "$runs" \
+  | jq -r '.[] | select(.status!="completed") | "\(.workflowName) (run \(.databaseId)):\(.status)"') \
+  || { echo "ERROR: could not read which runs on $HEAD_SHA are still in flight — an unreadable run list is not 'nothing pending'"; exit 1; }
+still=$(printf '%s\n%s\n' "$running" "$pending" | sed '/^$/d') \
+  || { echo "ERROR: could not join the two (d) surfaces"; exit 1; }
+[ -z "$still" ] || { echo "BLOCK (d): checks still running on $HEAD_SHA:"; printf '%s\n' "$still" | sed 's/^/  /'; exit 1; }
+
+# (c) the items each verdict (a) named raised — read on those verdicts, never
+#     on an author-filtered list, and on every one of them, never on one
+#     kind: verdict_dispositions walks the source list (a) built. Where a
+#     verdict names majors in the aggregate's item shape — kind (i)'s
+#     headline count, or the item lines a kind (ii) verdict carries — each
+#     is checked mechanically by major_dispositions: a replied thread at
+#     the item's line or carrying its description, or a later non-workflow
+#     comment quoting it, else exit 1. Then each verdict and every comment
+#     from its round's start are printed for the rest: a review-surface
+#     aggregate is not among the comments, so its body is printed on its
+#     own first; a kind (ii) verdict's inline threads are (b)'s. A verdict
+#     with nothing to answer passes; an item without a disposition is a block.
+verdict_dispositions "$thread_data" "$sources" "$comments" || exit 1
+# (c) on the cutoff surface, for whichever kinds this head has. The window
+# starts at the earliest of every review-workflow run's createdAt on this
+# head and the first verdict's timestamp — cutoff_window_start, above — so
+# a cutoff comment from any round on this head is inside it. Not run_start:
+# that is the newest completed/success run's createdAt, selected for kind
+# (i)'s aggregate, and a start read off a selected value misses the cutoff
+# comment whenever the selection and the comment's run differ. Three
+# instances, one class (#194 rounds 5 and 8, codex); each ends the same way:
+#   round 5  11:28Z the review run posts <!-- round-cutoff-claude-rN --> and
+#           an aggregate with a 2/3 roster; headline_roster refuses, and the
+#           refusal clears the one variable that also held 11:28Z, a flag
+#           and a timestamp in one. 12:05Z a local reviewer posts a kind
+#           (ii) approval, and since = 12:05Z
+#   round 8  the run posts its cutoff comment and then concludes failure —
+#           step 8's "did not pass" row — so the success-filtered list is
+#           empty, run_start with it, and since is again the later kind
+#           (ii) verdict's; or two completed/success runs on one head put
+#           run_start at the newer one's createdAt, after the older run's
+#           cutoff comment, which the producer does not repost — an
+#           existing marker skips the post
+# In each, the cutoff comment is filtered out as a previous round's,
+# cutoff_findings reports "no round-cutoff comment on this round's
+# surface", and the gate opens on the findings this read exists to block.
+# Round 5 gave the timestamp its own variable, which closed the flag
+# instance and left the selection; cutoff_window_start reads the start
+# off no selection at all, and the drill's 5f holds both round-8 shapes.
+# The function's refusal is on stdout, where this capture takes it: a bare
+# `|| exit 1` here stopped the gate with the one line that said why dropped
+# (#194 round 11), so the tail prints what it captured before it exits.
+since=$(printf '%s' "$runs" | cutoff_window_start "$REVIEW_WF" "$first_verdict") || { printf '%s\n' "$since"; exit 1; }
+# (a) has already exited unless kind (i) holds, which needs a review-workflow
+# run on this head, or kind (ii) does, which set first_verdict — so an empty
+# window start here is a read that failed, never a result, and it would read
+# every cutoff comment the PR has ever carried as this round's.
+[ -n "$since" ] || { echo "ERROR: no window start for the cutoff surface although (a) passed — no '$REVIEW_WF' run on $HEAD_SHA, first verdict '$first_verdict'"; exit 1; }
+printf '%s' "$comments" | cutoff_findings "$since" \
+  || { echo "BLOCK (c): a round-cutoff comment's findings on $HEAD_SHA have no disposition — back to Stage 2"; exit 1; }
+echo "(a)(b)(d) clean — read (c), then start the merge block with:"
+echo "  HEAD_SHA=$HEAD_SHA"
+```
+
+Only after you have read (c) and every item is answered. The merge block starts from the value the gate printed, as a literal — not from shell state, which does not survive between tool calls in the sessions that run this skill, and not from a re-read, which would pin whatever head exists now. The literal carries the SHA the gate actually read; if the head moved in between, `--match-head-commit` refuses server-side.
+
+```bash
+HEAD_SHA=<paste the 40-char value the gate printed>
+[ "${#HEAD_SHA}" -eq 40 ] || { echo "ERROR: HEAD_SHA is not the 40-char value the gate printed"; exit 1; }
+# <resolved method> is one of merge / squash / rebase — resolve it with Merge strategy below
+gh pr merge N --repo OWNER/REPO --<resolved method> --match-head-commit "$HEAD_SHA"
+```
+
+Why (b) and (c) are read here and not carried from Stage 4: **the push after Stage 4's cleanup is itself what triggers the next round, and until 2026-09-11 nothing after that push re-read the threads.** Measured that day over every PR this account merged since 2026-09-04 — 144 PRs, GraphQL `reviewThreads` — 3 were merged with an open bot thread, all with 0 replies: ai-dev-cab#481 (thread 04:49Z, merged 05:08Z), ai-dev-qa-partner#1112 (thread 22:37Z, merged 23:01Z), ai-dev-pr-review#147 (merged 10:43Z before its round finished; the thread arrived 11:15Z). A fourth, ai-dev-infra-common#801, was handed over as "0 unresolved threads" from a query made before the final round posted — same mechanism, second machine, caught before the merge — the thread was answered at 00:04Z and it merged at 00:12Z. Severity does not exempt: a `suggestion` gets a reply and a resolve like anything else; an open thread at merge time is a silent close (Resolve Policy).
+
+Why (a) reads two verdict kinds and (c) reads only what (a) named, and why neither passes on an empty list (#117, filed 2026-09-20): until this change (c) selected comments by author identity — `Bot`, a `[bot]` suffix, `github-actions` — and an empty selection with 30 or fewer comments printed *no bot aggregate comment* and continued. It could not tell nothing-to-answer from nothing-asked. Measured: ignite-pilot-org/factory-system-builder #63 (gate run 2026-09-18) had 3 comments, all LENS-session verdicts posted as `hyuk-hur` — two not-approved, one APPROVE — and the filter matched 0, so the merge rested on a hand check the gate never saw; hyuk-hur/dev-dotfiles #116 (2026-09-19T13:41Z) and #130 (2026-09-29) each had exactly one comment, the LENS hand-review verdict naming the head, the gate printed *no bot aggregate comment among 1 comments*, and the operator substituted an ad-hoc APPROVE-comment check for (a) each time — once missing the verdict outright because it was worded `승인`, not `APPROVE`. LENS observed the same shape on dgt-research #126 and #123 and on ai-dev-pr-review #119. The organisation's own aggregate already behaves the way this gate now does: on ai-dev-pr-review #172 every reviewer was skipped and it reported *Review skipped -- PR too large* as `conclusion: failure` rather than as a pass. Kind (ii) is not an interim to be restored later: it is *Review routing*'s standing path whenever the workflow produces no verdict, and it stops being exercised by itself the moment the workflow produces one again — nothing here needs putting back afterwards.
+
+Why kind (ii) is a header contract and not a marker search (lens, 2026-09-29, on this change's first cut): that cut dropped the identity filter and matched an approval word anywhere in a body that contained the SHA, minus three enumerated negative spellings. Measured on ignite-pilot-org/max-builder #80, head `7b3081be`: three comments named the SHA and all three counted as approvals — the author's own review request (`## 리뷰 재요청 — LENS 세션 · head …`, whose body asks the reviewer to *name the head SHA in the APPROVE*), the verdict itself (`## LENS 판정 — **승인** · head …`), and the author's own gate record, which quotes the verdict. With identity gone, a body-wide marker lets the author satisfy (a) in the author's own words. And the negative list caught only the spellings it enumerated: lens's real rejection vocabulary — `**차단 1건** — 고치면 승인합니다`, `승인하지 않습니다`, `승인 보류` — passed as approvals, the same closed-enumeration-with-default-allow defect that #130's review found in the human-gate list. Identity was removed on purpose, so the content check has to do what identity used to: separate a verdict from a request, a quotation and a record. Position and form do that and a word search cannot — a request never opens with the verdict header, and a word the header does not capture as an approval is not one, whether or not this file has heard of it. The cost is that a verdict outside the form does not count: hyuk-hur/dev-dotfiles #116's `## APPROVE — `e835d…`` is one, and a reviewer who posts that shape reposts in the contract's. The same cost falls on a rejection, and there it is easier to miss (lens, 2026-09-29, non-blocking, on #131's verdict): a rejection posted outside the header form — the older `## LENS 손 리뷰 — head …` with `차단 1건` in the body — is not a verdict, so it is indistinguishable from the absence of a review, and the gate reports *no verdict, local review required* rather than *the reviewer rejected*. Both block; the operator-facing message differs, and a PR that was reviewed and rejected reads as one that was never reviewed — which is why the reviewer reposts the rejection in the contract's form too.
+
+Two limits, stated rather than papered over. Under one shared GitHub account the gate cannot prove the local reviewer is not the author — every comment is `hyuk-hur`. It requires the claim in machine-readable form, a comment opening with the verdict header for this SHA, and verifies nothing beyond that; that the reviewer is a different session is *Review routing* rule 4, a rule, not a check — and the same rule is what forbids the author from posting in the header shape. And a gate that counts comments must paginate: the comment read uses `gh api --paginate` and compares what it fetched with the count the PR itself reports, so a short page or a comment landing mid-read is a block, not a shorter list — the old block asked `-le 30` only on its empty branch, which is asking after deciding.
+
+Why kind (i) reads the aggregate's roster and not the run's conclusion (#140; AT-2511, measured by LENS on ai-dev-pr-review #174, 2026-09-29): a reviewer step that hits the 10-minute cap leaves the job `success` — the aggregate records `action_invocation_failed` for that reviewer and reaches quorum on the others — so the check rollup is green while one configured reviewer never read the diff, and the cut correlates with size (everything at or above 6,629 changed lines was cut, everything at or below 6,074 completed), so the larger the PR the likelier a green run reviewed less of it. LENS will not lower the conclusion — that would change merge behaviour for every consumer at once, a fleet decision — and exports a roster instead (AT-2565, producer side); but `reviewer_roster` and `reviewers_responded_count` are `workflow_call` outputs, reachable by a calling workflow and by nothing `gh run list` or the check rollup returns, so the headline's `N/M reviewers` and `N/M LLM responses` fractions are the only rendering of that roster a consumer can read on the PR, and the gate reads them: both must be `M/M` and the Result word `Approved`. The fraction is the uniform signal and nothing else is: a cut reviewer is spelled three ways depending on which one was cut — claude `failed: action_invocation_failed` with job conclusion `success`, codex `failed (see logs)` with conclusion `failure`, gemini `early-exit or no-output` with conclusion `success`, because `continue-on-error` rewrites a step killed at `timeout-minutes` to `success` — so the gate keys on neither a `failed` prefix in the reason text nor any job or step conclusion. The fraction's placement moves too: with a cut it sits inside a parenthetical, `not every reviewer responded (2/3 reviewers)`, and with a full roster it is bare, `3/3 reviewers`; the regex is unanchored so both placements match, and the drill holds both. Three things the first cut of this check left open, found by the remote round on #170 (codex, 2026-10-01). The denominator: `N/N` is full only against the roster the headline was written for, so the gate compares both denominators with `EXPECTED_REVIEWERS`, read from the review workflow as step 8 says, and refuses an unfilled or non-numeric placeholder the way an unfilled `REVIEW_WF` already fails. The author: the marker is a public string and the window is minutes wide, so a comment is an aggregate only when its author is `github-actions[bot]` with `user.type` `Bot` — the identity the workflow's own token posts under and no session's account can; #174 widened the list to the App's login, below — which is not the identity list the kind (ii) contract refuses: that list named humans sharing one account, this names an account no human holds. The majors: `Approved with N unreviewed major issue(s)` used to reach the merge block on a printed warning, so now `major_dispositions` parses the body's major items and exits non-zero unless each has a thread at its path and line or a later non-workflow comment quoting it, and a body listing fewer majors than its headline counts blocks too. Round 2 on the same PR (codex, 2026-10-01) tightened two of its reads: a thread anywhere in the item's file used to count, so an unrelated resolved thread on the same path answered a finding it never touched — the match is now path and line, with `originalLine` accepted for a thread the diff has since moved, and an item with no line has only the quote route; and the path was cut at its first colon, so a path containing one was truncated — the key splits only where a number follows the last colon. Round 3 (gemini, 2026-10-02) tightened the quote route the same way: a bare substring match let a quote of some other finding whose text contained the path answer this one, so a path-bearing item now matches only its key in backticks, as the aggregate renders it, and the plain-prefix match is kept for path-less items alone. The hand verdict on the head after that (LENS, 2026-10-02) showed the kept half was the weaker one: `file: null` is a legal payload, so a path-less major is real, and its 60-character prefix is repeated by another finding's prose and shared by near-identical twins — both reproduced with the gate's own function — so a path-less item now matches only its whole rendered line, verbatim. The re-verdict on that head (LENS, 2026-10-02) found the same defect alive on the other branch — a backticked `path:line` is a token reviewers write inside other items' descriptions, measured on this PR's own aggregate, so quoting item 2 whose prose mentioned item 1's key answered item 1 — and named the shape: three rounds in a row the fix moved the defect from one branch of a two-way split to the other. The split is gone: every item's needle is its whole rendered line from `**major**` to the end of its description, `**major** \`path:line\` -- description` or `**major** -- description`, and the thread match likewise reads the whole description rather than a 60-character prefix, which would have let one thread answer two same-path twins. The approval that followed (LENS, 2026-10-02, non-blocking) named the last trace of the shape: two `needle=` assignments re-assembling the line from captures are still two things to keep in sync, so the needle is now derived once from the matched line itself, `${line#- + }`, after whichever regex matched. The same verdict widened the thread match where the producer itself leaves a gap: `post_inline_comments.py` posts no thread for a line outside the diff and none within five lines of a similar thread, so an answered major can be re-listed a few lines from the thread that answered it; a thread now answers on path plus either the line or its first comment being the producer's rendering of the finding, `+ **major** (<reviewer>): <description>` with the description whole to the end of the line, content-bound rather than distance-bound — round 10 of #194 (codex) found that match written as a substring of the first comment's text, so a same-path thread mentioning the description in prose answered it, and the same round found the thread rows read with a tab IFS, which collapses the empty line field of a file-level thread and shifts its reply flag into the line field, so the description route never reached the line-less threads it exists for; the rows are now unit-separated and the match is an equality after the producer's prefix. And two more things it named: a null `updatedAt` on the run used to open the aggregate window rather than close it, since a null compares as later than any timestamp, so `window_bounds` now refuses either missing edge; and a thread resolved with no reply counted as a disposition, which Resolve Policy forbids, so `thread_answers` requires a reply from a non-Bot account. The Result words the aggregate writes are `Approved`, `Approved with N unreviewed major issue(s)`, `Changes Requested`, `Comment Only`, `Review did not run -- …`, `Review skipped -- PR too large` and `Review skipped -- only policy-excluded files changed`; only the first two approve, and the second is not a pass on its own — its N items go to (c). The binding of comment to run is by time, because the aggregate body names no SHA: this run's aggregate is the newest marker comment created between the run's `createdAt` and `updatedAt`, which excludes a previous head's round posting late. That is one of three shapes (#174, measured 2026-10-02 on each consumer's newest merged PR; step 8's shape table): with `ALLOW_AUTO_APPROVE` on, the aggregate is a review, not a comment — by `github-actions[bot]` without an App key, by `ignite-ai-review-approver[bot]` with one — and until this change the gate reported *no comment by github-actions[bot] carrying the marker* on ignite-corp/ai-dev-qa-partner #1195, ai-dev-infra-common #876 and ai-dev-cab #515, although on each the round had completed and its aggregate was on the PR. The review surface binds on `commit_id`, not on the window, because a review names its head where a comment cannot, and the equality carries the whole of the previous-head refusal: on every measured PR the previous head's review is `DISMISSED` and the current head's `APPROVED`, but it was not the workflow that folded it — the producer dismisses only its own `CHANGES_REQUESTED` marker reviews (`_minimize_stale_bot_items`, ai-dev-pr-review d554aee) and never an approval, and the `review_dismissed` timeline events on ai-dev-cab #515, ai-dev-qa-partner #1195 and ai-dev-infra-common #876, read 2026-10-02, are all this account's, the Stage 4 loop, none with the producer's `Superseded by new review` message (LENS, on #175's first head, which had written the mechanism backwards in three places). A consumer that does not run that loop keeps the previous head's approval `APPROVED`, so `DISMISSED` cannot stand in for "previous head", and the drill's control that cuts the equality is what shows it is load-bearing. The state clause is for this head: the gate reads an `APPROVED` or `CHANGES_REQUESTED` review whose `commit_id` is `HEAD_SHA` — the two events `post_verdict` passes `gh pr review`, so a `COMMENTED` marker review, which the producer never posts (its only `COMMENTED` review is the inline one, with an empty body), is no aggregate whatever its headline says (codex, round 18 of #194) — — not the newest review on `HEAD_SHA` of any state, which after a Stage 4 re-run on a posted head would be a dismissed approval. The time window stays on the comment surface alone, where it is the only binding there is. And the review list gets the comment list's completeness check, against GraphQL `reviews.totalCount` (equal to the paginated REST length on all four measured PRs): the producer spares approvals when it folds, so two runs on one head can leave an approval under a newer `CHANGES_REQUESTED`, both non-dismissed on the head, and a dropped page that lost the newer one would promote the approval — the first cut had exempted the review read on the claim that a missed review could only lose a candidate, which is the opposite of what newest-wins exists for (LENS, same verdict). Both surfaces are read by one function, `select_aggregate`, and the newest candidate across them decides; `headline_roster` and `major_dispositions` read its body without knowing which surface it came from. Stage 4's dismiss-all-prior-reviews loop runs before the push that starts the round, so the aggregate's review on the new head does not exist when it runs; a re-run after the round has posted dismisses it, and the gate then falls to kind (ii) rather than reading a dismissed approval. The author list is the one the comment surface already carried, widened by the App's login, and it is applied to both surfaces because identity is per verdict and not per repository: on the App repositories a `Changes Requested` review is still `github-actions[bot]`'s, a `Comment Only` verdict and the review-API-failure and timeout fallbacks are issue comments on every configuration — the first with an `Intended verdict` note appended after the headline, the second bare and byte-identical to a comment-only post, so the gate keys on no note (AT-2597, producer side, LENS 2026-10-02) — and a failed App mint leaves the approval posted as `github-actions[bot]`'s review. Both are `Bot`, and `.github/scripts/gate_headline_drill.sh` holds the three measured shapes, a `DISMISSED` review on the head, an `APPROVED` review on the previous head, and a marker review by a login outside the list, with a control showing the `commit_id` equality is what refuses the previous head's approval. The cost, stated: a sequential-mode round that early-exits by design reports `1/3 reviewers` and is refused here too — this repository's workflow runs its reviewers in parallel, and a repository that does not falls to kind (ii). Measured on this repository 2026-10-01 on #168, the first remote round after the billing block lifted: `**Result: [OK] Approved | posted as comment (auto-approve off) | 3/3 reviewers** -- 3/3 LLM responses -- minor/suggestion only`; the shapes `.github/scripts/gate_headline_drill.sh` holds are that one, its `no issues` and `1 major issue(s)` siblings, a `2/3 reviewers` cut and `[X] Review did not run`.
+
+Why (d) is its own condition: on 2026-09-11 the cab session had two PRs with `APPROVED` and the review round completed/success while `lint (3.14)` was still `IN_PROGRESS` — a poll that waits only on the review workflow merges past a running check.
+
+(d) counts what is still running, and a review job that never started is not running: its status is `completed`, its conclusion `failure` or `skipped`, its step count 0. Two observed shapes. On every hyuk-hur PR through 2026-09-29 the `AI Code Review` run ended in four seconds with `Verify reviewer keys: completed/failure, steps=0` and `review: completed/skipped`, annotated *"The job was not started because recent account payments have failed or your spending limit needs to be increased"* — #128's head `659345c`, #130's head `4b0195e`. On ignite-corp/ai-dev-pr-review #172, head `2af348c` (run 35479552503, 2026-09-20), all six reviewer *jobs* were skipped past `PR_SIZE_LIMIT` and the aggregate reported `Review skipped -- PR too large` as `failure`. Six is jobs, not reviewers: the orchestrator declares a parallel-mode and a sequential-mode job per reviewer, `review-{claude,codex,gemini}-{p,s}`, and `vars.REVIEW_MODE` selects one set, so three of the six are skipped on every round — on #172's final head `e9592d8` the three `-p` jobs completed and the three `-s` jobs were `skipped` with 0 steps — and the roster, step 8's `EXPECTED_REVIEWERS`, is the three reviewers, not the six jobs. Neither produced a verdict: neither satisfies (a)'s kind (i), neither blocks (d), and neither is a rejection — reading one as the reviewer's negative answer blocks the repository for as long as the reviewer cannot be summoned, because the reviewer that could not run is counted as the reviewer that said no. A completed `failure` that did post a verdict is a rejection and blocks as before; the difference is whether anything was said, and the aggregate comment — kind (i)'s items — is where it would have been said.
+
+The gate has two entry paths, and both restart it from the top: a push (fixup or otherwise), and `gh pr update-branch` — see the `BEHIND` row; each moves the head and triggers a round on the new SHA. Nothing read on the old SHA survives either.
+
+`--match-head-commit` takes the **full 40-char SHA**. Given a prefix it refuses with `Head branch was modified` — that reads like a race but is the guard rejecting an abbreviation, and the length check at the top of the block exists so it is never mistaken for one.
+
+`--match-head-commit` is what closes the trailing edge. Without it there is a window between the last check and the merge call in which the head can move, and the merge takes whatever is there; with it GitHub compares server-side and refuses, so a moved head costs a restart instead of an unreviewed commit on the base branch. Never drop it because the check "just passed" — the flag exists for the interval after the check.
+
+**Merge strategy — resolve it, don't assume it.** `--merge` is this skill's default, and it preserves individual commit history. It is a default, not a fact about every repository. Repository settings bound every answer, the default included — settings decide what a repository may still do, and no tier below them may name a method they rule out — so they are read first. Stop at the first tier that answers:
+
+1. **Repository settings** — enforced by GitHub, not opinion:
+   ```bash
+   gh api repos/OWNER/REPO -q '{squash: .allow_squash_merge, rebase: .allow_rebase_merge, merge: .allow_merge_commit}'
+   ```
+   Each `false` rules a method out, for every tier below and for the default. **Exactly one `true` left answers on its own; two or more and the settings do not answer — they bound: tiers 2 and 3 choose among the survivors only.** A non-zero exit rules nothing out and answers nothing: every method survives, and the check is named as unresolved in the report.
+2. **Project memory**, where it names a survivor — qa-partner's `feedback_merge_strategy.md` forbids `--squash` at merge time. That is qa-partner's rule, and it binds there. A memory that mandates a method tier 1 ruled out does not answer — `gh pr merge` would refuse that method server-side — so name the memory as stale in the report and go on to tier 3.
+3. **The repository's own history** — what the repo actually does outranks what this file defaults to. **It ranks only the survivors: history shows what a repo did, settings decide what it may still do.**
+   ```bash
+   git log --oneline --merges origin/<baseRefName> -5
+   ```
+   Merge commits listed → the repo merges; empty → it squashes **or** rebases, and this command cannot tell which. Take the surviving method the evidence points at; if it points at two survivors, or at none, ask. A non-zero exit prints nothing too — inconclusive, not a signal.
+
+If no tier answers, use `--merge` where tier 1 left it standing and say that the default was used; where tier 1 ruled it out and nothing answered, ask. A tier that exited non-zero is a tier that did not answer, so the fallback is the same — **the report is not: name that check as unresolved alongside the default.**
 
 #### REST API merge fallback (only when ALL guards pass)
 
 Per `feedback_no_admin_merge.md` Rule 2: when `gh pr merge` refuses with `the base branch policy prohibits the merge` AND ALL these guards hold:
+- **Standard merge (a) passed on the current head** — a verdict, kind (i) or kind (ii), on the SHA about to be merged
 - PR has at least one APPROVED review (any reviewer, including bots with `authorAssociation: NONE`)
 - All required checks pass
 - 0 unresolved threads
@@ -476,13 +1466,21 @@ Per `feedback_no_admin_merge.md` Rule 2: when `gh pr merge` refuses with `the ba
 Then REST API direct merge is acceptable:
 
 ```bash
+# Same gate, same place — the fallback is a merge, so it is gated like one:
+# the Standard merge gate block runs first, and this block takes the place
+# of the merge block, starting from the literal the gate printed.
+HEAD_SHA=<paste the 40-char value the gate printed>
+[ "${#HEAD_SHA}" -eq 40 ] || { echo "ERROR: HEAD_SHA is not the 40-char value the gate printed"; exit 1; }
 gh api --method PUT repos/OWNER/REPO/pulls/N/merge \
-  -f merge_method=merge \
-  -f commit_title="Merge pull request #N from BRANCH" \
-  -f commit_message="<short summary>"
+  -f merge_method=<resolved method> \
+  -f sha="$HEAD_SHA"
 ```
 
-This is NOT admin bypass — it's working around `gh pr merge`'s overly conservative pre-check + GitHub's stale `mergeStateStatus` cache. GitHub server-side asynchronously recomputes `mergeStateStatus` and `reviewDecision`, so they can lag the actual ruleset evaluation by several minutes after a state-changing event (push, review, check). The 4 guards above prove the ruleset is actually satisfied. If REST returns 200 OK + a merge SHA, the ruleset was satisfied all along (CLI cache was stale). If REST returns 405/422, the response body's `message` field gives the real reason — that's the natural blocker, act on it.
+`merge_method` is the method resolved by **Merge strategy** above, not a literal `merge`; the REST values `merge` / `squash` / `rebase` are the same three words as `--merge` / `--squash` / `--rebase`, so nothing needs translating. `commit_title` and `commit_message` are optional, and the block omits them on purpose: the endpoint documents them as *Title for the automatic commit message* and *Extra detail to append to automatic commit message*, so when they are omitted GitHub writes the automatic message the repository's own settings define — for this repository `merge_commit_title: MERGE_MESSAGE` with `merge_commit_message: PR_TITLE` (read from `gh api repos/OWNER/REPO`, 2026-10-14), which is the `Merge pull request #N from OWNER/BRANCH` subject with the PR title as body that every merge commit on `main` carries, and `squash_merge_commit_title: COMMIT_OR_PR_TITLE` with `squash_merge_commit_message: COMMIT_MESSAGES` for a squash — the same message `gh pr merge` writes when given no `--subject` or `--body`. Pass the two fields only to override that message; `rebase` ignores both.
+
+`-f sha=` is the REST equivalent of `--match-head-commit`, and it is required for the same reason: the fallback path is a merge like any other, so it carries the same pinned head. A `409` back from it means the head moved — restart from step 8; do not retry without the pin.
+
+This is NOT admin bypass — it's working around `gh pr merge`'s overly conservative pre-check + GitHub's stale `mergeStateStatus` cache. GitHub server-side asynchronously recomputes `mergeStateStatus` and `reviewDecision`, so they can lag the actual ruleset evaluation by several minutes after a state-changing event (push, review, check). The guards above prove the ruleset is actually satisfied. If REST returns 200 OK + a merge SHA, the ruleset was satisfied all along (CLI cache was stale). If REST returns 405/422, the response body's `message` field gives the real reason — that's the natural blocker, act on it.
 
 Common stale-cache signals that should prompt the raw-data check above:
 - `reviewDecision: empty` but `gh api repos/.../pulls/N/reviews --paginate` shows APPROVED on current HEAD
@@ -503,7 +1501,9 @@ If ANY guard fails (especially CHANGES_REQUESTED or unresolved threads): STOP. D
 gh pr view N --repo OWNER/REPO --json state,mergedAt,mergedBy --jq '{state,mergedAt,mergedBy:.mergedBy.login}'
 ```
 
-Branch deletion + Jira transition are out of this skill's scope — handle separately.
+If a round finishes **after** the merge — the ai-dev-pr-review#147 shape: merged 10:43Z, thread 11:15Z — its threads still get a reply and a resolve on the merged PR, per the Resolve Policy; the merge itself is a gate violation and is recorded as one, in the reply, naming the merged SHA and the run that was still in flight, so the next audit finds it rather than an unexplained open thread.
+
+Branch deletion and the ticket transition are out of this skill's scope — handle separately.
 
 ## Multi-PR coordination
 
@@ -529,7 +1529,7 @@ Schema accepts 4 enum values: `MUTABLE`, `IMMUTABLE`, `MUTABLE_WITH_EXCLUSION`, 
 
 Command: `aws cloudformation describe-type --type RESOURCE --type-name AWS::ECR::Repository`
 
-The value was also applied via the live API to all ECR repos in our account today. Bot reference appears stale relative to the 2024 ECR exclusion-filter release.
+The value was also applied via the live API to all 6 ECR repos in our account today. Bot reference appears stale relative to the 2024 ECR exclusion-filter release.
 ```
 
 Pattern: assertion + verification command + applied-evidence + likely-cause-of-bot-error.
@@ -541,11 +1541,12 @@ Pattern: assertion + verification command + applied-evidence + likely-cause-of-b
 - **Silent resolve** — close without reply. Every close needs a reply, no exceptions.
 - **Admin merge in status report** — `feedback_no_admin_merge_option.md`: never frame admin merge as a path. Status report = "review thread X 해결 + 인간 review 대기".
 - **Trailing question** — "should I merge?" when CLEAN + APPROVED + policy says yes. Per `feedback_no_unjustified_wait.md`: just merge.
-- **`--squash` at merge time** — `feedback_merge_strategy.md` explicitly forbids. Always `--merge` for the remote merge. Local `git rebase --autosquash` is fine and required (different operation).
+- **Picking the remote merge method without checking** — resolve it per **Merge strategy** (Stage 5) instead of assuming: qa-partner's `feedback_merge_strategy.md` forbids `--squash`, a repo with `allow_squash_merge=false` forbids it, and a base branch with no merge commits in its history is not a repo that merges. Local autosquash (**Stage 5, step 9**) is a different operation — always fine, and required.
 - **Close + new PR for scope change** — `feedback_amend_over_close.md`: amend the existing PR via force-push.
 - **Forgetting to update PR body after scope change** — Phase 9: PR description must reflect the latest changes.
 - **`--force` instead of `--force-with-lease`** — race-unsafe; always use `--force-with-lease`.
-- **Pushing `fixup!` commits without autosquash** — `git commit --fixup=<sha>` creates a commit with `fixup! <original message>` as the title. Autosquash MUST run before push to collapse them into the target commit. Pushing literal `fixup!` commits pollutes remote history and forces a follow-up cleanup commit.
+- **An autosquash that silently does nothing** — dropping `-i` or the `GIT_SEQUENCE_EDITOR` stub makes the rebase a no-op on git 2.43 while still exiting 0, so the session believes it squashed and pushes autosquash-prefixed titles anyway. Use the **Stage 5, step 9** form verbatim and run its post-check — that check is what catches this.
+- **Pushing autosquash-prefixed commits without squashing** — `git commit --fixup` and `--squash`, in any of their forms, create commits whose titles carry an autosquash prefix; **Stage 5, step 9** enumerates them. Autosquash MUST run before push to collapse them into their targets. Pushing those literal titles pollutes remote history and forces a follow-up cleanup commit.
 - **`gh api` without `--paginate`** for comments/reviews — default 30 per page silently truncates. Always `--paginate` on any `repos/.../comments` or `pulls/.../reviews` fetch.
 - **Auto-merge enable** (`gh pr merge --auto`) — bypasses the explicit "review is complete" gate. Default is poll-then-merge after CLEAN+APPROVED, not pre-arm. Auto-merge prematurely commits intent to merge before review outcome is known.
 - **Treating human-authored threads as auto-classifiable** — bots get auto-handled; human reviewer threads exit the loop to the user.
@@ -559,11 +1560,15 @@ Pattern: assertion + verification command + applied-evidence + likely-cause-of-b
 - **Interleaving code fix and comment cleanup** — AGENTS.md PR Comment Management: finish all code + push, THEN one final cleanup pass.
 - **Bot disagreement without evidence** — always cite schema/API/doc verification.
 - **Asking "policy or X?"** — `feedback_execute_per_policy.md`: if policy already covers it, execute the policy answer without consulting.
-- **Merging during in-flight CI** — checklist step 8: check `gh run list ... --status in_progress` first.
+- **Merging on a head no review ran against** — `gh run list --branch <branch> --status in_progress` names the branch, and the branch is the thing that moved; it answers "nothing running" during the seconds between a push and its run registering. PR #86 (issue #92) merged 12 seconds after the round for its new head started; the run then diffed the merged branch against itself, reviewed an empty diff, and an 11-line delta reached `main` with no review at all. Ask **Stage 5, step 8**'s SHA-named question instead, re-ask it immediately before the merge call, and pin the SHA into the call.
+- **Counting threads before the final round** — "0 unresolved" from Stage 4's snapshot, or from any query made before the round on the merged SHA posted, is a count of the previous round. ai-dev-cab#481, ai-dev-qa-partner#1112 and ai-dev-pr-review#147 (2026-09-11 audit) were merged with an open bot thread that way. The count that opens the gate is the one taken in **Stage 5, Standard merge**, condition (b), on the head named in the merge call.
+- **Infinite wait for bot re-review after force-push** — some bot reviewers (observed: `gemini-code-assist`) do NOT re-review on force-push; they trigger only on initial PR open. Waiting past ~2-3 min for a *review event* from one of those is waiting for something that will not arrive: proceed with the merge state's normal action (see Stage 5 table). **This licenses skipping a reviewer's review event; it never licenses skipping a review run.** Stage 5, step 8 asks about the workflow run on the head SHA, and `[]` there is a block that no amount of elapsed time converts into a pass — the two were conflated once already, and that is issue #92.
 
 ## Compatibility
 
 - `gh` CLI authenticated for the target repo
+- `jq` on `PATH` — the Standard merge gate filters the paginated comment list with it, outside `gh`
+- `bash`, not `sh` or `zsh` — the Standard merge gate uses `[[ … =~ … ]]` with `BASH_REMATCH`, here-strings and `${var#…}`, and the drill lints the extracted functions with `shellcheck -s bash`. Measured 2026-10-15 with `[[ "x3/3" =~ ([0-9]+)/([0-9]+) ]]`: bash 5.2 captures `3` and `3`; zsh 5.9 reports a match with `BASH_REMATCH` empty, so `headline_roster`'s `rv_n`/`rv_m` come out empty and it refuses every roster, and under `setopt BASH_REMATCH` zsh fills index 1 with the whole match `3/3` and index 2 with the first group, so the option is not a fix; dash does not parse `[[` at all. On a machine whose login shell is zsh, run the block in a `bash` session
 - GraphQL access (default with `gh` auth)
 - For multi-PR / bulk operations, parallel `gh api` calls work; throttle at >100 mutations/min
 - Project memory directory accessible at `~/.claude/projects/<project-encoded-cwd>/memory/`
