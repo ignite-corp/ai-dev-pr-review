@@ -2050,12 +2050,15 @@ class _CodexStepHarness:
 
     @staticmethod
     def _link_scripts(workdir: Path, scripts_root: Path | None = None) -> None:
-        """Both steps reach the promotion script through this checkout path.
+        """Both steps reach the promotion script through the scripts copy.
 
-        `scripts_root` stands in for a consumer pinned to an older release
-        tag, whose checkout does not carry a script this YAML calls.
+        That copy lives under RUNNER_TEMP, outside the workspace the model
+        can write (AT-2941), so it is linked there and not at the checkout
+        path. `scripts_root` stands in for a consumer pinned to an older
+        release tag, whose checkout does not carry a script this YAML calls.
         """
-        link = workdir / ".ai-dev-pr-review"
+        link = workdir / "runner-temp" / "ai-dev-pr-review"
+        link.parent.mkdir(exist_ok=True)
         if not link.exists():
             link.symlink_to(scripts_root or _REPO_ROOT)
 
@@ -2114,6 +2117,7 @@ class _CodexStepHarness:
                 "RUNNER_TEMP": str(runner_temp),
                 "GITHUB_OUTPUT": str(workdir / "github-output"),
                 "CODEX_MODEL": "stub-model",
+                "TMPDIR": str(runner_temp / "codex-tmp"),
                 "THREAD_COUNT": "0",
                 "EXISTING_COMMENTS": "",
             },
@@ -3027,7 +3031,7 @@ class TestPromotionScriptAgreesWithItsCallers:
         # And it is a real file, not a path that merely agrees with itself:
         # the guard around every call treats "not there" as "do nothing",
         # so a typo would disable the promotion in silence on both sides.
-        named = paths.pop().replace(".ai-dev-pr-review/", "", 1)
+        named = paths.pop().replace("${RUNNER_TEMP}/ai-dev-pr-review/", "", 1)
         assert (_REPO_ROOT / named).is_file()
 
 

@@ -43,7 +43,7 @@ _INSTRUCTIONS = """Review the diff from three perspectives:
 2. Security -- OWASP Top 10 (injection, broken auth, hardcoded secrets, insecure config, input validation)
 3. Spec Compliance -- Clean Architecture boundaries, API/DB spec alignment, naming conventions
 
-Write ONLY the following JSON to `review-claude.json` (no other output):
+Return the following JSON as your final structured output. Do not write files:
 {
   "summary": "<summary>",
   "status": "<ok | early_exit>",

@@ -35,6 +35,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ from typing import Any
 
 import yaml
 
-from extract_claude_review import extract_review
+from extract_claude_review import extract_review, review_json_schema
 from local_review_config import LocalConfig
 from local_reviewer_support import (
     ERROR_CLI_FAILED,
@@ -202,13 +203,20 @@ def run_cli(prompt: str, model: str) -> tuple[int, str, int]:
     """Run the CLI; return (exit code, raw stdout, the bound that applied)."""
     env = cli_environ()
     timeout_sec = cli_timeout_sec(env)
+    step = next(s for s in _action()["runs"]["steps"] if s.get("id") == _ACTION_STEP_ID)
+    args = step["with"]["claude_args"]
+    args = args.replace("${{ inputs.model }}", shlex.quote(model))
+    args = args.replace("${{ inputs.allowed_tools }}", allowed_tools())
+    args = args.replace(
+        "${{ steps.review-schema.outputs.schema }}",
+        shlex.quote(json.dumps(review_json_schema())),
+    )
     argv = [
         "claude",
         "--print",
-        "--model",
-        model,
-        "--allowedTools",
-        allowed_tools(),
+        *shlex.split(args),
+        "--settings",
+        step["with"]["settings"],
         "--output-format",
         "json",
     ]
@@ -258,6 +266,9 @@ def write_exec_file(stdout: str) -> bool:
         payload = json.loads(stdout)
     except ValueError:
         return False
+    if isinstance(payload, dict) and "structured_output" in payload:
+        Path(EXEC_FILE).write_text(json.dumps([payload]), encoding="utf-8")
+        return True
     text = payload.get("result") if isinstance(payload, dict) else None
     if not isinstance(text, str):
         return False
