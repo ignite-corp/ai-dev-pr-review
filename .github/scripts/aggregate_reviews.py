@@ -1617,7 +1617,8 @@ def post_verdict(
     comment_only: bool,
     unreviewed_majors: int,
     approve_quorum: bool = True,
-) -> None:
+) -> bool:
+    """Post the verdict; return whether a review or fallback comment landed."""
     pr_number = os.environ.get("PR_NUMBER", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not pr_number or not pr_number.isdigit():
@@ -1645,7 +1646,7 @@ def post_verdict(
 
     if withhold is not None and not comment_only:
         _post_withheld_verdict(pr_number, repo, comment, withhold, standing)
-        return
+        return True
 
     # Downgrade formal review verdicts to comment when killswitch is off.
     if verdict in ("approve", "request_changes") and comment_only:
@@ -1659,7 +1660,7 @@ def post_verdict(
         # of this head standing to satisfy the required-review rule.
         if withhold is not None and not withhold.transient:
             _dismiss_replaced_approvals(standing)
-        return
+        return True
 
     if verdict in ("approve", "request_changes"):
         base_args = ["gh", "pr", "review", pr_number, "--body-file", "-"]
@@ -1685,8 +1686,7 @@ def post_verdict(
             )
         except subprocess.TimeoutExpired:
             print("Post review timed out, falling back to comment", file=sys.stderr)
-            _post_comment(pr_number, repo, comment)
-            return
+            return _post_comment(pr_number, repo, comment)
         if result.returncode != 0:
             print(
                 f"Post review failed: {result.stderr}, falling back to comment",
@@ -1699,20 +1699,59 @@ def post_verdict(
             if not _post_comment(pr_number, repo, comment + fallback_note):
                 print("Both review and fallback comment failed", file=sys.stderr)
                 sys.exit(1)
-            return
+            return True
         _dismiss_replaced_approvals(standing)
     else:
         if not _post_comment(pr_number, repo, comment):
             print("Failed to post comment", file=sys.stderr)
             sys.exit(1)
+    return True
 
 
-def main() -> None:
+def _write_review_result(result: dict[str, Any]) -> None:
+    """Export outcome facts without changing the existing aggregate exit policy."""
+    output_path = os.environ.get("GITHUB_OUTPUT", "")
+    if not output_path:
+        return
+    try:
+        with open(output_path, "a", encoding="utf-8", errors="replace") as output:
+            output.write(f"review_result={json.dumps(result, separators=(',', ':'))}\n")
+    except OSError as error:
+        # A missing result is unknown, never success, to the runner gate.
+        # Still leave the existing verdict and exit behavior intact.
+        print(f"::warning::Failed to write review_result: {error}", file=sys.stderr)
+
+
+def _post_recorded_verdict(
+    result: dict[str, Any],
+    comment: str,
+    verdict: str,
+    *,
+    comment_only: bool,
+    unreviewed_majors: int,
+    approve_quorum: bool = True,
+) -> None:
+    result["verdict"] = verdict
+    result["unreviewed_majors"] = unreviewed_majors
+    posted = post_verdict(
+        comment,
+        verdict,
+        comment_only=comment_only,
+        unreviewed_majors=unreviewed_majors,
+        approve_quorum=approve_quorum,
+    )
+    # A successful API call with an arbitrary body is not a verdict the
+    # merge gate can identify. All normal formatters lead with this marker.
+    result["posted"] = posted is True and comment.startswith(REVIEW_MARKER)
+
+
+def _aggregate(result: dict[str, Any]) -> None:
     # First, ahead of every other path: a run whose head has been superseded
     # posts nothing. The job still runs -- it has to, its name is the required
     # status context -- and it still fails, so a superseded run can never be
     # mistaken for one that reviewed the current commit.
     if _head_is_stale():
+        result["reason"] = "head_superseded"
         print(
             "::notice title=Aggregate::the head this run reviewed has been"
             " superseded -- no verdict posted",
@@ -1740,6 +1779,7 @@ def main() -> None:
     # gated on skip == 'false', so a skipping prepare succeeds.
     prepare_failure = _prepare_failure_result()
     if prepare_failure is not None:
+        result["reason"] = "prepare_failed"
         comment = format_prepare_failure_summary(
             prepare_failure, os.environ.get("RUN_URL", "").strip()
         )
@@ -1752,7 +1792,8 @@ def main() -> None:
         # Zero majors is the fact here, not a placeholder: prepare failed,
         # so no reviewer ran and nothing was raised. The same holds for the
         # size-skip and policy-skip exits below.
-        post_verdict(
+        _post_recorded_verdict(
+            result,
             comment,
             "request_changes",
             comment_only=_is_comment_only(),
@@ -1765,9 +1806,11 @@ def main() -> None:
 
     size_skip = _size_skip_details()
     if size_skip is not None:
+        result["reason"] = "size_skipped"
         total, limit = size_skip
         comment = format_size_skip_summary(total, limit)
-        post_verdict(
+        _post_recorded_verdict(
+            result,
             comment,
             "request_changes",
             comment_only=_is_comment_only(),
@@ -1783,12 +1826,15 @@ def main() -> None:
 
     policy_skip = _policy_skip_details()
     if policy_skip is not None:
+        result["reason"] = "policy_skipped"
+        result["policy_skipped"] = True
         comment = format_policy_skip_summary(policy_skip)
         # A plain comment, never an approval: nothing was reviewed, and an
         # APPROVED review would attest to a review that did not happen. The
         # verdict "comment" takes post_verdict's comment-only branch on every
         # ALLOW_AUTO_APPROVE setting.
-        post_verdict(
+        _post_recorded_verdict(
+            result,
             comment,
             "comment",
             comment_only=_is_comment_only(),
@@ -1848,6 +1894,11 @@ def main() -> None:
     # The same contract for the other thing that withholds an approval: one
     # count, passed to the headline and to the posted event (AT-2823).
     unreviewed_majors = _count_unreviewed_majors(available)
+    result.update(
+        reason="reviewed" if not partial_names else "partial_responses",
+        responded=[name for name in REVIEWERS if name in available],
+        partial=partial_names,
+    )
 
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
     sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
@@ -1895,7 +1946,8 @@ def main() -> None:
         unreviewed_majors=unreviewed_majors,
         sequential_bypass=sequential_bypass,
     )
-    post_verdict(
+    _post_recorded_verdict(
+        result,
         comment,
         verdict,
         comment_only=comment_only,
@@ -1911,6 +1963,29 @@ def main() -> None:
     ):
         print("ERROR: Insufficient LLM responses -- failing CI", file=sys.stderr)
         sys.exit(1)
+
+
+def main() -> None:
+    # Defaults describe an interrupted/failed aggregate, not an approving
+    # round. Never copy model summaries, issues or provider errors here.
+    result: dict[str, Any] = {
+        "version": 1,
+        "target_repo": os.environ.get("GITHUB_REPOSITORY", ""),
+        "pr_number": os.environ.get("PR_NUMBER", ""),
+        "head_sha": os.environ.get("HEAD_SHA", ""),
+        "verdict": "none",
+        "reason": "aggregate_failed",
+        "expected": list(REVIEWERS),
+        "responded": [],
+        "partial": [],
+        "unreviewed_majors": 0,
+        "policy_skipped": False,
+        "posted": False,
+    }
+    try:
+        _aggregate(result)
+    finally:
+        _write_review_result(result)
 
 
 if __name__ == "__main__":

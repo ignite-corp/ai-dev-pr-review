@@ -224,15 +224,18 @@ The `single` and `aggregate` workflows additionally accept reviewer-routing inpu
 
 ## Output contract reference
 
-`base-ai-review-orchestrator.yml` — the workflow a thin trigger calls — returns three `workflow_call` outputs. They exist because the job's conclusion is `success` whether every reviewer produced a verdict or one of three did, so a merge gate reading the conclusion alone cannot see a degraded round.
+`base-ai-review-orchestrator.yml` — the workflow a thin trigger calls — returns four `workflow_call` outputs. They exist because the job's conclusion is `success` whether every reviewer produced a verdict or one of three did, so a merge gate reading the conclusion alone cannot see a degraded round.
 
 | Output | Type | Notes |
 |---|---|---|
+| `review_result` | string (JSON) | Version 1 aggregate facts for target check reporting: `version`, `target_repo`, `pr_number`, `head_sha`, `verdict`, `reason`, `expected`, `responded`, `partial`, `unreviewed_majors`, `policy_skipped`, `posted`. No review bodies or provider error text. |
 | `reviewer_roster` | string (JSON) | `{"expected": [...], "responded": [...], "missing": {"<name>": "<reason>"}}`. `expected` lists every configured reviewer, `responded` the ones that produced a usable verdict, `missing` the rest with one reason each. `responded` and `missing` partition `expected`. |
 | `reviewers_expected_count` | string | `expected`'s length. |
 | `reviewers_responded_count` | string | `responded`'s length. |
 
-`base-ai-review-aggregate.yml` declares the same three; consumers read them from the orchestrator.
+`base-ai-review-aggregate.yml` declares the same four; consumers read them from the orchestrator.
+
+`review_result` records facts rather than a check conclusion. Its arrays list reviewer names; `responded` follows the existing usable-payload rule, so an error-bearing partial payload can appear in both `responded` and `partial`. `posted` is true only when a marked verdict review or fallback comment was successfully posted. An approve result alone does not attest to complete coverage or clear unreviewed majors. A target-check consumer must validate the target/head, require the full configured roster with no partial reviewers, zero unreviewed majors and successful posting. The established policy-excluded-only exception is explicit (`reason=policy_skipped`, `policy_skipped=true`, zero responses); it is not a full review. The aggregate attempts this output even on failed/early exits, without changing its existing exit policy. A missing, malformed or unwritable output is unknown and must not pass a target check.
 
 **A sub-quorum count is not by itself a problem.** Two green paths legitimately end with `reviewers_responded_count < reviewers_expected_count`, so a gate must read the `missing` reasons rather than compare the counts alone:
 
@@ -288,7 +291,7 @@ The snippet takes the strict reading of the ambiguous row and blocks on a bare `
 
 All three are emitted on every path that ends green, the policy skip included — there `reviewers_responded_count` is an explicit `0`, not an empty string. One green path is the exception, and the snippet's emptiness guard is there for it: when `$GITHUB_OUTPUT` is unset or cannot be written, the aggregate reports a `::warning::` and goes on to post the verdict rather than failing the round, so a green run can reach a gate with all three absent. An absent output reads as an empty string rather than `0`, and empty is unknown coverage, never full coverage — which is why the guard runs before the comparison rather than after it.
 
-The paths that end red before reaching a reviewer — the head was superseded, prepare failed, the PR exceeded `PR_SIZE_LIMIT` — emit nothing at all, deliberately: a roster for a round that never ran would assert a coverage figure about the PR that nothing measured. A gate does not have to handle those separately: the runs are red, so a `needs:` gate never runs.
+The paths that end red before reaching a reviewer — the head was superseded, prepare failed, the PR exceeded `PR_SIZE_LIMIT` — deliberately emit none of the three roster outputs: a roster for a round that never ran would assert a coverage figure about the PR that nothing measured. They attempt the separate `review_result` failure record. The roster gate does not have to handle those separately: the runs are red, so a `needs:` gate never runs.
 
 ## Runtime configuration via `vars.*`
 

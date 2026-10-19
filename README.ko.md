@@ -213,15 +213,18 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 ## 출력 계약 레퍼런스
 
-thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml`은 `workflow_call` 출력 세 개를 반환합니다. 잡의 conclusion은 리뷰어 전원이 판정을 냈든 셋 중 하나만 냈든 똑같이 `success`이므로, conclusion만 읽는 머지 게이트는 퇴화한(degraded) 라운드를 볼 수 없습니다. 이 출력들은 그 사실을 게이트가 읽을 수 있는 형태로 내보냅니다.
+thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml`은 `workflow_call` 출력 네 개를 반환합니다. 잡의 conclusion은 리뷰어 전원이 판정을 냈든 셋 중 하나만 냈든 똑같이 `success`이므로, conclusion만 읽는 머지 게이트는 퇴화한(degraded) 라운드를 볼 수 없습니다. 이 출력들은 그 사실을 게이트가 읽을 수 있는 형태로 내보냅니다.
 
 | 출력 | 타입 | 비고 |
 |---|---|---|
+| `review_result` | string (JSON) | 대상 check 게시를 위한 버전 1 취합 사실: `version`, `target_repo`, `pr_number`, `head_sha`, `verdict`, `reason`, `expected`, `responded`, `partial`, `unreviewed_majors`, `policy_skipped`, `posted`. 리뷰 본문과 제공자 오류 텍스트는 포함하지 않습니다. |
 | `reviewer_roster` | string (JSON) | `{"expected": [...], "responded": [...], "missing": {"<name>": "<reason>"}}`. `expected`는 구성된 전체 리뷰어, `responded`는 쓸 수 있는 판정을 낸 리뷰어, `missing`은 나머지와 각각의 사유 하나씩. `responded`와 `missing`은 `expected`를 분할합니다. |
 | `reviewers_expected_count` | string | `expected`의 길이. |
 | `reviewers_responded_count` | string | `responded`의 길이. |
 
-`base-ai-review-aggregate.yml`도 같은 세 개를 선언하지만, 소비자는 orchestrator에서 읽습니다.
+`base-ai-review-aggregate.yml`도 같은 네 개를 선언하지만, 소비자는 orchestrator에서 읽습니다.
+
+`review_result`는 check 결론 대신 사실을 기록합니다. 배열에는 리뷰어 이름이 들어가며, `responded`는 기존 유효 페이로드 규칙을 따르므로 오류가 있는 부분 응답이 `responded`와 `partial` 양쪽에 포함될 수 있습니다. `posted`는 마커가 있는 판정 리뷰 또는 폴백 코멘트를 실제로 게시했을 때만 true입니다. approve 값만으로 전체 응답이나 미처분 major 해소를 보증하지 않습니다. 대상 check 소비자는 대상과 head를 검증하고, 구성된 전체 리뷰어 응답·부분 실패 없음·미처분 major 0·게시 성공을 요구해야 합니다. 기존의 전부 정책 제외 예외는 `reason=policy_skipped`, `policy_skipped=true`, 응답 0으로 명시되며 전체 리뷰가 아닙니다. 취합은 실패·조기 종료 경로에서도 이 출력을 시도하지만 기존 종료 코드는 바꾸지 않습니다. 출력이 없거나 손상됐거나 쓸 수 없으면 미확인 상태이며 대상 check를 통과시키면 안 됩니다.
 
 **응답 수가 정족수에 못 미친다는 것 자체는 문제가 아닙니다.** 정상적으로 `reviewers_responded_count < reviewers_expected_count`로 끝나는 초록색 경로가 둘 있으므로, 게이트는 숫자만 비교하지 말고 `missing`의 사유를 읽어야 합니다:
 
@@ -277,7 +280,7 @@ jobs:
 
 세 출력 모두 초록색으로 끝나는 모든 경로에서 나오며, 정책 스킵도 포함입니다 — 그 경우 `reviewers_responded_count`는 빈 문자열이 아니라 명시적인 `0`입니다. 초록색 경로 중 하나는 예외이고, 위 예시의 빈 값 가드는 그것 때문에 있습니다: `$GITHUB_OUTPUT`이 설정되지 않았거나 쓸 수 없을 때 취합 단계는 `::warning::`만 남기고 라운드를 실패시키는 대신 판정 게시로 넘어가므로, 세 출력이 모두 없는 채로 초록색으로 끝난 런이 게이트에 닿을 수 있습니다. 없는 출력은 `0`이 아니라 빈 문자열로 읽히고, 빈 값은 커버리지를 모른다는 뜻이지 완전하다는 뜻이 결코 아닙니다 — 가드가 비교 뒤가 아니라 앞에 오는 이유입니다.
 
-리뷰어에 닿기 전에 빨간색으로 끝나는 경로(head가 밀려난 경우, prepare 실패, `PR_SIZE_LIMIT` 초과)는 의도적으로 아무것도 내보내지 않습니다: 돌지도 않은 라운드의 로스터는 아무도 측정하지 않은 커버리지 수치를 그 PR에 대해 주장하는 셈이기 때문입니다. 이 경로들은 게이트가 따로 처리할 필요가 없습니다: 해당 런은 빨간색이라 `needs:` 게이트가 아예 실행되지 않습니다.
+리뷰어에 닿기 전에 빨간색으로 끝나는 경로(head가 밀려난 경우, prepare 실패, `PR_SIZE_LIMIT` 초과)는 의도적으로 로스터 출력 세 개를 내보내지 않습니다: 돌지도 않은 라운드의 로스터는 아무도 측정하지 않은 커버리지 수치를 그 PR에 대해 주장하는 셈이기 때문입니다. 별도의 `review_result` 실패 기록은 시도합니다. 이 경로들은 로스터 게이트가 따로 처리할 필요가 없습니다: 해당 런은 빨간색이라 `needs:` 게이트가 아예 실행되지 않습니다.
 
 ## `vars.*`를 통한 런타임 구성
 
