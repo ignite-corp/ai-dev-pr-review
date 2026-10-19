@@ -62,6 +62,11 @@ jobs:
   prepare:
     name: Prepare Review Context
     runs-on: ubuntu-latest
+    # Keep mapped step env keys for wrapper correspondence, but do not rely
+    # on overriding reserved GITHUB_* through YAML: the runner restores them.
+    # Target run bodies adapt their process environment after that injection.
+    env:
+      LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
     outputs:
       # A boolean expression renders as the string `true` / `false`, which is
       # what the orchestrator's `== 'false'` gates compare against. The policy
@@ -232,6 +237,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           set -euo pipefail
           # 'Validate PR number' runs after the checkout; this is the first
           # step that puts the number in a URL, so it checks the shape itself.
@@ -310,6 +316,7 @@ jobs:
           # step's invariant (AT-2520).
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           if ! [[ "$PR_SIZE_LIMIT" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid PR_SIZE_LIMIT: $PR_SIZE_LIMIT (must be integer)"
             exit 1
@@ -390,6 +397,7 @@ jobs:
           # gets a real JSON array of label objects here (AT-2222).
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
         run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           if [ -z "$BASE_REF" ] || [ "$CROSS_REPO" = "true" ]; then
             PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
             BASE_REF=$(echo "$PR_JSON" | jq -r '.base.ref // ""')
@@ -522,6 +530,7 @@ jobs:
           # inside extract_pr_diff.sh).
           GIT_AUTH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
         run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           # Actions masks the raw token, not its base64 form; mask the encoded
           # value before anything can print it (actions/checkout does the
           # same for the header it writes). This repository is public.
@@ -641,6 +650,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
         run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           SCRIPT=".ai-dev-pr-review/.github/scripts/filter_pr_diff.py"
           RULES=".github/lens-ignore"
           if [ ! -f "$SCRIPT" ]; then
@@ -687,7 +697,9 @@ jobs:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
-        run: python3 .ai-dev-pr-review/.github/scripts/fetch_review_context.py
+        run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
+          python3 .ai-dev-pr-review/.github/scripts/fetch_review_context.py
 
       # The script reads tag listings of the UPSTREAM action repositories the
       # diff pins (actions/checkout, ...), public repositories outside the
@@ -707,7 +719,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
-        run: python3 .ai-dev-pr-review/.github/scripts/verify_action_shas.py
+        run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
+          python3 .ai-dev-pr-review/.github/scripts/verify_action_shas.py
 
       - name: Collect unresolved review threads
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
@@ -716,7 +730,9 @@ jobs:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
-        run: bash .ai-dev-pr-review/.github/scripts/collect_review_threads.sh
+        run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
+          bash .ai-dev-pr-review/.github/scripts/collect_review_threads.sh
 
       - name: Upload review context
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'

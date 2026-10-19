@@ -99,6 +99,11 @@ jobs:
   aggregate:
     name: Aggregate & Verdict
     runs-on: ubuntu-latest
+    # Keep mapped step env keys for wrapper correspondence, but do not rely
+    # on overriding reserved GITHUB_* through YAML: the runner restores them.
+    # Target run bodies adapt their process environment after that injection.
+    env:
+      LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
     outputs:
       reviewer_roster: ${{ steps.aggregate.outputs.reviewer_roster }}
       reviewers_expected_count: ${{ steps.aggregate.outputs.reviewers_expected_count }}
@@ -327,7 +332,9 @@ jobs:
       # Optional dedicated reviewer App token. github-actions[bot] cannot post
       # an APPROVED review, so when REVIEWER_APP_ID is configured we mint an App
       # installation token and hand it to the aggregate script for the approve
-      # call only. Skipped entirely when the var is unset (backward compatible).
+      # call only. Cross runs already have a required target-scoped App token;
+      # never mint a second, caller-scoped approving token for those runs.
+      # Skipped entirely when the var is unset (backward compatible).
       #
       # REVIEWER_APP_ID is an org-wide variable, so it is set on every consumer
       # even when that consumer's top-level caller does not forward the
@@ -348,7 +355,7 @@ jobs:
           fi
       - name: Mint reviewer App token
         id: reviewer_token
-        if: ${{ vars.REVIEWER_APP_ID != '' && steps.reviewer_key.outputs.present == 'true' }}
+        if: ${{ steps.target.outputs.cross != 'true' && vars.REVIEWER_APP_ID != '' && steps.reviewer_key.outputs.present == 'true' }}
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
         continue-on-error: true
         with:
@@ -360,12 +367,12 @@ jobs:
         env:
           # The PR coordinate follows target_repo so the verdict is addressed
           # to the PR that was reviewed, never to the caller's PR of the same
-          # number. The two tokens do NOT follow it yet: which identity posts
-          # on a target is AT-2520 phase 1b, after AT-2823. Until then a
-          # cross-repository run fails here, loudly, on a 404 from the
-          # target -- the right failure, not a verdict on the wrong PR.
-          GH_TOKEN: ${{ github.token }}
-          REVIEWER_TOKEN: ${{ steps.reviewer_token.outputs.token }}
+          # number. Both ambient API calls (including folding and comment
+          # fallbacks) and formal approvals must use the target's token on a
+          # cross run. Otherwise an approval can override a working target
+          # token with one scoped to the caller (AT-2520).
+          GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
+          REVIEWER_TOKEN: ${{ steps.target_token.outputs.token || steps.reviewer_token.outputs.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
           PREPARE_RESULT: ${{ inputs.prepare_result }}
@@ -389,7 +396,9 @@ jobs:
           # for a read that must trust a verdict rather than fold it, and
           # because the local driver resolves this name from the default
           # declared here (local_review_config.py).
-          BOT_LOGIN: ${{ vars.BOT_LOGIN || 'github-actions[bot]' }}
+          # A cross run's inline comments and verdicts use this App's token,
+          # so its slug, not the caller's configured login, is the identity.
+          BOT_LOGIN: ${{ steps.target_token.outputs.app-slug && format('{0}[bot]', steps.target_token.outputs.app-slug) || vars.BOT_LOGIN || 'github-actions[bot]' }}
           CRITICAL_THRESHOLD: ${{ vars.CRITICAL_THRESHOLD || '1' }}
           DEPENDABOT_CRITICAL_THRESHOLD: ${{ vars.DEPENDABOT_CRITICAL_THRESHOLD || '2' }}
           MAJOR_CONSENSUS_OVERLAP: ${{ vars.MAJOR_CONSENSUS_OVERLAP || '0.3' }}
@@ -412,4 +421,6 @@ jobs:
           # Killswitch: set repo var ALLOW_AUTO_APPROVE=true to enable auto-approve.
           # Default false -- operators can flip without editing workflow YAML.
           ALLOW_AUTO_APPROVE: ${{ vars.ALLOW_AUTO_APPROVE || 'false' }}
-        run: python .ai-dev-pr-review/.github/scripts/aggregate_reviews.py
+        run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
+          python .ai-dev-pr-review/.github/scripts/aggregate_reviews.py

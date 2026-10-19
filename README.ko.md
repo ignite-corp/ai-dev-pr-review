@@ -207,7 +207,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | 동일한 경로 의미. |
 | `claude-timeout-minutes` | number | false | `10` | Claude 리뷰어 단계가 러너에 의해 종료되기 전까지 실행될 수 있는 분 수. 기본값은 모든 소비자가 지금까지 쓰던 값이며, 이 레포 자체의 `self-review.yml`만 PR이 10분을 넘길 수 있어 올려 둠(AT-2876). |
 | `review-job-timeout-minutes` | number | false | `15` | 리뷰어 잡 전체의 상한. Claude 리뷰어 잡에만 전달됨. `claude-timeout-minutes`와 함께 올리되 항상 그보다 5분(정수) 이상 크게 유지 — 잡 상한이 아니라 단계 상한이 먼저 걸리도록. 그렇지 않으면 Claude 잡이 `Validate timeout inputs` 단계에서 실패함. |
-| `target_repo` | string | false | `""` | 리뷰할 PR 이 있는 저장소(`owner/name`). 비우면 호출자 자신이며, 기존 소비자에게는 아무 변화가 없습니다(AT-2520). **private** 호출자에서 `pr_number`와 함께만 설정하세요: diff 와 프롬프트가 호출자의 로그와 artifact 에 남으므로 `prepare` 가 public 호출자를 거부합니다. 리뷰어 App(`REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY`)이 대상에 설치돼 있어야 하며, 각 job 이 대상용 설치 토큰을 직접 발급합니다. 판정 단계는 아직 호출자 신원으로 인증하므로, 지금은 cross-repository 런이 `Aggregate and post verdict` 에서 404 로 실패합니다(1b 단계, AT-2520). |
+| `target_repo` | string | false | `""` | 리뷰할 PR 이 있는 저장소(`owner/name`). 비우면 호출자 자신이며, 기존 소비자에게는 아무 변화가 없습니다(AT-2520). **private** 호출자에서 `pr_number`와 함께만 설정하세요: diff 와 프롬프트가 호출자의 로그와 artifact 에 남으므로 `prepare` 가 public 호출자를 거부합니다. 리뷰어 App(`REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY`)이 대상에 설치돼 있어야 하며, 각 job 이 대상용 설치 토큰을 직접 발급합니다. Cross-repository 런은 대상 App 토큰으로 인라인 코멘트·판정·승인을 게시하며, `BOT_LOGIN` 은 호출자의 설정 대신 해당 App 의 `<app-slug>[bot]` 이 됩니다. 대상 check run 게시와 runner 연결은 AT-2520 의 별도 후속 작업입니다. |
 
 `single`과 `aggregate` 워크플로우는 추가로 리뷰어 라우팅 입력(`reviewer`, `claude_result`, `codex_result`, `gemini_result`)을 받지만, 소비자가 직접 호출하지 않습니다 — orchestrator가 연결합니다.
 

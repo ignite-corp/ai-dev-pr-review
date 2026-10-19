@@ -1,4 +1,4 @@
-"""Cross-repository review, phase 1a: `target_repo` threading (AT-2520).
+"""Cross-repository review: target threading and posting identity (AT-2520).
 
 The orchestrator takes a `target_repo` input naming the repository whose PR
 is reviewed, empty meaning the caller. Three things must hold, and each is
@@ -62,6 +62,9 @@ JOB_FILES = (PREPARE, SINGLE, AGGREGATE)
 TARGET_INPUT = "${{ inputs.target_repo }}"
 REPO_EXPR = "${{ inputs.target_repo || github.repository }}"
 TOKEN_EXPR = "${{ steps.target_token.outputs.token || github.token }}"
+REVIEWER_TOKEN_EXPR = (
+    "${{ steps.target_token.outputs.token || steps.reviewer_token.outputs.token }}"
+)
 RESOLVE_STEP = "Resolve review target"
 MINT_STEP = "Mint target App token"
 TARGET_HEAD_STEP = "Resolve target PR head"
@@ -129,18 +132,11 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
     (SINGLE.name, "Switch Claude auth on usage limit", "env:GH_TOKEN"): (
         "the corp App token that writes an ignite-corp org variable (AT-1606), not the target"
     ),
-    (AGGREGATE.name, "Aggregate and post verdict", "env:GH_TOKEN"): (
-        "posting identity on the target is phase 1b, after AT-2823; the coordinate already follows the target"
-    ),
     (
         AGGREGATE.name,
         "Aggregate and post verdict",
         "env:RUN_URL",
     ): "the run lives in the caller",
-    (AGGREGATE.name, "Aggregate and post verdict", "env:REVIEWER_TOKEN"): (
-        "the approving identity; posting identity on the target is phase 1b, "
-        "after AT-2823, with that step's GH_TOKEN"
-    ),
     (SINGLE.name, "Run Claude review", "with:github_token"): (
         "claude-code-action's own token: it reads the caller's event with it (its "
         "actor guard) and the review itself reads pr.diff / context.md from disk; "
@@ -161,9 +157,6 @@ CALLER_SIDE_VALUE: dict[tuple[str, str, str], str] = {
     ),
     (SINGLE.name, "Switch Claude auth on usage limit", "env:GH_TOKEN"): (
         "${{ steps.auth_token_corp.outputs.token }}"
-    ),
-    (AGGREGATE.name, "Aggregate and post verdict", "env:REVIEWER_TOKEN"): (
-        "${{ steps.reviewer_token.outputs.token }}"
     ),
 }
 
@@ -290,12 +283,44 @@ class TestDefaultIsTodaysBehaviour:
         assert mint["with"]["owner"] == "ignite-corp"
         assert "repositories" not in mint["with"]
 
-    def test_aggregate_posting_tokens_are_untouched(self) -> None:
-        # Phase 1b (AT-2520), after AT-2823: not this change.
+
+class TestAggregatePostingIdentity:
+    @pytest.mark.parametrize("cross", [False, True], ids=["same-repo", "cross-repo"])
+    @pytest.mark.parametrize("optional_token", ["", "ghs_optional"])
+    def test_every_posting_path_uses_a_token_for_the_reviewed_repo(
+        self, cross: bool, optional_token: str
+    ) -> None:
+        # The optional token is deliberately populated on cross runs too:
+        # a caller-owned approving token must never override the target's.
+        state = {
+            "steps.target_token.outputs.token": "ghs_target" if cross else "",
+            "steps.reviewer_token.outputs.token": optional_token,
+            "github.token": "ghs_caller",
+        }
         env = _step(AGGREGATE, "Aggregate and post verdict")["env"]
-        assert env["GH_TOKEN"] == "${{ github.token }}"
-        assert env["REVIEWER_TOKEN"] == "${{ steps.reviewer_token.outputs.token }}"
-        assert env["BOT_LOGIN"] == "${{ vars.BOT_LOGIN || 'github-actions[bot]' }}"
+        assert _evaluate(env["GH_TOKEN"], state) == (
+            "ghs_target" if cross else "ghs_caller"
+        )
+        assert _evaluate(env["REVIEWER_TOKEN"], state) == (
+            "ghs_target" if cross else optional_token
+        )
+
+    def test_optional_caller_mint_does_not_run_on_cross_reviews(self) -> None:
+        mint = _step(AGGREGATE, "Mint reviewer App token")
+        assert mint["if"] == (
+            "${{ steps.target.outputs.cross != 'true' && "
+            "vars.REVIEWER_APP_ID != '' && "
+            "steps.reviewer_key.outputs.present == 'true' }}"
+        )
+        assert mint["continue-on-error"] is True
+
+    def test_bot_identity_is_from_the_app_that_minted_the_target_token(self) -> None:
+        env = _step(AGGREGATE, "Aggregate and post verdict")["env"]
+        assert env["BOT_LOGIN"] == (
+            "${{ steps.target_token.outputs.app-slug && "
+            "format('{0}[bot]', steps.target_token.outputs.app-slug) || "
+            "vars.BOT_LOGIN || 'github-actions[bot]' }}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +486,15 @@ class TestJobThreading:
                         f"{path.name}:{step!r} {location} reads {value!r}, not {expected!r}"
                     )
                 continue
-            assert value == TOKEN_EXPR, (
+            # Formal approvals retain the optional same-repo App token as
+            # their fallback; cross runs must still prefer the target token.
+            expected = (
+                REVIEWER_TOKEN_EXPR
+                if (path.name, step, location)
+                == (AGGREGATE.name, "Aggregate and post verdict", "env:REVIEWER_TOKEN")
+                else TOKEN_EXPR
+            )
+            assert value == expected, (
                 f"{path.name}:{step!r} {location} reads {value!r}, not the target token"
             )
 
@@ -1070,6 +1103,8 @@ def _run_target_head(
         "GITHUB_OUTPUT": str(github_output),
         "GH_CALL_LOG": str(call_log),
     }
+    for key, value in _only_job(PREPARE).get("env", {}).items():
+        env[key] = render(str(value))
     for key, value in step["env"].items():
         env[key] = render(str(value))
     result = subprocess.run(
