@@ -890,6 +890,10 @@ def _run_step(
         "PR_NUMBER": "35",
         "GITHUB_REPOSITORY": "ignite-corp/ai-dev-pr-review",
     }
+    job = _prepare_workflow()["jobs"]["prepare"]
+    for key, value in job.get("env", {}).items():
+        assert value == "${{ inputs.target_repo || github.repository }}"
+        env[key] = env["GITHUB_REPOSITORY"]  # This fixture is a same-repo call.
     result = subprocess.run(
         ["bash", "-e", "-c", _step(STEP_NAME)["run"]],
         cwd=work,

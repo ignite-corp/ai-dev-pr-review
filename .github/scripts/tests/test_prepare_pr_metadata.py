@@ -182,6 +182,9 @@ def _run_refs_step(
         "REST_FIXTURE": str(rest_fixture),
         "GH_PR_VIEW_FIXTURE": str(view_fixture),
     }
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["prepare"]
+    for key, value in job.get("env", {}).items():
+        env[key] = _render(str(value), context)
     for key, value in step["env"].items():
         env[key] = _render(str(value), context)
 
@@ -592,6 +595,9 @@ def _run_extract_context_step(
     }
     script = _render(step["run"], context)
     env = dict(_GIT_ENV)
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["prepare"]
+    for key, value in job.get("env", {}).items():
+        env[key] = _render(str(value), context)
     for key, value in step["env"].items():
         env[key] = _render(str(value), context)
 

@@ -57,6 +57,11 @@ jobs:
   review:
     name: "${{ inputs.reviewer }} review"
     runs-on: ubuntu-latest
+    # Keep mapped step env keys for wrapper correspondence, but do not rely
+    # on overriding reserved GITHUB_* through YAML: the runner restores them.
+    # Target run bodies adapt their process environment after that injection.
+    env:
+      LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
     # Upper bound for the whole job. The timeout-minutes on the reviewer
     # steps below (10 by default; the claude one is an input, AT-2876) does
     # bind the claude composite's inner steps: the runner hands the caller
@@ -1226,6 +1231,7 @@ jobs:
           ROUND_CUTOFF_N: ${{ vars.ROUND_CUTOFF_N || '5' }}
           ROUND_CUTOFF_ENABLED: ${{ vars.ROUND_CUTOFF_ENABLED || 'true' }}
         run: |
+          export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           REVIEW_FILE="review-${REVIEWER}.json"
           if [ -f "$REVIEW_FILE" ]; then
             python3 "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/post_inline_comments.py" \
