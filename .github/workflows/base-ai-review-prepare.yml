@@ -811,6 +811,14 @@ jobs:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
+          # The identity that opened the prior rounds' inline threads, whose
+          # threads the script trusts as review output (AT-2520). 'Post
+          # inline comments' posts with the target token when one was minted
+          # -- the reviewer App, on a cross run -- and github.token
+          # otherwise, so this follows the same choice. Not vars.BOT_LOGIN:
+          # that names who posts the aggregate verdict, not the threads, and
+          # trusting it here would only widen the list.
+          BOT_LOGIN: ${{ steps.target_token.outputs.app-slug && format('{0}[bot]', steps.target_token.outputs.app-slug) || 'github-actions[bot]' }}
         run: |
           export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           python3 .ai-dev-pr-review/.github/scripts/fetch_review_context.py
@@ -844,6 +852,8 @@ jobs:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
+          # Same identity, same reason as 'Append prior review context'.
+          BOT_LOGIN: ${{ steps.target_token.outputs.app-slug && format('{0}[bot]', steps.target_token.outputs.app-slug) || 'github-actions[bot]' }}
         run: |
           export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           bash .ai-dev-pr-review/.github/scripts/collect_review_threads.sh

@@ -1009,7 +1009,11 @@ def filter_policy_excluded(work: Path) -> dict[str, Any]:
 
 
 def append_prior_context(work: Path, repo: str, pr_number: str) -> None:
-    env = script_env(dict(os.environ), repo, pr_number)
+    # BOT_LOGIN is a trust input for both thread readers (AT-2520): the
+    # identity that posts inline comments. A local run posts as the
+    # operator, a human, so it has none -- empty keeps the fixed bot list,
+    # and neither an exported value nor resolve_bot_login's login widens it.
+    env = script_env({**os.environ, "BOT_LOGIN": ""}, repo, pr_number)
     run([sys.executable, str(SCRIPT_DIR / "fetch_review_context.py")], cwd=work, env=env)
     run([sys.executable, str(SCRIPT_DIR / "verify_action_shas.py")], cwd=work, env=env)
     # continue-on-error in the workflow: a thread-collection outage must not

@@ -955,6 +955,37 @@ def test_an_empty_prompt_stops_the_run(tmp_path):
     assert "empty" in str(excinfo.value)
 
 
+def test_an_exported_bot_login_does_not_widen_thread_trust(tmp_path, monkeypatch):
+    """Both thread readers trust BOT_LOGIN's threads as bot output (AT-2520).
+
+    The workflow sets it to the identity that posts inline comments; a local
+    run posts as the operator, a human, so it has no such identity and keeps
+    the fixed list. Forwarding the ambient environment let an exported
+    BOT_LOGIN -- or resolve_bot_login's human login, if it ever reached here
+    -- decide whose threads count as review output.
+    """
+    monkeypatch.setenv("BOT_LOGIN", "some-human")
+    seen = []
+
+    def record(argv, **kwargs):
+        seen.append((argv[-1], kwargs["env"].get("BOT_LOGIN")))
+        return _completed(0, "")
+
+    monkeypatch.setattr(driver, "run", record)
+    driver.append_prior_context(tmp_path, "o/r", "1")
+
+    readers = {
+        name: login
+        for script, login in seen
+        for name in ("fetch_review_context.py", "collect_review_threads.sh")
+        if script.endswith(name)
+    }
+    assert readers == {
+        "fetch_review_context.py": "",
+        "collect_review_threads.sh": "",
+    }
+
+
 def test_this_repositorys_own_prompt_paths_exist_where_self_review_says():
     """The defaults are the orchestrator's and are wrong for THIS
     repository, which is legitimate -- consumers use the default, this repo

@@ -17,7 +17,7 @@ import subprocess
 import sys
 from typing import Any
 
-from github_pr_support import GH_TIMEOUT_SEC, fetch_paginated_nodes
+from github_pr_support import GH_TIMEOUT_SEC, fetch_paginated_nodes, normalize_bot_login
 
 BODY_TRUNCATE_LEN = 500
 _THREADS_PAGE_SIZE = 100
@@ -72,10 +72,31 @@ def _sanitize(text: str) -> str:
     return text[:BODY_TRUNCATE_LEN].replace("<", "").replace(">", "")
 
 
-def _is_trusted_reply(comment: dict[str, Any]) -> bool:
+def _trusted_bot_authors() -> set[str]:
+    """The bot logins whose threads count as prior review output.
+
+    The fixed list, plus BOT_LOGIN: the identity this run's own comments are
+    posted under, which the workflow sets to the reviewer App on a
+    cross-repository run (AT-2520). Without it the App's threads were
+    dropped and the reviewers never saw their own prior findings. Every
+    entry is normalized, because the threads come from GraphQL (`x`) while
+    BOT_LOGIN is usually given in the REST spelling (`x[bot]`).
+    """
+    trusted = {normalize_bot_login(login) for login in _TRUSTED_BOT_AUTHORS}
+    bot_login = os.environ.get("BOT_LOGIN", "").strip()
+    if bot_login:
+        trusted.add(normalize_bot_login(bot_login))
+    return trusted
+
+
+def _is_bot_author(comment: dict[str, Any], trusted: set[str]) -> bool:
+    login = (comment.get("author") or {}).get("login", "")
+    return bool(login) and normalize_bot_login(login) in trusted
+
+
+def _is_trusted_reply(comment: dict[str, Any], trusted: set[str]) -> bool:
     """Accept bot replies, and human replies that start with a rationale tag."""
-    login = comment.get("author", {}).get("login", "")
-    if login in _TRUSTED_BOT_AUTHORS:
+    if _is_bot_author(comment, trusted):
         return True
     if comment.get("authorAssociation") not in _TRUSTED_ASSOCIATIONS:
         return False
@@ -115,6 +136,7 @@ def _format_prior_threads(repo: str, pr_number: str) -> str:
         page_size=_THREADS_PAGE_SIZE,
     )
 
+    trusted = _trusted_bot_authors()
     lines: list[str] = []
     for node in raw_nodes:
         comments = node.get("comments", {}).get("nodes", [])
@@ -122,8 +144,7 @@ def _format_prior_threads(repo: str, pr_number: str) -> str:
             continue
         # Only include bot-authored threads to prevent prompt injection
         # from user-controlled review content
-        first_author = comments[0].get("author", {}).get("login", "")
-        if first_author not in _TRUSTED_BOT_AUTHORS:
+        if not _is_bot_author(comments[0], trusted):
             continue
         status = _classify_thread(node)
         issue = _sanitize(comments[0].get("body", ""))
@@ -133,9 +154,11 @@ def _format_prior_threads(repo: str, pr_number: str) -> str:
         # is rejected to limit prompt-injection surface via a crafted
         # "Ignore prior instructions..." reply.
         responses = [
-            f"[{c.get('author', {}).get('login', '')}] {_sanitize(c.get('body', ''))}"
+            # `or {}`: a deleted account is `author: null`, which .get's
+            # default does not replace.
+            f"[{(c.get('author') or {}).get('login', '')}] {_sanitize(c.get('body', ''))}"
             for c in comments[1:]
-            if _is_trusted_reply(c)
+            if _is_trusted_reply(c, trusted)
         ]
         lines.append(f'<prior-thread status="{status}">')
         lines.append(f"<issue>{issue}</issue>")
@@ -192,7 +215,7 @@ def _format_bydesign_comments(repo: str, pr_number: str) -> str:
         body = comment.get("body", "")
         if not _QUOTE_RE.search(body) or not _BYDESIGN_RE.search(body):
             continue
-        author = comment.get("user", {}).get("login", "")
+        author = (comment.get("user") or {}).get("login", "")
         body = _sanitize(body)
         lines.append("<prior-comment>")
         lines.append(f"<body>{body}</body>")
