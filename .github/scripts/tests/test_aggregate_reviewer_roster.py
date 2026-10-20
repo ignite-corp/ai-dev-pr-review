@@ -337,7 +337,13 @@ class TestReviewerRoster:
         ):
             main()
         assert exit_info.value.code == 1
-        assert output_path.read_text(encoding="utf-8") == ""
+        # The independent review_result reports the failed path, but none
+        # of the three existing reviewer-roster outputs is invented.
+        emitted = dict(
+            line.split("=", 1)
+            for line in output_path.read_text(encoding="utf-8").splitlines()
+        )
+        assert set(emitted) == {"review_result"}
 
     def test_superseded_head_emits_no_roster(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -357,7 +363,11 @@ class TestReviewerRoster:
         ):
             main()
         assert exit_info.value.code == 1
-        assert output_path.read_text(encoding="utf-8") == ""
+        emitted = dict(
+            line.split("=", 1)
+            for line in output_path.read_text(encoding="utf-8").splitlines()
+        )
+        assert set(emitted) == {"review_result"}
 
     def test_main_does_not_fail_the_run_over_a_missing_reviewer(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

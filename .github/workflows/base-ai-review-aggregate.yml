@@ -81,6 +81,9 @@ on:
     # roster carries that fact out in a form a gate can read; it changes no
     # conclusion and no exit status (AT-2511).
     outputs:
+      review_result:
+        description: "Versioned aggregate outcome JSON for target check reporting; missing means unknown, never success (AT-2520)"
+        value: ${{ jobs.aggregate.outputs.review_result }}
       reviewer_roster:
         description: "JSON {expected, responded, missing{name: reason}} for this round; see README 'Output contract reference' for which missing reasons are benign"
         value: ${{ jobs.aggregate.outputs.reviewer_roster }}
@@ -105,6 +108,7 @@ jobs:
     env:
       LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
     outputs:
+      review_result: ${{ steps.aggregate.outputs.review_result }}
       reviewer_roster: ${{ steps.aggregate.outputs.reviewer_roster }}
       reviewers_expected_count: ${{ steps.aggregate.outputs.reviewers_expected_count }}
       reviewers_responded_count: ${{ steps.aggregate.outputs.reviewers_responded_count }}
