@@ -2098,6 +2098,25 @@ def test_live_correspondence_names_only_existing_base_steps() -> None:
         find_step_env_keys(_load_yaml(LIVE_WORKFLOWS / entry.base_file), entry.base_step)
 
 
+def test_live_provenance_sweep_mapping_rejects_a_missing_wrapper_step(tmp_path: Path) -> None:
+    config = load_correspondence(LIVE_CORRESPONDENCE)
+    sweep = "Clear verdict files the PR checked out"
+    entries = [entry for entry in config.steps
+               if entry.key == ("base-ai-review-aggregate.yml", sweep)]
+    assert len(entries) == 1, "map the env-less sweep so stale wrapper names cannot pass"
+    entry = entries[0]
+    assert entry.wrapper_steps == (sweep,)
+    assert find_step_env_keys(_load_yaml(LIVE_WORKFLOWS / entry.base_file), sweep) == set()
+    # Isolate the name check; unrelated env-bearing steps are covered above.
+    narrow = DriftConfig(base_files=(), wrapper_files=(entry.wrapper_file,), steps=(entry,))
+    wrapper = tmp_path / entry.wrapper_file
+    wrapper.write_text(f"jobs:\n  review:\n    steps:\n      - name: {sweep}\n", encoding="utf-8")
+    assert check_env_keys(LIVE_WORKFLOWS, tmp_path, narrow, Exceptions.empty()) == ([], [])
+    wrapper.write_text("jobs:\n  review:\n    steps: []\n", encoding="utf-8")
+    with pytest.raises(StepNotFoundError, match=sweep):
+        check_env_keys(LIVE_WORKFLOWS, tmp_path, narrow, Exceptions.empty())
+
+
 def test_live_exceptions_name_only_mapped_steps() -> None:
     """An env exception for a step the correspondence does not map would
     never be consulted -- it would look like coverage and excuse nothing."""
@@ -2279,6 +2298,7 @@ POST_PIN_STEPS = frozenset(
         ("base-ai-review-single.yml", "Clear unowned Claude verdict file"),  # AT-2614
         ("base-ai-review-single.yml", "Clear Gemini verdict file"),  # AT-2614
         ("base-ai-review-single.yml", "Clear unowned Gemini verdict file"),  # AT-2614
+        ("base-ai-review-aggregate.yml", "Clear verdict files the PR checked out"),  # AT-2614
     }
 )
 

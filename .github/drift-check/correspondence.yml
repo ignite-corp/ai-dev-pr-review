@@ -128,39 +128,27 @@ steps:
     base_step: Build Claude prompt with existing threads
     wrapper_file: wrapper.yml
     wrapper_steps: [Build Claude prompt with existing threads]
-  # The four AT-2614 verdict-provenance steps. The wrapper runs on the pilot
-  # consumer's own tree, so review-<name>.json is a path the PR under review
-  # can commit there too and the port is owed; it is not on wrapper main yet.
+  # AT-2614 port: ignite-pilot-org/ai-dev-pr-review-wrapper#46 (61f5b24).
+  # These four steps carry REVIEWER in env on both sides. The env-less
+  # aggregate sweep is mapped below to pin both step names as well.
+  # 'Normalize review file name' already maps below with REVIEWER; its
+  # added `||` fallback is a body change the env-key axis does not compare.
   - base_file: base-ai-review-single.yml
     base_step: Clear Claude verdict file
     wrapper_file: wrapper.yml
-    wrapper_steps: []
-    reason: >-
-      Open drift, AT-2614. The provenance clear is new on base and the
-      wrapper has not ported it; base release -> wrapper port means this
-      base PR cannot close its own gap. Replace with the wrapper step
-      name once the port lands.
+    wrapper_steps: [Clear Claude verdict file]
   - base_file: base-ai-review-single.yml
     base_step: Clear unowned Claude verdict file
     wrapper_file: wrapper.yml
-    wrapper_steps: []
-    reason: >-
-      Open drift, AT-2614; see 'Clear Claude verdict file'. This is the
-      always() net of that same clear.
+    wrapper_steps: [Clear unowned Claude verdict file]
   - base_file: base-ai-review-single.yml
     base_step: Clear Gemini verdict file
     wrapper_file: wrapper.yml
-    wrapper_steps: []
-    reason: >-
-      Open drift, AT-2614; see 'Clear Claude verdict file'. Same step on
-      the gemini path.
+    wrapper_steps: [Clear Gemini verdict file]
   - base_file: base-ai-review-single.yml
     base_step: Clear unowned Gemini verdict file
     wrapper_file: wrapper.yml
-    wrapper_steps: []
-    reason: >-
-      Open drift, AT-2614; see 'Clear Claude verdict file'. This is the
-      always() net of the gemini clear.
+    wrapper_steps: [Clear unowned Gemini verdict file]
   - base_file: base-ai-review-single.yml
     base_step: Extract Claude review from execution log (fallback)
     wrapper_file: wrapper.yml
@@ -251,6 +239,10 @@ steps:
       - Read Codex early_exit
 
   # ---- base-ai-review-aggregate.yml ----
+  - base_file: base-ai-review-aggregate.yml
+    base_step: Clear verdict files the PR checked out
+    wrapper_file: wrapper.yml
+    wrapper_steps: [Clear verdict files the PR checked out]
   - base_file: base-ai-review-aggregate.yml
     base_step: Resolve review target
     wrapper_file: wrapper.yml
