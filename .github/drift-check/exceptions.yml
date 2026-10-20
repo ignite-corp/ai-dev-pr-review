@@ -42,6 +42,13 @@ env:
           Remove with the 'Resolve review target' entries in
           correspondence.yml.
     Extract diff and context:
+      DEFAULT_PROMPTS_PATH:
+        reason: >-
+          By design. Base takes a default prompt only from the caller that
+          passed default_prompts_path (the LENS runner reviewing other
+          repositories); the wrapper is called by the reviewed repository
+          itself and ships its own defaults in .wrapper-defaults, so it has
+          no caller-owned directory to read.
       GIT_AUTH_TOKEN:
         reason: >-
           Open drift, AT-2520; same as 'Fetch PR head (when pr_number

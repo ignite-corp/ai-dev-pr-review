@@ -592,6 +592,7 @@ def _run_extract_context_step(
         "steps.refs.outputs.labels": labels,
         "inputs.code-review-system-prompt-path": "examples/prompts/code-review-system.md",
         "inputs.code-review-checklist-path": "examples/prompts/code-review-checklist.md",
+        "steps.target.outputs.cross == 'true' && inputs.default_prompts_path || ''": "",
     }
     script = _render(step["run"], context)
     env = dict(_GIT_ENV)

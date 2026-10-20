@@ -835,7 +835,7 @@ def test_an_operational_git_failure_does_not_reach_for_the_prs_own_prompt(tmp_pa
     (work / "prompts" / "system.md").write_text("PR-CONTROLLED\n", encoding="utf-8")
 
     with pytest.raises(driver.DriverError) as excinfo:
-        driver._prompt_text(work, "main", "prompts/system.md")
+        driver._prompt_text(work, "main", "HEAD", "prompts/system.md")
     assert "origin/main" in str(excinfo.value)
 
 
@@ -858,8 +858,9 @@ def test_a_base_branch_that_really_lacks_the_prompt_still_uses_the_head(tmp_path
     )
     (work / "prompts").mkdir()
     (work / "prompts" / "system.md").write_text("HEAD COPY\n", encoding="utf-8")
+    head = _commit_head(work)
 
-    assert driver._prompt_text(work, "main", "prompts/system.md") == "HEAD COPY\n"
+    assert driver._prompt_text(work, "main", head, "prompts/system.md") == "HEAD COPY\n"
 
     (base / "prompts").mkdir()
     (base / "prompts" / "system.md").write_text("BASE COPY\n", encoding="utf-8")
@@ -867,7 +868,91 @@ def test_a_base_branch_that_really_lacks_the_prompt_still_uses_the_head(tmp_path
     _git(base, "commit", "-qm", "prompt")
     _git(work, "fetch", "-q", "origin")
 
-    assert driver._prompt_text(work, "main", "prompts/system.md") == "BASE COPY\n"
+    assert driver._prompt_text(work, "main", head, "prompts/system.md") == "BASE COPY\n"
+
+
+def _commit_head(work: Path) -> str:
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "head")
+    return subprocess.run(
+        ["git", "-C", str(work), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _prompt_repos(tmp_path: Path, *, base_link: str | None, head_link: str | None):
+    """A base repo and a PR-head clone, each optionally linking a path outside.
+
+    `base_link` / `head_link` name what the symlink sits on: the prompt file
+    itself (`file`) or its parent directory (`dir`). The link points at an
+    outside file or directory holding a planted secret that must never be
+    returned -- what an operator's `~/.ssh/...` would be.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "system.md").write_text("PLANTED-SECRET\n", encoding="utf-8")
+
+    def plant(root: Path, where: str | None) -> None:
+        if where == "file":
+            (root / "prompts").mkdir(exist_ok=True)
+            (root / "prompts" / "system.md").symlink_to(outside / "system.md")
+        elif where == "dir":
+            (root / "prompts").symlink_to(outside)
+
+    base = tmp_path / "base"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(base)], check=True)
+    (base / "README.md").write_text("x\n", encoding="utf-8")
+    plant(base, base_link)
+    _git(base, "add", "-A")
+    _git(base, "commit", "-qm", "base")
+
+    work = tmp_path / "work"
+    subprocess.run(
+        ["git", "clone", "-q", str(base), str(work)], check=True, capture_output=True
+    )
+    (work / "changed.txt").write_text("hi\n", encoding="utf-8")
+    plant(work, head_link)
+    return work, _commit_head(work)
+
+
+@pytest.mark.parametrize(
+    "base_link,head_link",
+    [("file", None), ("dir", None), (None, "file"), (None, "dir")],
+    ids=["base-file", "base-dir", "head-file", "head-dir"],
+)
+def test_a_symlinked_prompt_never_reads_an_operator_local_file(
+    tmp_path, base_link, head_link
+):
+    """The workflow reads prompts as regular-file git objects; so must this.
+
+    A symlink is a blob of mode 120000 on the base branch, whose `git show`
+    is the link target; and `Path.is_file()` on the head checkout follows a
+    link on the path or on any parent directory. Either way a PR could have
+    the operator's machine read any local file into context.md, which goes
+    to three LLM vendors. Base or head, file or parent directory: the run
+    stops, and the planted content is never returned.
+    """
+    work, head = _prompt_repos(tmp_path, base_link=base_link, head_link=head_link)
+    try:
+        text = driver._prompt_text(work, "main", head, "prompts/system.md")
+    except driver.DriverError as exc:
+        assert "PLANTED-SECRET" not in str(exc)
+    else:
+        pytest.fail(f"read a symlinked prompt: {text!r}")
+
+
+def test_an_empty_prompt_stops_the_run(tmp_path):
+    """Parity with prepare: a present-but-empty prompt is an error, not an
+    empty section the reviewers are handed as their instructions."""
+    work, head = _prompt_repos(tmp_path, base_link=None, head_link=None)
+    (work / "prompts").mkdir()
+    (work / "prompts" / "system.md").write_text("  \n", encoding="utf-8")
+    head = _commit_head(work)
+    with pytest.raises(driver.DriverError) as excinfo:
+        driver._prompt_text(work, "main", head, "prompts/system.md")
+    assert "empty" in str(excinfo.value)
 
 
 def test_this_repositorys_own_prompt_paths_exist_where_self_review_says():

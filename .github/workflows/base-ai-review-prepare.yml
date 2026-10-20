@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: ""
+      default_prompts_path:
+        description: "Directory in the caller repository holding default prompts for a target that ships none; honoured on a cross-repository run only; empty means no default (AT-2520)"
+        required: false
+        type: string
+        default: ""
     secrets:
       REVIEWER_APP_PRIVATE_KEY:
         required: false
@@ -296,6 +301,37 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      # Default prompts for a target that ships none (AT-2520), owned by the
+      # CALLER: inside a reusable workflow github.repository and github.sha
+      # name the repository whose workflow called the orchestrator and its
+      # commit. The run's default token is that repository's own, with the
+      # contents: read this workflow declares; the runner's allowlist job
+      # sparse-checks-out the same private repository with the same kind of
+      # token. Sparse, so only the named directory is fetched; its own path,
+      # so it never mixes with the target tree. 'Extract diff and context'
+      # reads it through git objects, never through this working tree.
+      #
+      # Cross-repository runs only. On a same-repository run the caller IS
+      # the repository under review and github.sha is the PR's merge commit,
+      # so the "defaults" would be whatever the PR author wrote -- the very
+      # injection the base-branch prompt read prevents. There the input is
+      # ignored, and the step below says so.
+      - name: Ignore default prompts on a same-repository run
+        if: inputs.default_prompts_path != '' && steps.target.outputs.cross != 'true'
+        run: echo "::notice title=default_prompts_path ignored::the caller is the repository under review, whose commit the PR controls; default prompts are read only when target_repo names another repository (AT-2520)"
+
+      - name: Checkout caller default prompts
+        if: inputs.default_prompts_path != '' && steps.target.outputs.cross == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .ai-dev-pr-review-caller
+          sparse-checkout: ${{ inputs.default_prompts_path }}
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
       - name: Validate PR number
         env:
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
@@ -525,6 +561,8 @@ jobs:
           LABELS: ${{ steps.refs.outputs.labels }}
           SYSTEM_PROMPT_PATH: ${{ inputs.code-review-system-prompt-path }}
           CHECKLIST_PATH: ${{ inputs.code-review-checklist-path }}
+          # Empty on a same-repository run; see 'Checkout caller default prompts'.
+          DEFAULT_PROMPTS_PATH: ${{ steps.target.outputs.cross == 'true' && inputs.default_prompts_path || '' }}
           # See 'Fetch PR head': the checkout persisted no credential, and
           # this step fetches (the base branch below; the merge commit
           # inside extract_pr_diff.sh).
@@ -564,20 +602,96 @@ jobs:
           # onboarding the base branch lacks the prompt files; fall back to
           # the PR head copy and emit a warning so the security caveat is
           # surfaced. Future PRs will use the base version once merged.
+          #
+          # A target with the file on neither side gets the CALLER's default
+          # when the caller passed default_prompts_path (AT-2520): a target
+          # reviewed cross-repo need not ship prompts, and the caller that
+          # reviews it owns what it is reviewed against. Without the input
+          # a missing prompt fails the step, as it always has. Only absence
+          # falls through: a prompt the target does carry but that is empty,
+          # or is not a regular file, fails the step instead, because
+          # swapping a broken prompt the target owns for a default would
+          # hide the breakage behind a review that looks normal.
+          #
+          # Every source is read from git objects, never a working tree, and
+          # only as a regular file (mode 100644 / 100755). A symlink is a
+          # blob too (mode 120000, its content the link target), and a `cat`
+          # of a checkout follows a link -- on the path or on any parent
+          # directory -- to any file on the runner, whose contents the
+          # reviewers would then read as their prompt. The head is read at
+          # HEAD_SHA, the commit 'Put the working tree on the PR head'
+          # asserted the checkout is; the caller default at the commit
+          # 'Checkout caller default prompts' checked out.
           git fetch --depth=1 origin "$BASE_REF"
-          if git show "origin/${BASE_REF}:${SYSTEM_PROMPT_PATH}" > context.md 2>/dev/null; then
-            :
-          else
-            echo "::warning title=Onboarding prompt fallback::Base branch '${BASE_REF}' has no ${SYSTEM_PROMPT_PATH}; using PR head. Future PRs will use the base branch version once this PR merges."
-            cat "${SYSTEM_PROMPT_PATH}" > context.md
-          fi
+          : > context.md
+          append_prompt() {
+            local path="$1" name="$2"
+            local rev mode source part default=""
+            part=$(mktemp)
+            rev="origin/${BASE_REF}"
+            source="base branch '${BASE_REF}'"
+            mode=$(git ls-tree --format='%(objectmode)' "$rev" -- "$path")
+            if [ -z "$mode" ]; then
+              rev="$HEAD_SHA"
+              source="PR head"
+              mode=$(git ls-tree --format='%(objectmode)' "$rev" -- "$path")
+              if [ -n "$mode" ]; then
+                echo "::warning title=Onboarding prompt fallback::Base branch '${BASE_REF}' has no ${path}; using PR head. Future PRs will use the base branch version once this PR merges."
+              fi
+            fi
+            if [ -n "$mode" ]; then
+              case "$mode" in
+                100644|100755) git cat-file blob "${rev}:${path}" > "$part" ;;
+                *)
+                  echo "::error title=Unreadable review prompt::${path} on the ${source} is not a regular file (git mode ${mode}; a symlink is 120000, a directory 040000)"
+                  exit 1
+                  ;;
+              esac
+            else
+              if [ -z "$DEFAULT_PROMPTS_PATH" ]; then
+                echo "::error title=Missing review prompt::${path} is on neither the base branch '${BASE_REF}' nor the PR head, and no default_prompts_path applies (unset, or ignored on a same-repository run)"
+                exit 1
+              fi
+              default="${DEFAULT_PROMPTS_PATH%/}/${name}"
+              source="caller default ${default}"
+              mode=$(git -C .ai-dev-pr-review-caller ls-tree --format='%(objectmode)' HEAD -- "$default")
+              case "$mode" in
+                100644|100755) git -C .ai-dev-pr-review-caller cat-file blob "HEAD:${default}" > "$part" ;;
+                "")
+                  echo "::error title=Missing default review prompt::${path} is on neither the base branch '${BASE_REF}' nor the PR head, and the caller has no ${default}"
+                  exit 1
+                  ;;
+                *)
+                  echo "::error title=Unreadable review prompt::${path}: the ${source} is not a regular file (git mode ${mode}; a symlink is 120000, a directory 040000)"
+                  exit 1
+                  ;;
+              esac
+            fi
+            if ! grep -q '[^[:space:]]' "$part"; then
+              local hint
+              if [ -n "$default" ]; then
+                hint="fix it; the caller default is the last source, so deleting it fails the step too"
+              elif [ -n "$DEFAULT_PROMPTS_PATH" ]; then
+                hint="fix it, or delete it: a missing prompt falls back to the caller default ${DEFAULT_PROMPTS_PATH%/}, an empty one does not"
+              else
+                hint="fix it; with no default_prompts_path, deleting it fails the step too"
+              fi
+              echo "::error title=Empty review prompt::${path} on the ${source} is empty; ${hint}"
+              exit 1
+            fi
+            # Warning for a default: the weakest source, and where a
+            # misspelled prompt path lands too.
+            if [ -n "$default" ]; then
+              echo "::warning title=Default review prompt::${path}: using the ${source}"
+            else
+              echo "::notice title=Review prompt source::${path}: using the ${source}"
+            fi
+            cat "$part" >> context.md
+            rm -f "$part"
+          }
+          append_prompt "$SYSTEM_PROMPT_PATH" code-review-system.md
           printf '\n\n---\n\n' >> context.md
-          if git show "origin/${BASE_REF}:${CHECKLIST_PATH}" >> context.md 2>/dev/null; then
-            :
-          else
-            echo "::warning title=Onboarding prompt fallback::Base branch '${BASE_REF}' has no ${CHECKLIST_PATH}; using PR head. Future PRs will use the base branch version once this PR merges."
-            cat "${CHECKLIST_PATH}" >> context.md
-          fi
+          append_prompt "$CHECKLIST_PATH" code-review-checklist.md
           # Prepend PR metadata so reviewers can detect dependabot PRs.
           #
           # author, head_ref and base_ref are exactly as attacker-influenceable

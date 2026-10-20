@@ -861,7 +861,7 @@ def extract_diff(work: Path, repo: str, pr_number: str, refs: Refs) -> None:
     run(["bash", str(SCRIPT_DIR / "extract_pr_diff.sh")], cwd=work, env=env)
 
 
-def _prompt_text(work: Path, base_ref: str, path: str) -> str:
+def _prompt_text(work: Path, base_ref: str, head_sha: str, path: str) -> str:
     """Read a prompt file from the BASE branch, falling back to the PR head.
 
     The base copy is authoritative so a PR cannot rewrite the instructions
@@ -884,38 +884,75 @@ def _prompt_text(work: Path, base_ref: str, path: str) -> str:
     whether or not the path is there and names the blob only when it is, so
     an empty listing IS the absence, and every non-zero exit stays a git
     failure that `run` turns into a DriverError.
+
+    BOTH SIDES ARE READ AS REGULAR-FILE GIT OBJECTS, never through the
+    checkout, the same rule base-ai-review-prepare.yml applies (AT-2520). A
+    symlink is a blob of mode 120000 whose `git show` is the link target,
+    and `Path.is_file()` on the checkout follows a link on the path or on
+    any parent directory -- so a PR could have this operator's machine read
+    any local file into context.md, which goes to three LLM vendors. The
+    head is read at head_sha, the commit the worktree was asserted to be.
+    A present-but-empty prompt stops the run, as it fails prepare.
+    """
+    source = f"origin/{base_ref}"
+    text = _regular_file_blob(work, source, path)
+    if text is None:
+        text = _regular_file_blob(work, head_sha, path)
+        if text is None:
+            raise DriverError(
+                f"neither origin/{base_ref} nor the PR head carries {path};"
+                " pass --system-prompt-path / --checklist-path if this repository"
+                " keeps its review prompts elsewhere"
+            )
+        source = "the PR head"
+        print(
+            f"::warning::Base branch '{base_ref}' has no {path}; using PR head."
+            " Future PRs will use the base branch version once this PR merges.",
+            file=sys.stderr,
+        )
+    if not text.strip():
+        raise DriverError(f"{path} on {source} is empty; fix it")
+    return text
+
+
+_REGULAR_FILE_MODES = ("100644", "100755")
+
+
+def _regular_file_blob(work: Path, rev: str, path: str) -> str | None:
+    """The content of `path` at `rev` if it is a regular file, None if absent.
+
+    Anything else at the path -- a symlink (120000), a directory (040000), a
+    submodule -- is a DriverError. A path under a symlinked directory is not
+    in the tree at all, so it reads as absent rather than being followed.
     """
     listed = run(
-        ["git", "ls-tree", "--full-tree", "-z", f"origin/{base_ref}", "--", path],
+        [
+            "git", "ls-tree", "--full-tree", "-z", "--format=%(objectmode)",
+            rev, "--", path,
+        ],
         cwd=work,
         capture=True,
     )
-    if listed.stdout.split("\0")[0]:
-        return run(
-            ["git", "show", f"origin/{base_ref}:{path}"], cwd=work, capture=True
-        ).stdout
-    head_copy = work / path
-    if not head_copy.is_file():
+    mode = listed.stdout.split("\0")[0]
+    if not mode:
+        return None
+    if mode not in _REGULAR_FILE_MODES:
         raise DriverError(
-            f"neither origin/{base_ref} nor the PR head carries {path};"
-            " pass --system-prompt-path / --checklist-path if this repository"
-            " keeps its review prompts elsewhere"
+            f"{path} at {rev} is not a regular file (git mode {mode};"
+            " a symlink is 120000, a directory 040000)"
         )
-    print(
-        f"::warning::Base branch '{base_ref}' has no {path}; using PR head."
-        " Future PRs will use the base branch version once this PR merges.",
-        file=sys.stderr,
-    )
-    return head_copy.read_text(encoding="utf-8")
+    return run(
+        ["git", "cat-file", "blob", f"{rev}:{path}"], cwd=work, capture=True
+    ).stdout
 
 
 def build_context(
     work: Path, refs: Refs, system_prompt_path: str, checklist_path: str
 ) -> None:
     body = (
-        _prompt_text(work, refs.base_ref, system_prompt_path)
+        _prompt_text(work, refs.base_ref, refs.head_sha, system_prompt_path)
         + "\n\n---\n\n"
-        + _prompt_text(work, refs.base_ref, checklist_path)
+        + _prompt_text(work, refs.base_ref, refs.head_sha, checklist_path)
     )
     # An LLM reads context.md as its prompt, and three of the four values
     # below are chosen by whoever opened or labeled the PR. Each is
