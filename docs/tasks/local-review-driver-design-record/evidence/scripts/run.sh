@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full end-to-end run of the local review driver against ignite-corp/ai-dev-pr-review PR 170.
 # Only deviations from stock defaults:
-#   PR_SIZE_LIMIT raised (PR is 6067 lines; workflow default is 3000 and would size-skip)
+#   PR_SIZE_LIMIT raised (PR is 6109 lines; workflow default is 3000 and would size-skip)
 #   --system-prompt-path/--checklist-path pointed at examples/prompts, where this repo
 #   actually keeps them (self-review.yml passes the same two paths)
 WT=/home/hyukhur/Sources/ai-dev-pr-review/.claude/worktrees/agent-af2dbb3734da99b6f
