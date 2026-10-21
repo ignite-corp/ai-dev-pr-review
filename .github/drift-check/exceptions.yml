@@ -42,10 +42,31 @@ env:
           Remove with the 'Resolve review target' entries in
           correspondence.yml.
     Extract diff and context:
+      DEFAULT_PROMPTS_PATH:
+        reason: >-
+          By design. Base takes a default prompt only from the caller that
+          passed default_prompts_path (the LENS runner reviewing other
+          repositories); the wrapper is called by the reviewed repository
+          itself and ships its own defaults in .wrapper-defaults, so it has
+          no caller-owned directory to read.
       GIT_AUTH_TOKEN:
         reason: >-
           Open drift, AT-2520; same as 'Fetch PR head (when pr_number
           provided manually)'.
+    Append prior review context:
+      BOT_LOGIN:
+        reason: >-
+          Open drift, AT-2520. Base tells fetch_review_context.py which
+          identity opened the inline threads so a cross run's reviewer-App
+          threads are trusted as prior context; the wrapper posts its inline
+          comments with github.token, whose github-actions login the script
+          already trusts, and has no target token to name another. Remove
+          with the 'Resolve review target' entries in correspondence.yml.
+    Collect unresolved review threads:
+      BOT_LOGIN:
+        reason: >-
+          Open drift, AT-2520; same as 'Append prior review context' --
+          threads.jq trusts the same identity.
     Resolve PR refs:
       CROSS_REPO:
         reason: >-

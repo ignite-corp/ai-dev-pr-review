@@ -48,7 +48,12 @@ gh() {
     printf '%s\n' '{"additions":2,"deletions":1,"base":{"ref":"main"},"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ref":"feature"},"user":{"login":"author"},"merged":false,"commits":1,"labels":[]}'
   fi
 }
-git() { observe git "$*"; printf 'prompt\n'; }
+# `ls-tree` is how prepare tells a present regular-file prompt from an
+# absent one (AT-2520); every other call stands in for content.
+git() {
+  observe git "$*"
+  if [ "$1" = "ls-tree" ]; then printf '100644\n'; else printf 'prompt\n'; fi
+}
 bash() { observe bash "$*"; printf 'diff\n' > pr.diff; }
 python3() {
   observe python3 "$*"

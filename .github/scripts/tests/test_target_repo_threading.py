@@ -129,6 +129,12 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
         RESOLVE_STEP,
         "env:GH_TOKEN",
     ): "reads the caller's own visibility, before any mint",
+    (PREPARE.name, "Checkout caller default prompts", "with:repository"): (
+        "the caller's own default prompts, never the target's (AT-2520)"
+    ),
+    (PREPARE.name, "Checkout caller default prompts", "with:token"): (
+        "the caller's own token reads the caller's own repository (AT-2520)"
+    ),
     (SINGLE.name, "Switch Claude auth on usage limit", "env:GH_TOKEN"): (
         "the corp App token that writes an ignite-corp org variable (AT-1606), not the target"
     ),
@@ -152,6 +158,10 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
 # the target token": each names a credential that is wrong in any other
 # spelling.
 CALLER_SIDE_VALUE: dict[tuple[str, str, str], str] = {
+    (PREPARE.name, "Checkout caller default prompts", "with:repository"): (
+        "${{ github.repository }}"
+    ),
+    (PREPARE.name, "Checkout caller default prompts", "with:token"): "${{ github.token }}",
     (SINGLE.name, "Run Claude review", "with:claude_code_oauth_token"): (
         "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
     ),

@@ -1,8 +1,15 @@
-[
+# Every GitHub spelling of an app login reduced to the bare slug, as
+# normalize_bot_login in github_pr_support.py does: GraphQL `x`, REST
+# `x[bot]`, `gh` display `app/x`.
+def norm: sub("^app/"; "") | sub("\\[bot\\]$"; "");
+# `bot` is BOT_LOGIN, the identity the inline comments were posted under --
+# the reviewer App on a cross run (AT-2520). Optional, so a caller that
+# passes no --arg keeps the fixed list.
+(["gemini-code-assist", "github-actions", "claude", "codex"]
+  + ([$ARGS.named.bot // "" | norm] | map(select(. != "")))) as $trusted
+| [
   .[] | select(
-    .comments.nodes[0].author.login | IN(
-      "gemini-code-assist", "github-actions", "github-actions[bot]", "claude", "codex"
-    )
+    .comments.nodes[0].author.login // "" | norm | IN($trusted[])
   ) |
   {
     author: .comments.nodes[0].author.login,

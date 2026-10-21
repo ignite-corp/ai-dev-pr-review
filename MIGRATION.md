@@ -28,6 +28,16 @@ Re-copy **both** of these bullets from the `## GitHub Actions SHA Pins` section 
 
 A consumer whose prompt carries no `## GitHub Actions SHA Pins` section at all needs no change: it never had the old rule, and the rendered `context.md` blurb is its only guidance either way.
 
+### Prompt files must be non-empty regular files (AT-2520)
+
+**Behaviour change, no consumer action unless a prompt is broken.** `prepare` now reads `code-review-system-prompt-path` and `code-review-checklist-path` from git objects, on the base branch and on the PR head alike, and accepts only a non-empty regular file (git mode `100644` / `100755`):
+
+- an **empty or whitespace-only** prompt used to produce a review with an empty prompt section; it now fails `prepare` with `Empty review prompt`;
+- a **symlink** at the prompt path used to be read through (on the base branch, the link target's *path* became the prompt; on the PR head, the linked file's contents did); it now fails `prepare` with `Unreadable review prompt` (git mode `120000`);
+- a **directory** at the prompt path used to put a tree listing into the prompt; it now fails `prepare` the same way (git mode `040000`).
+
+A missing prompt behaves as before: the PR head copy is used with a warning when only the base lacks it, and the step fails when neither side has it. The local driver (`review_pr_local.py`) applies the same rule. To check a consumer before bumping the pin, run `git ls-tree origin/<base> -- .github/prompts/` and confirm both files are listed as `100644 blob` and are not empty.
+
 ### Finding the release that changed a rule
 
 This change lowers the severity the prompt prescribes for a finding class, which the [version policy](README.md#tag-pinning) places in a MINOR (`v1.x.0`): it is consumer-visible behaviour, so **not** a patch, and it only ever relaxes, so it is not one of the breaking changes that would make it a MAJOR. Per the wrapper lockstep in that same section, the pilot wrapper cuts a matching MINOR. Release notes for such a tag must say which prompt rules changed and name this section, so a consumer reviewing a Dependabot pin bump can see that the bump alone is not the whole upgrade.

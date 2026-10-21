@@ -42,6 +42,17 @@ on:
         required: false
         type: string
         default: ""
+      # Defaults for a target that ships neither prompt file (AT-2520). A
+      # directory in the CALLER repository holding code-review-system.md
+      # and code-review-checklist.md; empty means no default, so a target
+      # without prompts fails prepare exactly as before. Base ships no
+      # default of its own: the caller that reviews other repositories owns
+      # what they are reviewed against.
+      default_prompts_path:
+        description: "Directory in the caller repository holding default code-review-system.md / code-review-checklist.md, used only when the target has neither on its base branch nor its PR head, and only when target_repo names another repository (ignored on a same-repository run, whose commit the PR controls). Empty means no default (AT-2520)"
+        required: false
+        type: string
+        default: ""
     secrets:
       OPENAI_API_KEY:
         required: true
@@ -93,6 +104,7 @@ jobs:
       target_repo: ${{ inputs.target_repo }}
       code-review-system-prompt-path: ${{ inputs.code-review-system-prompt-path }}
       code-review-checklist-path: ${{ inputs.code-review-checklist-path }}
+      default_prompts_path: ${{ inputs.default_prompts_path }}
     secrets:
       # Read only when target_repo names another repository: prepare mints
       # the App token that reaches the target's PR from it (AT-2520).

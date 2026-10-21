@@ -51,7 +51,7 @@ while [ "$HAS_NEXT" = "true" ]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNRESOLVED=$(echo "$ALL_THREADS" | jq -f "${SCRIPT_DIR}/threads.jq")
+UNRESOLVED=$(echo "$ALL_THREADS" | jq --arg bot "${BOT_LOGIN:-}" -f "${SCRIPT_DIR}/threads.jq")
 
 mkdir -p .review-context
 echo "$UNRESOLVED" > .review-context/unresolved-threads.json
