@@ -197,11 +197,10 @@ floating on the direct-checkout-of-composite path. Each new instance of this
 shape should get the same "why" comment at its checkout step that
 `ai-tf-t2a/.github/workflows/claude-code-review.yml` carries.
 
-This is a different thing from the pilot wrapper's own internal checkout
-(`actions/checkout ignite-corp/ai-dev-pr-review@${{ inputs.upstream_ref }}` inside
-`wrapper.yml`, see [pilot usage](docs/pilot-usage.md)) -- that is the wrapper's
-own single mechanism for every wrapper consumer, not a second path living
-alongside another pin in one consumer's own tree.
+The retired pilot wrapper (AT-3036) used a different mechanism again: its own
+internal checkout of this repository at `upstream_ref` inside `wrapper.yml`.
+Pilot-org repos are now reviewed by the runner instead, so that checkout is not
+a pin policy a consumer chooses.
 
 `consumer-health.yml`'s pin-freshness check is structurally blind to this
 path -- see the comment at its pin-extraction regex for why, and why that is
@@ -423,7 +422,14 @@ The orchestrator sets `concurrency: { group: ai-review-<repository>-<pr-number>,
 
 ## Cross-org usage
 
-GitHub does NOT propagate `secrets: inherit` across organizations. For `ignite-pilot-org` (or any other org) consumers:
+For a repository outside `ignite-corp`, the supported path is the runner, [`ignite-corp/ai-dev-pr-review-runner`](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch). It calls this repo's orchestrator from `ignite-corp` with `target_repo` set, so the review runs on `ignite-corp` minutes under `ignite-corp` secrets. A target needs two things:
+
+1. An entry in the runner's allowlist (`.github/review-targets.txt`), either for the repository or as an `owner/*` record for its owner.
+2. The reviewer App (`ignite-ai-review-approver`) installed on the repository. With the App installed, a pull request event is dispatched to the runner automatically.
+
+The target holds no secrets and no review workflow. Its prompt files are read from its base branch and fall back to the runner's defaults (see [Overriding prompts per consumer repo](#overriding-prompts-per-consumer-repo)).
+
+As an alternative, an org that wants reviews to run on its own Actions minutes can call the orchestrator from a thin trigger in each repository. GitHub does NOT propagate `secrets: inherit` across organizations, so:
 
 1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` as org-level secrets and grant the consumer repos access.
 2. Consumer thin trigger: use the explicit `secrets:` mapping shown above. Do NOT use `secrets: inherit`.
@@ -473,9 +479,7 @@ Version policy:
 - Minor (`v1.x.0`): new optional inputs, additive reviewer features, prompt rules that lower the severity prescribed for a finding class — relaxing only, since raising a prescribed severity can newly block consumers.
 - Major (`v2.0.0`): input contract changes, breaking script signatures, severity threshold defaults shift, prompt rules that raise the severity prescribed for a finding class.
 
-Wrapper version alignment: this repo and the pilot wrapper `ignite-pilot-org/ai-dev-pr-review-wrapper` keep their release versions in MAJOR.MINOR lockstep; PATCH moves independently per repo. Current pairing: base `v1.15.0` ↔ wrapper `v1.14.0`. When either repo needs a MINOR (or MAJOR) bump, the other cuts a matching alignment release — content-identical if it has no changes. Both repos auto-float their `v1` major tag via `move-major-tag.yml` on release publish, so `@v1` consumers need no action.
-
-The lockstep exists because the wrapper does not call this repo's reusable workflows — it reimplements the single-review job inline. A change to `base-ai-review-single.yml` therefore does not reach pilot consumers on its own: it must be hand-ported into `wrapper.yml` and shipped as a matching wrapper release. Only `.github/scripts/*` — `review_prompt.md` included — and the `.github/actions/claude-review` composite propagate automatically, through the wrapper's `upstream_ref` checkout. The per-repo `code-review-system.md` / `code-review-checklist.md` are read from the consumer repo, not from here. See [pilot usage](docs/pilot-usage.md).
+The pilot wrapper `ignite-pilot-org/ai-dev-pr-review-wrapper` is retired (AT-3036), and this repo no longer keeps a release lockstep with it. Pilot-org repos are reviewed by the runner; see [automatic dispatch](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch).
 
 ## Overriding prompts per consumer repo
 

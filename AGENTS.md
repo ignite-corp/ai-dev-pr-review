@@ -16,7 +16,7 @@ GitHub Rulesets for the tracked consumers are stored in the PRIVATE org secret `
 - New tracked repo: add a `<repo>: {id, ruleset}` entry to `RULESET_CONFIG` (full-value rewrite, as above). No workflow code change needed.
 
 ### What the public tree exposes (AT-1956)
-This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list must never live in the tree or be printed to Actions logs -- that part holds today. Consumer repo names are a different matter: `MIGRATION.md`, `AUDIT.md`, `docs/pilot-usage.md`, `examples/consumer-thin-trigger.yml`, and both READMEs name consumers, and have since `80d73cb` (2026-06-02), so the names are already permanent in public history. They stay. These are per-consumer onboarding documents, a tree scrub would leave history untouched, and rewriting history would break the SHA pins consumers hold. The required check context (`AI Code Review`) is public by design too, since consumers must match it. The protection that actually holds is the mapping, not the names: this tree does not reveal which repos are ruleset-tracked, nor any ruleset ID or rule body. Do not restore a broader claim than the tree keeps -- a doctrine that promises more coverage than it has is exactly what let AT-1944 run on a false assurance.
+This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list must never live in the tree or be printed to Actions logs -- that part holds today. Consumer repo names are a different matter: `MIGRATION.md`, `AUDIT.md`, `examples/consumer-thin-trigger.yml`, and both READMEs name consumers, and have since `80d73cb` (2026-06-02), so the names are already permanent in public history. They stay. These are per-consumer onboarding documents, a tree scrub would leave history untouched, and rewriting history would break the SHA pins consumers hold. The required check context (`AI Code Review`) is public by design too, since consumers must match it. The protection that actually holds is the mapping, not the names: this tree does not reveal which repos are ruleset-tracked, nor any ruleset ID or rule body. Do not restore a broader claim than the tree keeps -- a doctrine that promises more coverage than it has is exactly what let AT-1944 run on a false assurance.
 
 ### Daily consumer health
 `consumer-health.yml` runs daily (00:00 UTC) checking the tracked consumers:
@@ -33,7 +33,7 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
 - Dependabot PR status
 
 The `health` job of `consumer-health.yml` authenticates as the fleet-admin App
-below -- not as the one the `pilot-credential-scan` job of the same file uses.
+below, not as the review-pipeline App.
 
 ### Authentication: two Apps, not one (AT-2537)
 Two GitHub Apps are live in this repo and they are not interchangeable. Choose
@@ -78,8 +78,7 @@ like something else.
 **Review pipeline -- `ignite-ai-review-approver` (app_id=4196135).**
 - Used by `base-ai-review-aggregate.yml` (submit a real APPROVED review),
   `base-ai-review-single.yml` and `claude-auth-restore.yml` (flip the
-  ignite-corp Claude auth org vars), the `pilot-credential-scan` job of
-  `consumer-health.yml`, and `spike-cross-repo-probe.yml`.
+  ignite-corp Claude auth org vars), and `spike-cross-repo-probe.yml`.
   `base-ai-review-orchestrator.yml` forwards its key to the `review-claude-p`,
   `review-claude-s` and `aggregate` jobs, and `self-review.yml` forwards it
   into the orchestrator.
@@ -93,9 +92,8 @@ like something else.
   `switch_claude_auth.py` uses to set and delete the ignite-corp
   `CLAUDE_FORCE_API` and `CLAUDE_FORCE_API_UNTIL` org vars. Measured
   2026-10-16, neither installation grants any `actions` permission --
-  `organization_actions_variables: write` is a different key -- which is why
-  the pilot scan reads PR and review bodies rather than consumer run
-  conclusions. Treat that as an observation, not a
+  `organization_actions_variables: write` is a different key. Treat that as
+  an observation, not a
   design guarantee: a negative goes stale silently, so re-read
   `gh api orgs/ignite-corp/installations` and
   `gh api orgs/ignite-pilot-org/installations` before building on the absence.

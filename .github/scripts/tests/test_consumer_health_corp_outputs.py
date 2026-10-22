@@ -5,8 +5,9 @@ Step 4 of the job ("Consecutive reviewer error verdicts") wrapped its verdict
 fetch in ``|| echo '{}'`` and its jq streak computation in ``|| echo 0``, so
 a ``gh`` failure (network, permissions, rate limit) or a malformed payload
 was absorbed as streak 0 and the consumer was logged as ``OK`` -- the same
-defect PR #135 (AT-2121) fixed in the pilot scan of the same file, which the
-corp job did not share because it has no ``scan_errors`` / ``all_ok`` gate.
+defect PR #135 (AT-2121) fixed in the pilot scan that used to sit in the same
+file (removed in AT-3036), which the corp job did not share because it has no
+``scan_errors`` / ``all_ok`` gate.
 
 This test runs the job's consumer loop (from ``any_flag=0`` through the final
 exit) under bash with ``gh`` replaced by a stub that answers the GraphQL
@@ -25,15 +26,18 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
-from test_consumer_health_scan_outputs import (
-    STREAK_THRESHOLD,
-    _graphql_payload,
-    _verdict_body,
+from aggregate_reviews import (
+    REVIEWER_NAMES,
+    _count_unreviewed_majors,
+    apply_verdict_rules,
+    format_summary,
 )
+from github_pr_support import REVIEW_MARKER
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONSUMER_HEALTH = REPO_ROOT / ".github" / "workflows" / "consumer-health.yml"
@@ -42,8 +46,65 @@ HEALTH_STEP_NAME = "Consumer health check"
 LOOP_START = "any_flag=0"
 BASE_REPO = "ai-dev-pr-review"
 NOT_EVALUATED_NOTICE = "::notice::recovery not confirmed -- 1 consumer(s) could not be fetched or evaluated"
+STREAK_THRESHOLD = 5
 
 requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
+
+
+def _verdict_body(failed: str | None) -> str:
+    reviews: dict[str, dict[str, Any] | None] = {
+        name: {
+            "summary": "Looks fine",
+            "status": "ok",
+            "early_exit": False,
+            "issues": [],
+        }
+        for name in REVIEWER_NAMES
+    }
+    if failed is not None:
+        reviews[failed] = {
+            "summary": f"{failed} produced no review",
+            "status": "failed",
+            "early_exit": False,
+            "issues": [],
+            "error": "cli_invocation_failed",
+        }
+    verdict, reason, available = apply_verdict_rules(reviews)
+    conclusions = {name: "success" for name in REVIEWER_NAMES}
+    return (
+        REVIEW_MARKER
+        + "\n"
+        + format_summary(
+            reviews,
+            verdict,
+            reason,
+            available,
+            conclusions,
+            unreviewed_majors=_count_unreviewed_majors(available),
+        )
+    )
+
+
+def _graphql_payload(bodies: list[str]) -> dict[str, Any]:
+    return {
+        "data": {
+            "repository": {
+                "pullRequests": {
+                    "nodes": [
+                        {
+                            "reviews": {"nodes": []},
+                            "comments": {
+                                "nodes": [
+                                    {"body": b, "createdAt": "2026-01-01T00:00:00Z"}
+                                ]
+                            },
+                        }
+                        for b in bodies
+                    ]
+                }
+            }
+        }
+    }
 
 
 def _health_step_tail(workflow: Path) -> str:

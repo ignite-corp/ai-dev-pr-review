@@ -57,9 +57,7 @@ This module does not import production code -- there is none for this axis,
 4. Asserts the caller's (``base-ai-review-single.yml``) fallback default,
    used when ``vars.CLAUDE_ALLOWED_BOTS`` is unset, is byte-for-byte the same
    string as the composite's own default -- so the two copies of "today's
-   enumerated bots" cannot silently drift apart the way the wrapper's inline
-   reimplementation already can (see ``check_base_wrapper_drift.py``, which
-   does not cover ``with:`` inputs).
+   enumerated bots" cannot silently drift apart.
 """
 
 from __future__ import annotations
@@ -215,9 +213,8 @@ class TestCallerParity:
 class TestReadmeParity:
     """The `CLAUDE_ALLOWED_BOTS` vars-table row in each README documents the
     default as a literal string -- a fourth copy alongside the composite
-    default and the caller's fallback (TestCallerParity above), and one
-    check_base_wrapper_drift.py cannot see because it only compares the
-    workflow YAML files, not README.md/README.ko.md. Un-guarded, this is
+    default and the caller's fallback (TestCallerParity above), and one no
+    workflow-file check can see. Un-guarded, this is
     exactly the shape AGENTS.md "One rule, one home" warns about: a doc row
     that quietly stops matching the code it describes."""
 

@@ -1,8 +1,6 @@
 # Shared single source of truth for the Claude review step: auth precedence
 # (AT-1499), the pinned claude-code-action version, and model/allowed-tools
-# wiring. Consumed by base-ai-review-single.yml and the pilot wrapper via the
-# `.ai-dev-pr-review` local checkout path
-# (uses: ./.ai-dev-pr-review/.github/actions/claude-review).
+# wiring. Consumed by base-ai-review-single.yml.
 name: Claude review
 description: Run the Claude PR reviewer via anthropics/claude-code-action with OAuth-preferred auth (single source of truth for auth precedence, action version, and model wiring)
 inputs:

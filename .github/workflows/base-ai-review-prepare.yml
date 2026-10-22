@@ -67,8 +67,8 @@ jobs:
   prepare:
     name: Prepare Review Context
     runs-on: ubuntu-latest
-    # Keep mapped step env keys for wrapper correspondence, but do not rely
-    # on overriding reserved GITHUB_* through YAML: the runner restores them.
+    # Do not rely on overriding reserved GITHUB_* through YAML: the runner
+    # restores them.
     # Target run bodies adapt their process environment after that injection.
     env:
       LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
@@ -405,11 +405,6 @@ jobs:
       # "null", which is truthy everywhere -- a ref to check out, a ref to diff
       # against, a value to print as metadata. An empty value fails the
       # emptiness checks that already exist instead.
-      #
-      # The wrapper (ignite-pilot-org/ai-dev-pr-review-wrapper, commits
-      # 8648105 + d88b0fe) reimplements this workflow inline and carries the
-      # same fix, arrived at the same way. The two files agree here: do not
-      # "reconcile" them by reverting either side.
       - name: Resolve PR refs
         id: refs
         if: steps.size-check.outputs.skip == 'false'

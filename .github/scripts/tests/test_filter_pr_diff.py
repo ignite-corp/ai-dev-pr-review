@@ -51,7 +51,6 @@ WORKFLOWS = SCRIPT_DIR.parents[0] / "workflows"
 PREPARE = WORKFLOWS / "base-ai-review-prepare.yml"
 ORCHESTRATOR = WORKFLOWS / "base-ai-review-orchestrator.yml"
 AGGREGATE = WORKFLOWS / "base-ai-review-aggregate.yml"
-CORRESPONDENCE = SCRIPT_DIR.parents[0] / "drift-check" / "correspondence.yml"
 
 STEP_NAME = "Filter policy-excluded files"
 POLICY_GATE = "steps.policy.outputs.policy_skipped != 'true'"
@@ -988,9 +987,3 @@ class TestPipelineWiring:
         assert step["env"]["POLICY_SKIPPED"] == "${{ inputs.policy_skipped }}"
         assert step["env"]["EXCLUDED_COUNT"] == "${{ inputs.excluded_count }}"
         assert step["env"]["EXCLUDED_PATHS"] == "${{ inputs.excluded_paths }}"
-
-    def test_drift_correspondence_maps_the_step_to_a_same_named_wrapper_step(self) -> None:
-        entries = yaml.safe_load(CORRESPONDENCE.read_text(encoding="utf-8"))["steps"]
-        entry = next(e for e in entries if e["base_step"] == STEP_NAME)
-        assert entry["base_file"] == PREPARE.name
-        assert entry["wrapper_steps"] == [STEP_NAME]
