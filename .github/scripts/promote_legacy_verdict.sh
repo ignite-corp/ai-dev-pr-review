@@ -40,6 +40,8 @@
 #   promote_legacy_verdict.sh promote --target-is-ours <target>
 #       the same, where the run step has already adjudicated the target
 #   promote_legacy_verdict.sh stamp <target>    stamp a direct write in place
+#   promote_legacy_verdict.sh write <target>    install stdin at target,
+#       without following a symlink the workspace may hold there
 set -euo pipefail
 
 LEGACY_VERDICT_FILES=(verdict-openai.json verdict-codex.json)
@@ -47,7 +49,8 @@ LEGACY_VERDICT_FILES=(verdict-openai.json verdict-codex.json)
 usage() {
   echo "usage: $0 clear <target>" \
     "| promote [--target-is-ours] <target>" \
-    "| stamp <target>" >&2
+    "| stamp <target>" \
+    "| write <target>" >&2
   exit 2
 }
 
@@ -156,14 +159,63 @@ clear_files() {
 # directory sitting there -- or inside the one a symlink names -- and
 # reports success, so the promotion notice named a promotion that had not
 # happened. The caller's own error-verdict redirect would then fail on the
-# same path and take the step down. Removed the way clear_files removes
-# it, and for the same reason; a symlink to a regular file is left alone,
-# because mv replaces the link rather than writing through it.
+# same path and take the step down. Removed the way clear_files removes it.
+#
+# A symlink is removed too, including one that points at a regular file.
+# The reviewer workspace is model-writable (the CLI runs
+# `--sandbox workspace-write`), so a verdict path the PR committed or the
+# model planted as a symlink names a path OUTSIDE the workspace -- the
+# scripts snapshot under RUNNER_TEMP, or any runner-writable file. Do not
+# follow such a link: a host write through it would land on whatever it
+# names. mv over the link replaces the link rather than writing through
+# it, so dropping it here and letting the caller's mv recreate a regular
+# file is what keeps every host-side verdict write inside the workspace.
 drop_if_not_regular() {
   local path=$1
-  if { [ -e "$path" ] || [ -L "$path" ]; } && [ ! -f "$path" ]; then
+  if [ -L "$path" ]; then
+    echo "::notice::Removed $path, which is a symlink;" \
+      "a verdict write must not follow a link out of the workspace"
+    rm -rf -- "$path"
+    return
+  fi
+  if [ -e "$path" ] && [ ! -f "$path" ]; then
     echo "::notice::Removed $path, which is not a regular file"
     rm -rf -- "$path"
+  fi
+}
+
+# Install stdin at <target> without following a symlink sitting there.
+# Used by the host-side error-verdict writes in base-ai-review-single.yml:
+# a plain `> review-<name>.json` redirect follows a link, and the model
+# can plant one at that path pointing at the scripts snapshot or any
+# runner-writable file, so the honest error verdict would overwrite it.
+# A STEP-OWNED temp file under RUNNER_TEMP and an mv, the pattern stamp()
+# already uses; drop_if_not_regular first so mv lands a regular file
+# rather than moving inside a directory the PR committed at that name.
+write_target() {
+  local target=$1 tmp
+  if ! tmp=$(mktemp "${RUNNER_TEMP:-/tmp}/promote-verdict.XXXXXX" 2>/dev/null); then
+    echo "::error::no temp file available; not writing $target" >&2
+    return 1
+  fi
+  if ! cat > "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  # The same bar stamp() holds: only a verdict may displace what is at the
+  # target, so an empty or malformed payload is refused, not installed.
+  if ! is_verdict "$tmp"; then
+    echo "::error::refusing to install a payload that is not a verdict at $target" >&2
+    rm -f -- "$tmp"
+    return 1
+  fi
+  # mktemp creates 0600; restore the umask-derived mode the redirect it
+  # replaces produced, as review_status.replace_file_text does.
+  chmod "$(printf '%o' "$(( 0666 & ~$(umask) ))")" "$tmp"
+  drop_if_not_regular "$target"
+  if ! mv -- "$tmp" "$target"; then
+    rm -f -- "$tmp"
+    return 1
   fi
 }
 
@@ -221,6 +273,9 @@ stamp() {
 # semantics are right for exactly that.
 promote() {
   local target=$1 origin=$2 candidate tmp
+  # First, on every entry point: is_verdict below reads through a link, so
+  # a symlinked target must be gone before anything is asked of it.
+  drop_if_not_regular "$target"
   if [ "$origin" = ours ] && is_verdict "$target"; then
     return 0
   fi
@@ -228,6 +283,10 @@ promote() {
     return 0
   fi
   for candidate in "${LEGACY_VERDICT_FILES[@]}"; do
+    # The model can plant a candidate as a link between the clear and this
+    # promotion; reading through it would promote a file from outside the
+    # workspace onto the target, so a link is dropped, never read.
+    drop_if_not_regular "$candidate"
     [ -f "$candidate" ] || continue
     # A STEP-OWNED temp file, because "${target}.tmp" was a path in the
     # PR's checkout like every other name here: committed as a symlink it
@@ -274,6 +333,11 @@ case "${1:-}" in
     [ $# -eq 2 ] || usage
     require_verdict_name "$2"
     stamp "$2"
+    ;;
+  write)
+    [ $# -eq 2 ] || usage
+    require_verdict_name "$2"
+    write_target "$2"
     ;;
   *)
     usage

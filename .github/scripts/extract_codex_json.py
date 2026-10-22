@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from review_status import stamp_model_status
+from review_status import stamp_model_status, write_verdict_json
 
 
 def _find_balanced_blocks(text: str) -> list[str]:
@@ -69,7 +69,9 @@ def main(argv: list[str]) -> int:
     if obj is None:
         return 1
     stamp_model_status(obj)
-    out_path.write_text(json.dumps(obj), encoding="utf-8")
+    # Link-safe: the workspace is model-writable, so out_path may be a
+    # symlink the model planted; do not write through it (AT-2941).
+    write_verdict_json(out_path, obj)
     return 0
 
 
