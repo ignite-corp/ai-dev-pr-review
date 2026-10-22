@@ -15,9 +15,10 @@ guards the other deliberate duplicate in this pipeline
 (test_single_yml_fallback_matches_composite_default). Change one copy and
 CI names the other.
 
-The four rule blocks -- EVIDENCE RULE, DIFF SCOPE, COMPLETENESS RULE,
-LINE NUMBERS -- are load-bearing; the wrapper repo lost them for weeks by
-reimplementing this prompt from memory.
+The rule blocks -- EVIDENCE RULE, DIFF SCOPE, COMPLETENESS RULE, LINE
+NUMBERS, CONGRUENCE -- are load-bearing; the wrapper repo lost the first four
+for weeks by reimplementing this prompt from memory. CONGRUENCE is also held
+byte-equal to prompt_guidance.CONGRUENCE_BLOCK (test_prompt_guidance.py).
 """
 
 from __future__ import annotations
@@ -100,6 +101,13 @@ after that header and increments by one for each "+" or context (space-
 prefixed) line in the hunk -- it does NOT increment for "-" lines. When a PR
 touches multiple files, each file's line numbering restarts independently of
 where that file's diff appears in the combined document.
+
+CONGRUENCE: Ask three questions of the change. Definition: ~/.claude/AGENTS.md, ### Congruent features.
+- Self: does the change do what it says, and are unknowns written as unknown? Typical misses are an unmerged effect written in the present tense, and runtime behaviour asserted without naming the revision it was read from.
+- Other: does it serve the actual need rather than the wording, and if the two differ, is the gap stated? A gap the builder resolves alone is placating or superreasonable.
+- Context: does it extend the neighbouring pattern rather than add a second way? Where it must differ from its siblings, does it differ visibly with the reason written there?
+A difference is not itself a defect; a difference that reads as drift because no reason is given is.
+The PR body is not part of your input: judge what the diff itself says. An incongruence is a finding like any other, under the EVIDENCE RULE and DIFF SCOPE above.
 """
 
 

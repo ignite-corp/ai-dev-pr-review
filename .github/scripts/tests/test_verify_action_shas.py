@@ -21,6 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
+from prompt_guidance import CONSUMER_PROMPTS, missing_items
 from verify_action_shas import (
     _SHA1_HEX_LEN,
     RawPin,
@@ -1010,11 +1011,11 @@ class TestInlineBlurbLabels:
     therefore landed in dead code and looked addressed.
 
     Nothing here compares the blurb with the caller-repo prompt doc, and
-    -- measured, not assumed -- no test in this repo does: the three tests
-    left in ``TestPromptGuidance`` each assert a token is present in
-    ``_PROMPT_PATH`` alone and never read what ``main()`` emits. The blurb
-    IS compared against the consumer template, which a test here can read,
-    by ``TestGuidanceSurfacesShareOneLabelSet`` above (AT-2880).
+    -- measured, not assumed -- no test in this repo does: the test left
+    in ``TestPromptGuidance`` reads ``_PROMPT_PATH`` alone and never reads
+    what ``main()`` emits. The blurb IS compared against the consumer
+    template, which a test here can read, by
+    ``TestGuidanceSurfacesShareOneLabelSet`` above (AT-2880).
     """
 
     def test_inline_blurb_names_comment_matches_false(
@@ -1089,8 +1090,9 @@ class TestPromptGuidance:
     Where that coverage lives instead: ``TestExamplePromptCovers404Labels``
     holds the in-tree template, ``TestRendered404Guidance`` holds the blurb
     ``main()`` renders, and ``MIGRATION.md`` tells an onboarded consumer to
-    re-copy the rules. AT-2844 tracks checking the consumer-side copies
-    across the fleet, which no test in this repo can reach.
+    re-copy the rules. The consumer-side copies are checked daily by
+    consumer-health.yml through ``prompt_guidance.py`` (AT-2844), whose
+    list this class reads rather than keeping a second one.
 
     Every test left here reads ``_PROMPT_PATH`` and so genuinely needs the
     skip. ``test_inline_blurb_matches_prompt_doc`` did not, and AT-2849
@@ -1099,31 +1101,17 @@ class TestPromptGuidance:
 
     _PROMPT_PATH = _PROMPT_PATH
 
-    def test_prompt_distinguishes_comment_matches_false(self) -> None:
+    def test_prompt_carries_the_required_guidance(self) -> None:
+        """The pin group is all-or-none (prompt_guidance.py): a prompt with
+        no ``## GitHub Actions SHA Pins`` section owes no label, as
+        MIGRATION.md says; one that has the section owes every label."""
         text = self._PROMPT_PATH.read_text()
-        assert 'comment-matches="false"' in text, (
-            "Prompt must tell reviewers that verified + comment-matches=false "
-            "is a legitimate minor finding (not a false positive)."
-        )
-
-    def test_prompt_describes_repo_not_found(self) -> None:
-        text = self._PROMPT_PATH.read_text()
-        assert 'error="repo-not-found"' in text, (
-            "Prompt must carry the repo-not-found rule the verifier emits; "
-            "copy it from examples/prompts/code-review-system.md."
-        )
-
-    def test_prompt_clarifies_absent_comment_matches_is_not_a_finding(
-        self,
-    ) -> None:
-        """Commentless pins render with no ``comment-matches`` attribute; the
-        prompt must explicitly tell reviewers that the attribute's absence is
-        not a mismatch finding. Without this, a reviewer can read 'missing'
-        as 'false' and flag every commentless pin."""
-        text = self._PROMPT_PATH.read_text()
-        assert "absent from the `<pin>` element" in text, (
-            "Prompt must clarify that an absent comment-matches attribute "
-            "is not a finding."
+        checklist = self._PROMPT_PATH.with_name("code-review-checklist.md")
+        if checklist.exists():
+            text += "\n" + checklist.read_text()
+        assert missing_items(text, CONSUMER_PROMPTS) == [], (
+            "Prompt must carry the guidance prompt_guidance.py lists; copy it "
+            "from examples/prompts/."
         )
 
 

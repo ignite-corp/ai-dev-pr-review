@@ -37,6 +37,13 @@ prefixed) line in the hunk -- it does NOT increment for `-` lines. When a PR
 touches multiple files, each file's line numbering restarts independently of
 where that file's diff appears in the combined document.
 
+CONGRUENCE: Ask three questions of the change. Definition: ~/.claude/AGENTS.md, ### Congruent features.
+- Self: does the change do what it says, and are unknowns written as unknown? Typical misses are an unmerged effect written in the present tense, and runtime behaviour asserted without naming the revision it was read from.
+- Other: does it serve the actual need rather than the wording, and if the two differ, is the gap stated? A gap the builder resolves alone is placating or superreasonable.
+- Context: does it extend the neighbouring pattern rather than add a second way? Where it must differ from its siblings, does it differ visibly with the reason written there?
+A difference is not itself a defect; a difference that reads as drift because no reason is given is.
+The PR body is not part of your input: judge what the diff itself says. An incongruence is a finding like any other, under the EVIDENCE RULE and DIFF SCOPE above.
+
 Write ONLY the following JSON to `review-codex.json` (no other output, no markdown fences):
 {
   "summary": "<1-2 sentence summary>",
