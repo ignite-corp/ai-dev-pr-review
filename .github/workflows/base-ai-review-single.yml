@@ -1046,11 +1046,16 @@ jobs:
           fi
           # Prepend context.md (prior review threads) to the prompt file
           COMBINED="${RUNNER_TEMP}/codex_prompt.md"
+          # Removed first so the redirect always creates a fresh file: umask
+          # applies only on creation, and a leftover file would keep its mode
+          # and a leftover symlink would be followed. The new file is
+          # owner-only from the moment it exists, and it holds the same
+          # review-thread excerpts the prompt keeps out of argv below.
+          rm -f -- "$COMBINED"
+          (umask 077; : > "$COMBINED")
           if [ -f context.md ]; then
-            cat context.md > "$COMBINED"
+            cat context.md >> "$COMBINED"
             echo "" >> "$COMBINED"
-          else
-            : > "$COMBINED"
           fi
           # Inject unresolved review threads so Codex avoids re-raising prior findings
           if [ -n "$EXISTING_COMMENTS" ]; then
@@ -1153,11 +1158,20 @@ jobs:
           # configured; a `--sandbox` flag here would replace it. Naming the
           # profile makes the CLI refuse to start if that config is missing,
           # rather than fall back to a default sandbox.
+          # The prompt goes over stdin (`-`), not argv: an argument is
+          # readable from /proc/<pid>/cmdline by any process on the runner,
+          # and the prompt carries PR review-thread excerpts (AT-2411).
+          # $COMBINED and the run log are both created mode 600.
+          # 0.147.0 `codex exec --help`: "If not provided as an argument
+          # (or if `-` is used), instructions are read from stdin."
+          LOG="${RUNNER_TEMP}/codex-run.log"
+          rm -f -- "$LOG"
+          (umask 077; : > "$LOG")
           codex exec \
             -c 'default_permissions="review"' \
             --model "$CODEX_MODEL" \
-            "$(cat "$COMBINED")" \
-            2>&1 | tee "${RUNNER_TEMP}/codex-run.log"
+            - < "$COMBINED" \
+            2>&1 | tee -a "$LOG"
           EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
           # Last meaningful run-log line for fallback verdicts: strip ANSI

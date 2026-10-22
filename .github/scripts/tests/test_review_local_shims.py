@@ -245,6 +245,71 @@ def test_the_codex_prompt_travels_on_stdin_and_not_in_argv(tree, monkeypatch):
     assert not any(len(str(part)) > 1000 for part in captured["argv"])
 
 
+def test_the_codex_prompt_file_is_owner_only(tree, monkeypatch):
+    """The twin of the workflow's owner-only $COMBINED (AT-2411).
+
+    Planted world-readable first: O_CREAT's mode alone leaves an existing
+    file's mode as it was.
+    """
+    prompt_file = tree / codex.COMBINED_PROMPT
+    prompt_file.write_text("stale", encoding="utf-8")
+    prompt_file.chmod(0o644)
+    _stand_in_codex(tree, monkeypatch, "codex: done", 0)
+
+    codex.review()
+
+    assert prompt_file.stat().st_mode & 0o777 == 0o600
+    assert "guidelines" in prompt_file.read_text(encoding="utf-8")
+
+
+def test_a_symlinked_codex_prompt_file_is_replaced_not_followed(
+    tree, tmp_path, monkeypatch
+):
+    """The prompt file sits in the PR checkout, which may commit it as a
+    symlink. Opening it followed the link, so the prompt was written into
+    the target and fchmod changed the target's mode. It must be replaced
+    by a regular owner-only file instead (AT-2941).
+    """
+    outside = tmp_path / "outside-secret"
+    outside.write_text("do not overwrite me", encoding="utf-8")
+    outside.chmod(0o644)
+    prompt_file = tree / codex.COMBINED_PROMPT
+    prompt_file.symlink_to(outside)
+    _stand_in_codex(tree, monkeypatch, "codex: done", 0)
+
+    codex.review()
+
+    assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+    assert outside.stat().st_mode & 0o777 == 0o644
+    assert not prompt_file.is_symlink()
+    assert prompt_file.stat().st_mode & 0o777 == 0o600
+    assert "guidelines" in prompt_file.read_text(encoding="utf-8")
+
+
+def test_a_symlinked_codex_run_log_is_replaced_not_followed(
+    tree, tmp_path, monkeypatch
+):
+    """The run log is written after the model has had the workspace
+    writable, so it may have been planted as a symlink; and it may echo the
+    instructions. It must be replaced by a regular owner-only file, like the
+    prompt, rather than written through the link.
+    """
+    outside = tmp_path / "outside-log-target"
+    outside.write_text("do not overwrite me", encoding="utf-8")
+    outside.chmod(0o644)
+    run_log = tree / codex.RUN_LOG
+    run_log.symlink_to(outside)
+    _stand_in_codex(tree, monkeypatch, "codex: done", 0)
+
+    codex.review()
+
+    assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+    assert outside.stat().st_mode & 0o777 == 0o644
+    assert not run_log.is_symlink()
+    assert run_log.stat().st_mode & 0o777 == 0o600
+    assert "codex: done" in run_log.read_text(encoding="utf-8")
+
+
 def test_the_codex_argv_keeps_the_sandbox_the_review_invocation_uses(tree, monkeypatch):
     captured = fake_spawn(monkeypatch, codex, code=0)
     codex.run_cli("p", "m")
