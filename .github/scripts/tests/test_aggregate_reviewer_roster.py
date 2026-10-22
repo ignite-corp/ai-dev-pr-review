@@ -22,6 +22,8 @@ import pytest
 import yaml
 
 from aggregate_reviews import (
+    _CONCLUSION_REASON,
+    _CONCLUSION_REASON_UNKNOWN,
     _count_unreviewed_majors,
     _get_available,
     _missing_reason,
@@ -564,18 +566,69 @@ class TestBenignSubQuorumRounds:
             == f"{FAILED_DETAIL_PREFIX}{SEQUENTIAL_EARLY_EXIT_ROSTER_REASON}"
         )
 
+
+def _readme_text(readme: str) -> str:
+    return (Path(__file__).resolve().parents[3] / readme).read_text(encoding="utf-8")
+
+
+def _missing_reason_table_rows(text: str) -> list[str]:
+    """The reason cell (first column) of each row of the `missing` reason table.
+
+    Only the first column names a reason. Another column of one row may
+    mention a different reason, and that must not count as documenting it.
+    """
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("| `missing` ")]
+    assert len(starts) == 1, f"expected one `missing` reason table, found {len(starts)}"
+    separator = lines[starts[0] + 1]
+    assert separator.startswith("|") and set(separator) <= set("|-: "), (
+        f"the line after the `missing` table header is not its separator: {separator!r}"
+    )
+    rows: list[str] = []
+    for line in lines[starts[0] + 2 :]:
+        if not line.startswith("|"):
+            break
+        rows.append(line.split("|")[1])
+    assert rows, "the `missing` reason table has no rows"
+    return rows
+
+
+class TestReadmeDocumentsRosterReasons:
+    """The README's `missing` reason table is a consumer-facing contract."""
+
     @pytest.mark.parametrize("readme", ["README.md", "README.ko.md"])
     def test_the_readme_documents_every_benign_reason(self, readme: str) -> None:
         # The partition is a consumer-facing promise -- the output
         # descriptions send a reader to the README for it -- and a reason
         # renamed in the script with the table left behind would leave every
         # gate written against the table silently blocking a benign round.
-        text = (Path(__file__).resolve().parents[3] / readme).read_text(
-            encoding="utf-8"
-        )
+        rows = _missing_reason_table_rows(_readme_text(readme))
         for reason in sorted(BENIGN_ROSTER_REASONS):
-            assert reason in text, f"{readme} does not document '{reason}'"
+            assert any(f"`{reason}`" in row for row in rows), (
+                f"{readme} has no table row documenting '{reason}'"
+            )
         assert POLICY_SKIP_ROSTER_REASON in BENIGN_ROSTER_REASONS
+
+    @pytest.mark.parametrize("readme", ["README.md", "README.ko.md"])
+    def test_the_readme_documents_every_job_conclusion_reason(
+        self, readme: str
+    ) -> None:
+        # The non-benign half of the same table: the reasons a job conclusion
+        # maps to are hand-copied into a README row, so a renamed value would
+        # leave a gate written against the table matching nothing (AT-2541).
+        # Each must sit backticked in a row of that table, not merely in prose
+        # or in some other table.
+        rows = _missing_reason_table_rows(_readme_text(readme))
+        reasons = set(_CONCLUSION_REASON.values()) | {_CONCLUSION_REASON_UNKNOWN}
+        for reason in sorted(reasons):
+            assert any(f"`{reason}`" in row for row in rows), (
+                f"{readme} has no table row documenting '{reason}'"
+            )
+        # The payload-detail row carries the gate's claim that no benign
+        # reason starts with this prefix.
+        assert any(f"`{FAILED_DETAIL_PREFIX}" in row for row in rows), (
+            f"{readme} has no table row documenting the '{FAILED_DETAIL_PREFIX}' prefix"
+        )
 
 
 class TestNoArtifactRoundIsNotBenign:
@@ -761,7 +814,7 @@ def _gate_snippet(readme: str) -> str:
     executable documentation -- a consumer pastes it -- and a copy in the
     test would keep passing after the documented one drifted.
     """
-    text = (Path(__file__).resolve().parents[3] / readme).read_text(encoding="utf-8")
+    text = _readme_text(readme)
     blocks = [
         block
         for block in re.findall(r"^```yaml\n(.*?)^```", text, re.S | re.M)
