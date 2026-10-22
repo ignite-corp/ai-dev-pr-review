@@ -36,6 +36,52 @@ def describe_size_breach(value: object, axis: str, var: str, limit: object) -> s
     """`{value} {axis} lines exceeds {VAR} {limit}` -- one exceeded size limit."""
     return f"{value} {axis} lines exceeds {var} {limit}"
 
+
+# Approaching the limit (AT-2415): a check at or over this percentage of its
+# limit, and not over the limit, is warned about. Same bash/Python pinning as
+# above.
+SIZE_WARN_PERCENT_VAR = "PR_SIZE_WARN_PERCENT"
+# The workflow's `vars.PR_SIZE_WARN_PERCENT || '80'`; test_local_review_config
+# pins the two together.
+SIZE_WARN_PERCENT_DEFAULT = 80
+SIZE_WARN_PERCENT_MIN = 1
+SIZE_WARN_PERCENT_MAX = 99
+
+
+def size_warn_reached(value: int, limit: int, percent: int) -> bool:
+    """True when `value` is within the limit but at or over `percent` of it.
+
+    A zero limit is never warned: nothing is under it to approach it.
+    """
+    return 0 < limit and value <= limit and value * 100 >= limit * percent
+
+
+def describe_size_warning(value: int, axis: str, var: str, limit: int) -> str:
+    """The one-line notice for a check approaching its limit."""
+    return (
+        f"[!] size: {value}/{limit} {axis} lines ({value * 100 // limit}% of {var});"
+        " the review is skipped above the limit. Consider splitting."
+    )
+
+
+def describe_size_overage(breaches: list[tuple[int, str, int]]) -> str:
+    """`over by N {axis} lines[ and ...]; split into at least K PRs`.
+
+    `breaches` is (value, axis, limit) per exceeded check. K is the largest
+    ceil(value / limit) across them, the fewest parts that bring every axis
+    under its limit if lines split evenly; it is left out when a limit is 0,
+    which no number of parts can satisfy.
+    """
+    overage = " and ".join(
+        f"{value - limit} {axis} lines" for value, axis, limit in breaches
+    )
+    text = f"over by {overage}"
+    if breaches and all(limit > 0 for _, _, limit in breaches):
+        parts = max(-(-value // limit) for value, _, limit in breaches)
+        text += f"; split into at least {parts} PRs"
+    return text
+
+
 _APP_LOGIN_PREFIX = "app/"
 _BOT_LOGIN_SUFFIX = "[bot]"
 

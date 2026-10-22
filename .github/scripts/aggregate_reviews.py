@@ -57,6 +57,8 @@ from github_pr_support import (
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     describe_size_breach,
+    describe_size_overage,
+    describe_size_warning,
     display_path,
     fetch_paginated_nodes,
     int_env,
@@ -568,7 +570,8 @@ def format_prepare_failure_summary(result: str, run_url: str) -> str:
         "Known causes:",
         "",
         "1. **`PR_SIZE_LIMIT` (or `PR_SIZE_LIMIT_ADDITIONS` /"
-        " `PR_SIZE_LIMIT_DELETIONS`) is not an integer.** Fix the repository variable"
+        " `PR_SIZE_LIMIT_DELETIONS`) is not an integer, or `PR_SIZE_WARN_PERCENT`"
+        " is not an integer from 1 to 99.** Fix the repository variable"
         " (Settings -> Secrets and variables -> Actions -> Variables) or remove"
         " it to fall back to the default.",
         "2. **The PR head could not be resolved**, or the checked-out tree did"
@@ -648,6 +651,41 @@ def _size_skip_details() -> list[SizeBreach] | None:
     ]
 
 
+def _size_warnings() -> list[str]:
+    """One warning line per size check prepare found near its limit (AT-2415).
+
+    SIZE_WARNED / SIZE_WARN_AXES / SIZE_WARN_TOTAL / SIZE_WARN_LIMIT are
+    aligned by position like the SIZE_EXCEEDED lists. An entry whose numbers
+    are missing or unparseable is dropped: a warning is advice, and a
+    percentage made up from "unknown" would be worse than none.
+
+    Rendered on the reviewed path only. On the size-skip verdict the review
+    is already blocked and its remedy already says how to split, so a
+    sibling axis near its own limit is left to prepare's `::notice::`.
+    """
+    warned = os.environ.get("SIZE_WARNED", "").split()
+    axes = os.environ.get("SIZE_WARN_AXES", "").split()
+    totals = os.environ.get("SIZE_WARN_TOTAL", "").split()
+    limits = os.environ.get("SIZE_WARN_LIMIT", "").split()
+    lines: list[str] = []
+    for var, axis, total, limit in zip(warned, axes, totals, limits):
+        if total.isdigit() and limit.isdigit() and int(limit) > 0:
+            lines.append(describe_size_warning(int(total), axis, var, int(limit)))
+    return lines
+
+
+def _size_overage_sentence(breaches: list[SizeBreach]) -> str:
+    """` Over by ...; split into at least K PRs.`, or "" when not computable."""
+    if not breaches or not all(
+        b.value.isdigit() and b.limit.isdigit() for b in breaches
+    ):
+        return ""
+    overage = describe_size_overage(
+        [(int(b.value), b.axis, int(b.limit)) for b in breaches]
+    )
+    return f" {overage[0].upper()}{overage[1:]}."
+
+
 def format_size_skip_reason(breaches: list[SizeBreach]) -> str:
     """`{value} {axis} lines exceeds {VAR} {limit}`, joined with `; `."""
     return "; ".join(breach.describe() for breach in breaches)
@@ -681,7 +719,10 @@ def format_size_skip_summary(breaches: list[SizeBreach]) -> str:
         " reported stays Pending forever with nothing to act on."
     )
     each_part = " and ".join(f"{b.limit} {b.axis} lines" for b in breaches)
-    remedy_split = f"1. **Split this PR** so each part is at or under {each_part}."
+    remedy_split = (
+        f"1. **Split this PR** so each part is at or under {each_part}."
+        f"{_size_overage_sentence(breaches)}"
+    )
     raise_vars = " and ".join(
         f"the `{b.var}` repository variable above {b.value}" for b in breaches
     )
@@ -1222,6 +1263,10 @@ def format_summary(
         "",
         f"**Result: {icon} {label}** -- {reason}{reason_suffix}",
     ]
+    # A PR approaching its size limit is warned under the headline, which
+    # stays as it is: the next round over the limit reviews nothing (AT-2415).
+    for warning in _size_warnings():
+        lines.append(f"\n> {warning}")
     # A partial diff is announced on the verdict, paths only (AT-2206).
     excluded_count = _excluded_count()
     if excluded_count > 0:
