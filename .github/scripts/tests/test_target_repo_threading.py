@@ -71,8 +71,8 @@ TARGET_HEAD_STEP = "Resolve target PR head"
 HEAD_SHA_GUARD = "Require head_sha on a cross run"
 TARGET_CHECKOUT = "Checkout caller repo (PR head)"
 HELPER_CHECKOUT_REPO = "ignite-corp/ai-dev-pr-review"
-# The pin every cross-owner mint in this repo uses (consumer-health.yml,
-# spike-cross-repo-probe.yml); single.yml's auth-switch mint keeps its own.
+# The pin every cross-owner mint in this repo uses (consumer-health.yml);
+# single.yml's auth-switch mint keeps its own.
 APP_TOKEN_PIN = (
     "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
 )

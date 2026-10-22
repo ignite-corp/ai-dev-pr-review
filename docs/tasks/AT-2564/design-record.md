@@ -505,6 +505,13 @@ would need a run to observe.)
 
 ## 5. Cross-repo: what exists, and what does not
 
+> **Since deleted (AT-2538, 2026-10-22).** The spike
+> `spike-cross-repo-probe.yml`, which this section and section 6 describe
+> in the present tense, is no longer in the tree. Both are kept as written:
+> they record what existed at the commits named above, and the conclusions
+> rest on that measurement. To read the file, check out `08419a3` or
+> earlier.
+
 ### 5.1 What exists
 
 `.github/workflows/spike-cross-repo-probe.yml` — `workflow_dispatch` only,
