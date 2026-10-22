@@ -20,9 +20,9 @@ no allowlist, so this module warns that the CLI is getting the caller's
 whole environment instead.
 
 THE PROMPT GOES OVER STDIN, and that is a measurement rather than a
-preference. The Actions path passes it as one argv element, where Linux caps
-a single element at MAX_ARG_STRLEN (131072 bytes) independently of the much
-larger ARG_MAX; the discarded version inherited that shape, could not check
+preference. The Actions path used to pass it as one argv element, where Linux
+caps a single element at MAX_ARG_STRLEN (131072 bytes) independently of the
+much larger ARG_MAX; the discarded version inherited that shape, could not check
 whether the CLI would take stdin because codex was not installed on the
 machine, and so added a size check and an exit code for a limit it could
 only report. Measured on codex-cli 0.154.0:
@@ -39,9 +39,8 @@ only report. Measured on codex-cli 0.154.0:
 
 So the ceiling is not worked around, it is not reached: the size check, its
 exit code, and the prompt's exposure in the process table all go away rather
-than being carried across. base-ai-review-single.yml still has the argv
-shape and the ceiling with it; that is AT-2411 and deliberately not touched
-here.
+than being carried across. base-ai-review-single.yml passes the prompt
+the same way since AT-2411, on the pinned codex-cli 0.147.0.
 
 Reads context.md and pr.diff from the current directory and writes
 review-codex.json.

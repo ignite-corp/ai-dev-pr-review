@@ -1066,10 +1066,15 @@ jobs:
           mkdir -p -- "$TMPDIR"
           # `codex exec` 0.147.0 rejects `--full-auto` (removed upstream);
           # `--sandbox workspace-write` alone preserves the prior behavior.
+          # The prompt goes over stdin (`-`), not argv: an argument is
+          # readable from /proc/<pid>/cmdline by any process on the runner,
+          # and the prompt carries PR review-thread excerpts (AT-2411).
+          # 0.147.0 `codex exec --help`: "If not provided as an argument
+          # (or if `-` is used), instructions are read from stdin."
           codex exec \
             --sandbox workspace-write \
             --model "$CODEX_MODEL" \
-            "$(cat "$COMBINED")" \
+            - < "$COMBINED" \
             2>&1 | tee "${RUNNER_TEMP}/codex-run.log"
           EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
