@@ -223,8 +223,8 @@ jobs:
       # comments below use; `issues` is NOT requested -- the reviewer App's
       # installations do not hold it (run 38830491912), and asking for a
       # permission the installation lacks fails the mint. The pin is the
-      # one the cross-owner mints in consumer-health.yml and the AT-2520
-      # spike use. single.yml's auth-switch mint keeps its own pin and
+      # one the cross-owner mint in consumer-health.yml uses.
+      # single.yml's auth-switch mint keeps its own pin and
       # `owner: ignite-corp`: that token writes a corp org variable, not
       # the target. Skipped, not continue-on-error: with no target token
       # the checkout below would reach for github.token and fail on the

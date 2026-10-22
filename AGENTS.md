@@ -78,7 +78,7 @@ like something else.
 **Review pipeline -- `ignite-ai-review-approver` (app_id=4196135).**
 - Used by `base-ai-review-aggregate.yml` (submit a real APPROVED review),
   `base-ai-review-single.yml` and `claude-auth-restore.yml` (flip the
-  ignite-corp Claude auth org vars), and `spike-cross-repo-probe.yml`.
+  ignite-corp Claude auth org vars).
   `base-ai-review-orchestrator.yml` forwards its key to the `review-claude-p`,
   `review-claude-s` and `aggregate` jobs, and `self-review.yml` forwards it
   into the orchestrator.
