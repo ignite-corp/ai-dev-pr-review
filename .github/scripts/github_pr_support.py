@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
@@ -21,6 +22,180 @@ _DEFAULT_PAGE_SIZE = 50
 # looking for the exact same string the aggregate script emits.
 REVIEW_MARKER = "<!-- multi-llm-review -->"
 
+# The fold comments: when post_inline_comments puts a reviewer's findings in
+# ONE PR comment instead of inline threads -- the round-cutoff summary, or the
+# inline fallback when no inline post could be made -- the comment opens with
+# one of these markers, bound to the reviewer and the round, and carries the
+# count below. The aggregate reads the count back from the comment, by author
+# and marker, because the comment is the one carrier the PR cannot author
+# (AT-2553): the verdict file is the reviewer's own JSON, written over PR
+# content, and anything recorded there can be planted there.
+#
+# Not named for the round cutoff: that is one of the two routes, not the
+# category. The round in the marker is what keeps a rerun from posting twice
+# and an earlier round's comment from being read as this one's.
+FOLD_COMMENT_MARKERS: tuple[str, ...] = (
+    "<!-- round-cutoff-{reviewer}-r{round} -->",
+    "<!-- inline-fallback-{reviewer}-r{round} -->",
+)
+_INLINE_POST_MARKER = re.compile(
+    rf"<!-- inline-post-(?P<reviewer>{'|'.join(REVIEWER_NAMES)})-r(?P<round>[1-9][0-9]*) "
+    r"run:(?P<run>actions-[1-9][0-9]*-[1-9][0-9]*|local-[0-9a-f]{32}) -->"
+)
+
+
+def inline_post_envelope(body: str) -> tuple[str, int, str, str] | None:
+    """Read the trusted first-line posting marker, never description text."""
+    first, separator, rest = body.partition("\n")
+    match = _INLINE_POST_MARKER.fullmatch(first.rstrip("\r"))
+    if not separator or match is None:
+        return None
+    try:
+        round_number = int(match.group("round"))
+    except ValueError:
+        return None
+    return match.group("reviewer"), round_number, match.group("run"), rest
+
+
+def inline_post_marker(reviewer: str, round_number: int, run_identity: str) -> str:
+    marker = f"<!-- inline-post-{reviewer}-r{round_number} run:{run_identity} -->"
+    if _INLINE_POST_MARKER.fullmatch(marker) is None:
+        raise ValueError("invalid inline posting identity")
+    return marker
+
+
+def inline_run_identity() -> str:
+    """Trusted invocation identity, never a completed-verdict ordinal."""
+    local = os.environ.get("INLINE_REVIEW_RUN_ID", "")
+    if re.fullmatch(r"local-[0-9a-f]{32}", local):
+        return local
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        run = os.environ.get("GITHUB_RUN_ID", "")
+        attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+        if re.fullmatch(r"[1-9][0-9]*", run) and re.fullmatch(r"[1-9][0-9]*", attempt):
+            return f"actions-{run}-{attempt}"
+        return ""
+    return ""
+
+
+# One line in the comment body, machine-readable. The head is carried when
+# the posting step knows it, so the aggregate can refuse a comment left by a
+# run on a superseded head; a comment without one binds on the round alone.
+_FOLD_COUNT_RE = re.compile(
+    r"<!-- fold-count: (?P<count>\d+)(?: head: (?P<head>[0-9a-f]{7,40}))? -->"
+)
+
+
+def fold_count_line(count: int, head: str | None = None) -> str:
+    """The line a fold comment carries so the aggregate can read the count."""
+    suffix = f" head: {head}" if head else ""
+    return f"<!-- fold-count: {count}{suffix} -->"
+
+
+def fold_envelope(body: str) -> tuple[str, int, str | None] | None:
+    """The (marker, count, head) a fold comment's envelope carries, or None.
+
+    An envelope, not a search: the marker is the whole first line and the
+    count line the whole second, which is the shape ``_post_folded_comment``
+    writes and one no reviewer-authored text can occupy -- every
+    bot-authored comment on a PR quotes LLM-authored descriptions verbatim
+    (the verdict lists every finding, a fold comment every folded one), so
+    a marker or count found anywhere else in a body may have been put
+    there through a description (AT-2553, round 10). A comment with the
+    marker but no readable count line is one the aggregate cannot use: it
+    reads as no count rather than as zero.
+    """
+    lines = body.split("\n", 2)
+    if len(lines) < 2:
+        return None
+    match = _FOLD_COUNT_RE.fullmatch(lines[1].rstrip("\r"))
+    if match is None:
+        return None
+    return lines[0].rstrip("\r"), int(match.group("count")), match.group("head")
+
+
+def parse_fold_count(body: str) -> tuple[int, str | None] | None:
+    """The (count, head) a fold comment's envelope carries, or None."""
+    envelope = fold_envelope(body)
+    if envelope is None:
+        return None
+    return envelope[1], envelope[2]
+
+
+def fold_markers_for(reviewer: str, round_number: int) -> tuple[str, ...]:
+    """The markers a fold comment by ``reviewer`` for ``round_number`` opens with."""
+    return tuple(
+        marker.format(reviewer=reviewer, round=round_number)
+        for marker in FOLD_COMMENT_MARKERS
+    )
+
+
+# A completed round leaves exactly one aggregate verdict post carrying
+# REVIEW_MARKER: a PR review when auto-approve is enabled, or an issue
+# comment in comment-only mode (the default killswitch state). Both sides
+# of the fold contract count rounds the same way, with this one function.
+_ROUND_COUNT_ENDPOINTS = (
+    "repos/{repo}/pulls/{pr}/reviews",
+    "repos/{repo}/issues/{pr}/comments",
+)
+
+
+def fetch_round_count(repo: str, pr_number: str) -> int:
+    """Count completed review rounds on the PR.
+
+    Every completed round ends with exactly one aggregate verdict whose
+    whole first line is REVIEW_MARKER (CRLF accepted), on either endpoint.
+    Keep the Bot policy on Actions. A trusted local invocation additionally
+    counts only its exact resolved User operator, never arbitrary Users.
+    Counting marker posts rather than raw bot reviews avoids overcounting:
+    each single reviewer job also submits a COMMENT review per round for
+    its inline comment batch.
+
+    Fails open: a gh error yields a partial (possibly zero) count so the
+    cutoff never suppresses findings because of an API failure. On the
+    aggregate side the same partial count makes a fold comment's round
+    fail to match, which reads as unknown -- closed, there.
+    """
+    author_filter = '(.user.type // "") == "Bot"'
+    local_nonce = os.environ.get("INLINE_REVIEW_RUN_ID", "")
+    operator = os.environ.get("BOT_LOGIN", "")
+    if re.fullmatch(r"local-[0-9a-f]{32}", local_nonce) and operator:
+        author_filter += f' or ((.user.type // "") == "User" and .user.login == {json.dumps(operator)})'
+    jq_filter = (
+        f"map(select(({author_filter})"
+        f' and (((.body // "") | split("\\n")[0] | rtrimstr("\\r")) == "{REVIEW_MARKER}"))) | length'
+    )
+    total = 0
+    for template in _ROUND_COUNT_ENDPOINTS:
+        endpoint = template.format(repo=repo, pr=pr_number)
+        try:
+            result = subprocess.run(
+                ["gh", "api", "--paginate", endpoint, "--jq", jq_filter],
+                capture_output=True,
+                text=True,
+                timeout=GH_TIMEOUT_SEC,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Warning: round count timed out for {endpoint}", file=sys.stderr)
+            continue
+        if result.returncode != 0:
+            print(
+                f"Warning: round count failed for {endpoint}: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            continue
+        # --paginate emits one jq result per page; sum them.
+        for token in result.stdout.split():
+            try:
+                total += int(token)
+            except ValueError:
+                print(
+                    f"Warning: unexpected round count output: {token!r}",
+                    file=sys.stderr,
+                )
+    return total
+
+
 _APP_LOGIN_PREFIX = "app/"
 _BOT_LOGIN_SUFFIX = "[bot]"
 
@@ -30,8 +205,10 @@ def normalize_bot_login(login: str) -> str:
 
     fetch_review_context.py calls it to trust the threads BOT_LOGIN opened
     (AT-2520): the threads come from GraphQL, BOT_LOGIN usually arrives in
-    the REST spelling. The stale-item fold used to call it too; since
-    AT-2599 that fold keys on the review marker instead of the author.
+    the REST spelling. The aggregate's fold count (AT-2553) trusts
+    INLINE_BOT_LOGIN; posting-side fold dedup trusts its actual BOT_LOGIN.
+    The stale-item fold used to call it too; since AT-2599 it keys on the review marker
+    instead of the author.
 
     The same GitHub App is rendered three ways depending on which surface
     reports it: REST ``.user.login`` says ``github-actions[bot]``, GraphQL
@@ -271,13 +448,20 @@ def fetch_paginated_nodes(
     cursor = ""
     for page_num in range(_MAX_FETCH_PAGES):
         cmd = [
-            "gh", "api", "graphql",
-            "-f", f"query={query}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
             # -F (--field) auto-converts integers to JSON number type
-            "-F", f"first={page_size}",
-            "-F", f"pr={pr_number}",
+            "-F",
+            f"first={page_size}",
+            "-F",
+            f"pr={pr_number}",
         ]
         if cursor:
             cmd += ["-f", f"after={cursor}"]

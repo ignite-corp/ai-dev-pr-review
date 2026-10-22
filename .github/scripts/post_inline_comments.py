@@ -26,6 +26,13 @@ Round-cutoff convergence backstop (RC-5): at review round ROUND_CUTOFF_N
 critical/major issue, minor/suggestion findings are folded into a single
 summary comment instead of individual inline threads. No auto-merge and
 no auto-ticket creation -- a human decides merge timing and follow-up.
+A folded finding is not a review thread, and a merge gate that counts
+unresolved threads read the fold as nothing (AT-2553), so every fold
+comment -- the summary here, and the inline fallback below, which folds the
+same way -- carries a machine-readable count (fold_count_line) that the
+aggregate reads back by author and marker. The verdict file carries
+nothing: it is the reviewer's own, written over PR content, and a count
+recorded there can be planted there.
 """
 
 from __future__ import annotations
@@ -43,13 +50,20 @@ from github_pr_support import (
     DIFF_FILE_PREFIX,
     DIFF_FILE_PREFIX_LEN,
     DIFF_SIDE_RIGHT,
-    REVIEW_MARKER,
+    FOLD_COMMENT_MARKERS,
     REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     fetch_paginated_nodes,
+    fetch_round_count,
+    fold_count_line,
+    fold_envelope,
     get_pr_head_sha,
     int_env,
+    inline_post_envelope,
+    inline_post_marker,
+    inline_run_identity,
+    normalize_bot_login,
 )
 
 # Page size per GraphQL request for thread pagination.
@@ -62,18 +76,13 @@ DEFAULT_ROUND_CUTOFF_N = 5
 # Consumers anchor on this marker as the comment's whole first line: cutoff_findings in
 # plugins/pr-response-cycle/skills/pr-response-cycle/SKILL.md (deployed user-level from
 # hyuk-hur/dev-dotfiles). Append anything to that line and they miss the comment and pass silently.
-_CUTOFF_MARKER = "<!-- round-cutoff-{reviewer}-r{round} -->"
+# Both fold comments open with a marker bound to the reviewer AND the round:
+# the dedup check below keys on it, so a marker without the round would let
+# the first fallback on a PR suppress every later one (AT-2553, round 9).
+_CUTOFF_MARKER, _FALLBACK_MARKER = FOLD_COMMENT_MARKERS
 _CUTOFF_HEADER = "## [bot] {} Round Cutoff Summary (R{})"
 _CUTOFF_LEAD = (
     "R{} convergence cutoff -- the following minor items are recommended for follow-up:"
-)
-
-# A completed round leaves exactly one aggregate verdict post carrying
-# REVIEW_MARKER: a PR review when auto-approve is enabled, or an issue
-# comment in comment-only mode (the default killswitch state).
-_ROUND_COUNT_ENDPOINTS = (
-    "repos/{repo}/pulls/{pr}/reviews",
-    "repos/{repo}/issues/{pr}/comments",
 )
 
 # Fuzzy-dedup thresholds. Two comments on the same path are considered
@@ -174,6 +183,9 @@ def _normalize_body(text: str) -> str:
     Strips generated prefixes (icons, severity, reviewer tag, leading colon)
     so that thread bodies and raw descriptions produce the same output.
     """
+    envelope = inline_post_envelope(text)
+    if envelope is not None:
+        text = envelope[3]
     text = _ICON_RE.sub("", text)
     text = _BOLD_RE.sub("", text)
     text = _REVIEWER_RE.sub("", text)
@@ -332,6 +344,9 @@ def build_comments(
             continue
 
         sev = issue.get("severity", "suggestion")
+        sev = sev.lower() if isinstance(sev, str) else sev
+        if not isinstance(sev, str) or sev not in SEVERITY_ICONS:
+            sev = "unknown"
         dup_idx = next(
             (
                 i
@@ -377,57 +392,11 @@ def build_comments(
     return comments, no_location, out_of_range
 
 
-def fetch_round_count(repo: str, pr_number: str) -> int:
-    """Count completed review rounds on the PR.
-
-    Every completed round ends with exactly one bot-authored aggregate
-    verdict post carrying ``REVIEW_MARKER`` (see _ROUND_COUNT_ENDPOINTS).
-    Counting marker posts rather than raw bot reviews avoids overcounting:
-    each single reviewer job also submits a COMMENT review per round for
-    its inline comment batch.
-
-    Fails open: a gh error yields a partial (possibly zero) count so the
-    cutoff never suppresses findings because of an API failure.
-    """
-    jq_filter = (
-        'map(select((.user.type // "") == "Bot"'
-        f' and ((.body // "") | contains("{REVIEW_MARKER}")))) | length'
-    )
-    total = 0
-    for template in _ROUND_COUNT_ENDPOINTS:
-        endpoint = template.format(repo=repo, pr=pr_number)
-        try:
-            result = subprocess.run(
-                ["gh", "api", "--paginate", endpoint, "--jq", jq_filter],
-                capture_output=True,
-                text=True,
-                timeout=GH_TIMEOUT_SEC,
-            )
-        except subprocess.TimeoutExpired:
-            print(f"Warning: round count timed out for {endpoint}", file=sys.stderr)
-            continue
-        if result.returncode != 0:
-            print(
-                f"Warning: round count failed for {endpoint}: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-            continue
-        # --paginate emits one jq result per page; sum them.
-        for token in result.stdout.split():
-            try:
-                total += int(token)
-            except ValueError:
-                print(
-                    f"Warning: unexpected round count output: {token!r}",
-                    file=sys.stderr,
-                )
-    return total
-
-
 def round_cutoff_round(
     repo: str,
     pr_number: str,
     issues: list[dict[str, Any]],
+    round_number: int | None = None,
 ) -> int | None:
     """Return the current round number when the convergence cutoff applies.
 
@@ -445,7 +414,8 @@ def round_cutoff_round(
         if rank is None or rank >= _SEVERITY_RANK["major"]:
             return None
     cutoff_n = int_env("ROUND_CUTOFF_N", DEFAULT_ROUND_CUTOFF_N)
-    round_number = fetch_round_count(repo, pr_number) + 1
+    if round_number is None:
+        round_number = fetch_round_count(repo, pr_number) + 1
     if round_number >= cutoff_n:
         return round_number
     return None
@@ -493,31 +463,68 @@ def _post_folded_comment(
     header_lines: list[str],
     comments: list[dict[str, Any]],
     label: str,
+    head: str | None = None,
 ) -> None:
     """Post all comment payloads as a single PR comment.
 
-    Uses a marker comment to prevent duplicate posts on reruns.
+    Uses a marker comment to prevent duplicate posts on reruns -- matched
+    as the whole first line of an existing comment, never as a substring:
+    bot-authored comments quote LLM-authored descriptions verbatim, so a
+    marker planted in a description would otherwise suppress this
+    reviewer's real fold comment from a previous verdict comment (AT-2553,
+    round 10). The body
+    also carries ``fold_count_line``: the findings in it are not threads,
+    and this line, under this step's own login, is how the aggregate learns
+    how many a gate counting threads cannot see (AT-2553). ``head`` is
+    written into it when the caller knows the PR head, so a comment left by
+    a run on a superseded head neither suppresses the new post nor supplies
+    this head's count.
     """
-    check = subprocess.run(
-        [
-            "gh",
-            "api",
-            f"repos/{repo}/issues/{pr_number}/comments",
-            "--jq",
-            "[.[] | select(.body | contains($marker))] | length",
-            "--arg",
-            "marker",
-            marker,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=GH_TIMEOUT_SEC,
+    bot = normalize_bot_login(os.environ.get("BOT_LOGIN", "github-actions[bot]"))
+    query = (
+        '.[] | [.user.login, ((.body // "") | split("\\n")[0:2] | join("\\n"))] | @json'
     )
-    if check.returncode == 0 and check.stdout.strip() not in ("", "0"):
-        print(f"{reviewer}: {label} comment already exists, skipping")
-        return
+    try:
+        check = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                f"repos/{repo}/issues/{pr_number}/comments",
+                "--jq",
+                query,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"{reviewer}: fold dedup lookup timed out; attempting post", file=sys.stderr
+        )
+        check = None
+    if check is not None and check.returncode == 0:
+        for row in check.stdout.splitlines():
+            try:
+                login, envelope_body = json.loads(row)
+            except (ValueError, TypeError):
+                continue
+            if (
+                not isinstance(login, str)
+                or not isinstance(envelope_body, str)
+                or normalize_bot_login(login) != bot
+            ):
+                continue
+            envelope = fold_envelope(envelope_body)
+            if (
+                envelope is not None
+                and envelope[0] == marker
+                and (envelope[2] is None or envelope[2] == head)
+            ):
+                print(f"{reviewer}: {label} comment already exists, skipping")
+                return
 
-    lines = [marker, *header_lines, ""]
+    lines = [marker, fold_count_line(len(comments), head), *header_lines, ""]
     for c in comments:
         lines.append(f"- **{c.get('path')}:{c.get('line')}** -- {c.get('body', '')}")
     body = "\n".join(lines)
@@ -547,17 +554,23 @@ def _post_folded_comment(
 
 
 def post_fallback(
-    repo: str, pr_number: str, reviewer: str, comments: list[dict[str, Any]]
+    repo: str,
+    pr_number: str,
+    reviewer: str,
+    round_number: int,
+    comments: list[dict[str, Any]],
+    head: str | None = None,
 ) -> None:
     """Fallback: post all issues as a single PR comment."""
     _post_folded_comment(
         repo,
         pr_number,
         reviewer,
-        f"<!-- inline-fallback-{reviewer} -->",
+        _FALLBACK_MARKER.format(reviewer=reviewer, round=round_number),
         [_FALLBACK_HEADER.format(reviewer)],
         comments,
         "fallback",
+        head=head,
     )
 
 
@@ -567,6 +580,7 @@ def post_cutoff_summary(
     reviewer: str,
     round_number: int,
     comments: list[dict[str, Any]],
+    head: str | None = None,
 ) -> None:
     """Fold suppressed non-blocking findings into one summary comment.
 
@@ -585,7 +599,63 @@ def post_cutoff_summary(
         ],
         comments,
         "cutoff summary",
+        head=head,
     )
+
+
+def post_findings(
+    repo: str,
+    pr_number: str,
+    reviewer: str,
+    comments: list[dict[str, Any]],
+    round_number: int,
+    cutoff_round: int | None,
+    inline_evidence: bool = False,
+) -> None:
+    """Put the batch on the PR: inline threads, or one comment if it cannot.
+
+    Every fold comment carries its count (``_post_folded_comment``), and the
+    head when this step could learn it: the cutoff route looks it up for
+    that alone and folds without it if the lookup fails, since a comment
+    bound on the round only is still a comment; the fallback after a failed
+    inline post has it from the attempt, and the fallback after a failed
+    head lookup, by definition, does not.
+    """
+    if cutoff_round is not None:
+        print(
+            f"{reviewer}: round cutoff active (round {cutoff_round}) --"
+            f" folding {len(comments)} finding(s) into a summary comment"
+        )
+        try:
+            head: str | None = get_pr_head_sha(pr_number)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            head = None
+        post_cutoff_summary(repo, pr_number, reviewer, cutoff_round, comments, head)
+        return
+
+    try:
+        commit_sha = get_pr_head_sha(pr_number)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"{reviewer}: failed to get PR head SHA: {e}", file=sys.stderr)
+        post_fallback(repo, pr_number, reviewer, round_number, comments)
+        return
+    # The Reviews API receives one whole batch. Only a batch that accounted
+    # for every reported finding may prove zero for this round; filtered or
+    # deduplicated subsets still post, but supply no completion evidence.
+    run_identity = inline_run_identity()
+    inline_comments = (
+        [
+            dict(
+                c,
+                body=f"{inline_post_marker(reviewer, round_number, run_identity)}\n{c['body']}",
+            )
+            for c in comments
+        ]
+        if inline_evidence and run_identity
+        else comments
+    )
+    if not post_inline_review(repo, pr_number, commit_sha, reviewer, inline_comments):
+        post_fallback(repo, pr_number, reviewer, round_number, comments, commit_sha)
 
 
 def main() -> None:
@@ -612,53 +682,49 @@ def main() -> None:
         sys.exit(1)
 
     issues = review.get("issues", [])
+    comments: list[dict[str, Any]] = []
     if not issues:
         print(f"{args.reviewer}: no issues to post")
-        return
+    else:
+        diff_path = Path(args.diff)
+        if not diff_path.exists():
+            print(f"Warning: diff file not found: {args.diff}", file=sys.stderr)
+        # ``errors="replace"`` keeps validation alive when the PR diff carries
+        # non-UTF-8 bytes; we only need hunk headers, which are ASCII.
+        diff_text = (
+            diff_path.read_text(encoding="utf-8", errors="replace")
+            if diff_path.exists()
+            else ""
+        )
+        valid_lines = parse_diff(diff_text)
+        existing_threads = fetch_existing_threads(repo, pr_number)
 
-    diff_path = Path(args.diff)
-    if not diff_path.exists():
-        print(f"Warning: diff file not found: {args.diff}", file=sys.stderr)
-    # ``errors="replace"`` keeps validation alive when the PR diff carries
-    # non-UTF-8 bytes; we only need hunk headers, which are ASCII.
-    diff_text = (
-        diff_path.read_text(encoding="utf-8", errors="replace")
-        if diff_path.exists()
-        else ""
-    )
-    valid_lines = parse_diff(diff_text)
-    existing_threads = fetch_existing_threads(repo, pr_number)
+        comments, no_location, out_of_range = build_comments(
+            issues, valid_lines, existing_threads, args.reviewer
+        )
 
-    comments, no_location, out_of_range = build_comments(
-        issues, valid_lines, existing_threads, args.reviewer
-    )
-
-    if no_location:
-        print(f"{args.reviewer}: {no_location} issue(s) without file/line")
-    if out_of_range:
-        print(f"{args.reviewer}: {out_of_range} issue(s) outside diff")
+        if no_location:
+            print(f"{args.reviewer}: {no_location} issue(s) without file/line")
+        if out_of_range:
+            print(f"{args.reviewer}: {out_of_range} issue(s) outside diff")
+        if not comments:
+            print(f"{args.reviewer}: no inline comments to post")
 
     if not comments:
-        print(f"{args.reviewer}: no inline comments to post")
         return
 
-    cutoff_round = round_cutoff_round(repo, pr_number, issues)
-    if cutoff_round is not None:
-        print(
-            f"{args.reviewer}: round cutoff active (round {cutoff_round}) --"
-            f" folding {len(comments)} finding(s) into a summary comment"
-        )
-        post_cutoff_summary(repo, pr_number, args.reviewer, cutoff_round, comments)
-        return
-
-    try:
-        commit_sha = get_pr_head_sha(pr_number)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        print(f"{args.reviewer}: failed to get PR head SHA: {e}", file=sys.stderr)
-        post_fallback(repo, pr_number, args.reviewer, comments)
-        return
-    if not post_inline_review(repo, pr_number, commit_sha, args.reviewer, comments):
-        post_fallback(repo, pr_number, args.reviewer, comments)
+    # One round number for both fold routes, so their markers agree with
+    # what the aggregate computes from the same count.
+    round_number = fetch_round_count(repo, pr_number) + 1
+    post_findings(
+        repo,
+        pr_number,
+        args.reviewer,
+        comments,
+        round_number,
+        round_cutoff_round(repo, pr_number, issues, round_number),
+        inline_evidence=len(comments) == len(issues),
+    )
 
 
 if __name__ == "__main__":
