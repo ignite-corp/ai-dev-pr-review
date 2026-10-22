@@ -31,6 +31,27 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
   orchestrator by local path, so it has no pin.
 - org/repo-level secret accessibility
 - Dependabot PR status
+- reviewer prompt guidance (AT-2844): each consumer's `.github/prompts/`
+  pair (this repo's entry: `examples/prompts/`, the pair self-review.yml
+  passes) and the runner's `default-prompts/` are read together, as
+  `prepare` concatenates them, and matched against the one list in
+  `.github/scripts/prompt_guidance.py`: a prompt that carries neither the
+  SHA Pins heading nor any pin label owes none of them; one that carries any
+  owes all, the labels inside the heading's section when it is there. A consumer's prompt paths are
+  the ones its review workflow passes, else the defaults; a declared path
+  that is not a plain relative path (an expression, `..`, a query) is not
+  requested, and has its own notice. A missing item or an absent prompt flags
+  like a stale pin; a fetch failure is "not evaluated". A positive control --
+  this commit's `examples/prompts/`, through the same fetch and matcher with
+  every group required -- must come back complete first, or the run fails;
+  a control that cannot be read skips this check alone. The
+  congruence questions are not read from any prompt copy: they live in the
+  reviewers' own instructions, so they reach a consumer through its pin
+  (check above) and a runner target through the runner's review pin, which
+  is held to the same freshness rule. Results go to the job summary by entry
+  index; a runner flag raises its own error, not the consumers'. Not
+  reached: runner targets outside ignite-corp, which the fleet-administration
+  App below is not installed on.
 
 The `health` job of `consumer-health.yml` authenticates as the fleet-admin App
 below, not as the review-pipeline App.
@@ -59,7 +80,8 @@ like something else.
   only), `metadata: read` (GET a ruleset in `ruleset-audit.yml`, and this
   repo's tag list for pin freshness -- both are Metadata endpoints, not
   Administration or Contents), `contents: read` (consumer workflow files, read
-  by both `ruleset-audit.yml` and the health check), `actions: read` (consumer
+  by both `ruleset-audit.yml` and the health check, and the consumer and
+  runner review prompts the health check matches), `actions: read` (consumer
   run conclusions), `secrets: read` / `organization_secrets: read` /
   `dependabot_secrets: read` (secret accessibility; this is the
   repository-level key, and for Dependabot the health job probes repo-level
