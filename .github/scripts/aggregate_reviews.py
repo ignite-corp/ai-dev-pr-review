@@ -72,6 +72,17 @@ REVIEWERS: dict[str, str] = {name: f"review-{name}.json" for name in REVIEWER_NA
 # Keeps the PR review title concise while showing enough context.
 DESC_TRUNCATE_LEN = 80
 ERROR_TRUNCATE_LEN = 60
+# Why the claude path wrote neither a verdict nor an execution log, as
+# classified by its error net in base-ai-review-single.yml (AT-2276). The
+# payload keeps ``error: action_invocation_failed`` for every regex keyed on
+# it and carries the class in ``error_cause``; only a value in this closed
+# set is rendered, so a payload cannot put arbitrary text after the error.
+ERROR_CAUSE_KIND = "action_invocation_failed"
+ERROR_CAUSE_TEXT: dict[str, str] = {
+    "rejected": "rejected -- actor not in allowed_bots",
+    "timeout": "timeout -- step time limit reached",
+    "action_error": "action_error -- action failed before producing a log",
+}
 MIN_REVIEWERS_FOR_VERDICT = 2
 _DISMISS_MESSAGE = "Superseded by new review"
 _REVIEW_MODE_SEQUENTIAL = "sequential"
@@ -292,7 +303,7 @@ def _partial_short_message(
         return "no payload"
     err = review.get("error")
     if isinstance(err, str) and err:
-        return err[:ERROR_TRUNCATE_LEN]
+        return _error_with_cause(err, review)
     summary = review.get("summary", "")
     if isinstance(summary, str) and summary:
         return summary[:ERROR_TRUNCATE_LEN]
@@ -891,8 +902,25 @@ def _failed_status_detail(review: dict[str, Any]) -> str:
     """
     err = review.get("error")
     if isinstance(err, str) and err:
-        return err[:ERROR_TRUNCATE_LEN]
+        return _error_with_cause(err, review)
     return "reviewer reported status=failed"
+
+
+def _error_with_cause(err: str, review: dict[str, Any]) -> str:
+    """The truncated ``error`` string, followed by its class when one is known.
+
+    Only on the error kind the classes describe: the claude net's
+    ``action_invocation_failed``. On any other kind -- another reviewer's
+    payload, which an LLM may author -- they would name the wrong cause.
+    """
+    cause = review.get("error_cause")
+    text = (
+        ERROR_CAUSE_TEXT.get(cause)
+        if isinstance(cause, str) and err == ERROR_CAUSE_KIND
+        else None
+    )
+    head = err[:ERROR_TRUNCATE_LEN]
+    return f"{head}: {text}" if text else head
 
 
 def _has_payload(review: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:

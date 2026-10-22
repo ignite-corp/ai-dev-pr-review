@@ -635,6 +635,10 @@ jobs:
         env:
           EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
           STEP_OUTCOME: ${{ steps.claude-review.outcome }}
+          # AT-2276: what error_cause rests on. See the classification below.
+          INNER_OUTCOME: ${{ steps.claude-review.outputs.inner_outcome }}
+          ACTOR_CHECK_FILE: ${{ runner.temp }}/claude-review-actor-check
+          STEP_CAP_MINUTES: ${{ inputs.claude-timeout-minutes }}
         run: |
           set -euo pipefail
           # The workspace is model-writable, so never trust or follow a
@@ -651,22 +655,56 @@ jobs:
             echo "::notice::Claude verdict file present"
             exit 0
           fi
+          ERROR_CAUSE=""
+          INNER_OUTCOME="${INNER_OUTCOME:-}"
           if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
             ERROR_KIND="output_unparseable"
-            DETAIL="claude-code-action outcome=${STEP_OUTCOME}; execution log held no verdict JSON"
+            DETAIL="claude-code-action outcome=${INNER_OUTCOME:-unknown} (step outcome=${STEP_OUTCOME}); execution log held no verdict JSON"
           else
             ERROR_KIND="action_invocation_failed"
-            DETAIL="claude-code-action outcome=${STEP_OUTCOME}; no execution log produced"
+            # Why, when it can be told (AT-2276). The caller's step reports
+            # success whether the action refused the actor or was killed by
+            # the step cap (run 38819148513), so the classes rest on what
+            # the composite recorded before the action ran: the pre-check's
+            # verdict and the time the action step began. A timeout is
+            # judged by elapsed time against the cap, less a minute (half the
+            # cap below two) for the steps around it, and outranks the
+            # pre-check: an action ten minutes in did not refuse its actor.
+            # Anything else stays bare.
+            CHECK=""
+            STARTED=""
+            if [ -n "${ACTOR_CHECK_FILE:-}" ] && [ -f "$ACTOR_CHECK_FILE" ]; then
+              CHECK=$(sed -n 's/^result=//p' "$ACTOR_CHECK_FILE")
+              STARTED=$(sed -n 's/^started=\([0-9][0-9]*\)$/\1/p' "$ACTOR_CHECK_FILE")
+            fi
+            # This step runs under always(), including after 'Validate
+            # timeout inputs' refused the value, so only digits reach $(( )).
+            case "${STEP_CAP_MINUTES:-}" in
+              ""|*[!0-9]*) CAP_SECONDS=0 ;;
+              *) CAP_SECONDS=$(( 10#$STEP_CAP_MINUTES * 60 )) ;;
+            esac
+            SLACK_SECONDS=$(( CAP_SECONDS / 2 < 60 ? CAP_SECONDS / 2 : 60 ))
+            CAP_SECONDS=$(( CAP_SECONDS - SLACK_SECONDS ))
+            if [ "$INNER_OUTCOME" = "failure" ] && [ -n "$STARTED" ] \
+              && [ "$CAP_SECONDS" -gt 0 ] \
+              && [ $(( $(date +%s) - STARTED )) -ge "$CAP_SECONDS" ]; then
+              ERROR_CAUSE="timeout"
+            elif [ "$INNER_OUTCOME" = "failure" ] && [ "$CHECK" = "rejected" ]; then
+              ERROR_CAUSE="rejected"
+            elif [ "$INNER_OUTCOME" = "failure" ]; then
+              ERROR_CAUSE="action_error"
+            fi
+            DETAIL="claude-code-action outcome=${INNER_OUTCOME:-unknown} (step outcome=${STEP_OUTCOME}); no execution log produced"
           fi
-          echo "::warning::Claude review produced no verdict file -- emitting error verdict (${ERROR_KIND})"
-          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" '{
+          echo "::warning::Claude review produced no verdict file -- emitting error verdict (${ERROR_KIND}${ERROR_CAUSE:+: ${ERROR_CAUSE}})"
+          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" --arg cause "$ERROR_CAUSE" '{
             summary: ("Claude review failed: no verdict file produced -- " + $detail),
             status: "failed",
             early_exit: false,
             issues: [],
             error: $kind,
             error_detail: $detail
-          }' > review-claude.json
+          } + (if $cause == "" then {} else {error_cause: $cause} end)' > review-claude.json
           jq empty review-claude.json
 
       # --- Claude: auto auth switch on usage-limit events (AT-1606) ---
