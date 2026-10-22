@@ -1,0 +1,176 @@
+name: probe-at3054-codex-sandbox
+
+# PROBE (AT-3054). Measurement only; never merged. The PR carrying it targets
+# a throwaway base branch, not main, so self-review and CI do not run on it.
+#
+# Question: what can a process inside the codex sandbox read on a hosted
+# runner, set up the way base-ai-review-single.yml's codex job sets it up
+# (codex 0.147.0, workspace-write, TMPDIR under runner.temp/codex-tmp,
+# `codex login --with-api-key`, the bubblewrap sysctl step)?
+#
+# This repo is PUBLIC, so the log and summary are public. The probe reports
+# only `<target>: readable|denied|absent` and variable NAMES as
+# present|absent (probe-at3054/check.sh). It reads no target's content,
+# prints no value, uses no secret and uploads no artifact. The API key is a
+# fixed dummy: `codex login --with-api-key` writes auth.json without
+# contacting the API, so the file exists at the same path with the same mode
+# as in the real job, and the model is never invoked.
+
+on:
+  pull_request:
+    branches: [probe/AT-3054-base]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: >-
+      github.head_ref == 'task/AT-3054-sandbox-probe'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Same shape as the real job's two checkouts and its snapshot copy.
+      - name: Checkout PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout ai-dev-pr-review scripts (pinned to release tag)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ignite-corp/ai-dev-pr-review
+          ref: v1.15.1
+          path: .ai-dev-pr-review
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Copy ai-dev-pr-review scripts outside the workspace
+        run: |
+          set -euo pipefail
+          TRUSTED="${RUNNER_TEMP}/ai-dev-pr-review"
+          rm -rf -- "$TRUSTED"
+          cp -a -- .ai-dev-pr-review "$TRUSTED"
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@0.147.0
+
+      # The real step, with a dummy key in place of secrets.OPENAI_API_KEY.
+      - name: Authenticate Codex CLI with a dummy API key
+        env:
+          OPENAI_API_KEY: sk-at3054-dummy-not-a-real-key
+        run: |
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          if [ ! -s "$HOME/.codex/auth.json" ]; then
+            echo "::error::codex login did not produce auth.json"
+            exit 1
+          fi
+          echo "codex auth.json populated"
+
+      - name: Enable bubblewrap sandbox on Actions runner
+        id: sysctl
+        run: |
+          orig_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          orig_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          echo "orig_userns=${orig_userns}" >> "$GITHUB_OUTPUT"
+          echo "orig_apparmor=${orig_apparmor}" >> "$GITHUB_OUTPUT"
+          if [ -n "$orig_userns" ] && [ "$orig_userns" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [ -n "$orig_apparmor" ] && [ "$orig_apparmor" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      # Stands in for the real job's other RUNNER_TEMP files
+      # (review_prompt.md, codex_prompt.md): a sibling path the sandbox
+      # was not given.
+      - name: Write a sibling file under RUNNER_TEMP
+        run: echo placeholder > "${RUNNER_TEMP}/at3054-sibling.md"
+
+      - name: Probe reads inside the codex sandbox
+        env:
+          # The names the real 'Run Codex review' step exports; the key is
+          # the same dummy as above.
+          OPENAI_API_KEY: sk-at3054-dummy-not-a-real-key
+          CODEX_MODEL: gpt-5.6-luna
+          TMPDIR: ${{ runner.temp }}/codex-tmp
+          AT3054_CONTROL: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p -- "$TMPDIR"
+          # The step shell's parent is Runner.Worker, under <root>/bin.
+          WORKER_PID=$PPID
+          RUNNER_ROOT=$(dirname "$(dirname "$(readlink -f "/proc/${WORKER_PID}/exe")")")
+          WORK_ROOT=$(dirname "$(dirname "$GITHUB_WORKSPACE")")
+          ARGS=(
+            --env AT3054_CONTROL OPENAI_API_KEY CODEX_API_KEY GH_TOKEN
+                  GITHUB_TOKEN REVIEWER_TOKEN ACTIONS_RUNTIME_TOKEN
+                  ACTIONS_ID_TOKEN_REQUEST_TOKEN
+            --path
+              "$GITHUB_WORKSPACE/README.md"
+              /nonexistent-at3054-control
+              "$HOME/.codex"
+              "$HOME/.codex/auth.json"
+              "$HOME/.codex/config.toml"
+              "$HOME/.codex/log"
+              "$HOME/.codex/tmp"
+              "$RUNNER_TEMP"
+              "$RUNNER_TEMP/ai-dev-pr-review"
+              "$RUNNER_TEMP/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
+              "$RUNNER_TEMP/at3054-sibling.md"
+              "$RUNNER_TEMP/_runner_file_commands"
+              "$TMPDIR"
+              "$WORK_ROOT"
+              "$WORK_ROOT/_actions"
+              "$WORK_ROOT/_tool"
+              "$RUNNER_ROOT"
+              "$RUNNER_ROOT/.runner"
+              "$RUNNER_ROOT/.credentials"
+              "$RUNNER_ROOT/.credentials_rsaparams"
+              "$RUNNER_ROOT/_diag"
+              "/proc/${WORKER_PID}/environ"
+              "$HOME/.ssh"
+              "$HOME/.gitconfig"
+              "$HOME/.config/gh/hosts.yml"
+            --write "$RUNNER_TEMP/at3054-write-control"
+          )
+          PROBE="$GITHUB_WORKSPACE/probe-at3054/check.sh"
+          bash "$PROBE" "${ARGS[@]}" > "$RUNNER_TEMP/at3054-host.tsv"
+          set +e
+          codex sandbox -P :workspace -C "$GITHUB_WORKSPACE" -- \
+            bash "$PROBE" "${ARGS[@]}" > "$RUNNER_TEMP/at3054-sandbox.tsv" \
+            2> "$RUNNER_TEMP/at3054-sandbox.err"
+          SBX_RC=$?
+          set -e
+          {
+            echo "## AT-3054 codex sandbox read probe"
+            echo
+            echo "codex $(codex --version 2>/dev/null | head -n1 | tr -cd '[:alnum:]. -'), \`codex sandbox -P :workspace\` exit ${SBX_RC}"
+            echo
+            echo "| target | host | sandbox |"
+            echo "|---|---|---|"
+            paste "$RUNNER_TEMP/at3054-host.tsv" "$RUNNER_TEMP/at3054-sandbox.tsv" \
+              | awk -F '\t' '{ printf "| `%s` | %s | %s |\n", $1, $2, ($3 == $1 ? $4 : "MISMATCH") }'
+            echo
+            echo "sandbox stderr lines: $(wc -l < "$RUNNER_TEMP/at3054-sandbox.err")"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # stderr is codex's own diagnostics (bwrap errors); shown so a
+          # failed sandbox start is visible rather than an empty column.
+          head -n 20 "$RUNNER_TEMP/at3054-sandbox.err" | cut -c1-200
+          exit "$SBX_RC"
+
+      - name: Restore sysctl after Codex
+        if: always()
+        env:
+          ORIG_USERNS: ${{ steps.sysctl.outputs.orig_userns }}
+          ORIG_APPARMOR: ${{ steps.sysctl.outputs.orig_apparmor }}
+        run: |
+          if [ -n "$ORIG_USERNS" ] && [ "$ORIG_USERNS" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone="$ORIG_USERNS"
+          fi
+          if [ -n "$ORIG_APPARMOR" ] && [ "$ORIG_APPARMOR" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$ORIG_APPARMOR"
+          fi
