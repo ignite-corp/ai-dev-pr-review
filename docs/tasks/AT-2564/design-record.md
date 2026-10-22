@@ -1,5 +1,11 @@
 # The boundary between LENS's three execution paths
 
+> **Status note (2026-10-22).** The cross-repo path this record describes as
+> designed but not built has since shipped as
+> `ignite-corp/ai-dev-pr-review-runner`; see
+> [Cross-org usage](../../../README.md#cross-org-usage). The sections below
+> remain a point-in-time record of the reasoning.
+
 AT-2564, under AT-2466. Every code claim below was read at commit
 `4309344` (`Merge pull request #184 from ignite-corp/task/AT-2555`) on
 2026-10-01, and re-checked at `b3555a9` (`Merge pull request #186 from

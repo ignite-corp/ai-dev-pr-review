@@ -22,6 +22,17 @@ Helpers under `.github/scripts/` (Python 3.14, plus one bash + one jq):
 
 Schema under `.github/schemas/review-schema.json` (the per-reviewer output contract).
 
+## Review routes
+
+A pull request reaches a LENS review by one of four routes. Each route is documented in one place:
+
+- **Actions, same repository**: the repository calls the orchestrator from its own thin trigger. This README documents this route.
+- **Cross-org, via the runner**: `ignite-corp/ai-dev-pr-review-runner` reviews a repository outside `ignite-corp` on `ignite-corp` minutes. See [Cross-org usage](#cross-org-usage).
+- **Local review**: `.github/scripts/review_pr_local.py` runs the same scripts on your machine when Actions cannot run. See [`docs/local-review.md`](docs/local-review.md).
+- **External hand review**: a reviewer session posts the verdict by hand. Who reviews, and where the verdict goes, is set by the *Review routing* section of the workspace guidelines (`claude/AGENTS.md` in the private `hyuk-hur/dev-dotfiles`). This repository does not restate those rules.
+
+The boundary between the Actions, local and cross-repo paths is recorded in [`docs/tasks/AT-2564/design-record.md`](docs/tasks/AT-2564/design-record.md). The record is dated 2026-10-01 and describes the cross-repo path as designed but not built. The runner in [Cross-org usage](#cross-org-usage) was built after it, so read the record's cross-repo section for the reasoning, not for current availability.
+
 ## Required consumer-repo secrets
 
 `OPENAI_API_KEY` and `GOOGLE_AI_API_KEY` are required. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly — `secrets: inherit` does NOT work cross-org, same-org or not.
