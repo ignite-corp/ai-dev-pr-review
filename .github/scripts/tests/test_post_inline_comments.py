@@ -21,6 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 import post_inline_comments
 from post_inline_comments import (
     _is_duplicate,
@@ -36,7 +38,7 @@ from post_inline_comments import (
 # anchor, in the drill's test, and so does the way it is carved out of the
 # file -- gate_function runs the drill's own extract() -- so the two cannot
 # disagree about where it is or about what it is.
-from test_gate_headline_drill import gate_function
+from test_gate_headline_drill import SKILL, gate_function
 
 
 def _cutoff_findings(
@@ -472,7 +474,7 @@ class TestPostCutoffSummary:
 
         control = _cutoff_findings(real_run, function_file, marker_line + " (2 items)\n" + rest)
         assert control.returncode == 0, control.stdout + control.stderr
-        assert control.stdout.strip() == "(c) no round-cutoff comment on this round's surface"
+        assert control.stdout.strip() == "(c) no round-cutoff or inline-fallback comment on this round's surface"
 
     def test_existing_marker_skips_post(self, monkeypatch: Any) -> None:
         posted: list[list[str]] = []
@@ -613,3 +615,544 @@ class TestMainRoundCutoff:
         monkeypatch.setattr(post_inline_comments, "post_cutoff_summary", fail_summary)
         self._run_main(monkeypatch, tmp_path)
         assert len(posted["comments"]) == 2
+
+
+class TestFoldedFindingGate:
+    @pytest.fixture
+    def folded(self, monkeypatch: Any, request: Any) -> tuple[str, str]:
+        """Run both real producers, replacing only GitHub transport."""
+        captured: list[str] = []
+
+        def transport(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+            if cmd[:2] == ["gh", "api"]:
+                return SimpleNamespace(returncode=0, stdout="0", stderr="")
+            captured.append(kwargs["input"])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        issues = [_issue("a.py", 1, "first"), _issue("b.py", 2, "second")]
+        param = getattr(request, "param", False)
+        if param == "separator":
+            issues[0]["description"] = "first\n- **details** -- explanatory text"
+            issues[0]["suggestion"] = "first line\n- **bold** -- explanatory text"
+        elif param == "location-prose":
+            issues[0]["description"] = (
+                "first\n- **some/file.py:12** -- explanatory text"
+            )
+            issues[0]["suggestion"] = "first line\n- **a.py:1** -- explanatory text"
+        elif param == "collision-template":
+            issues = [
+                _issue(
+                    "a.py", 1, "Validate authentication before forwarding credentials"
+                ),
+                _issue("a.py", 1, "Close the socket after the retry budget expires"),
+            ]
+        elif param == "identical-first-lines":
+            issues = [
+                _issue(
+                    "a.py", 1, "\nValidate authentication before forwarding credentials"
+                ),
+                _issue("a.py", 1, "\nClose the socket after the retry budget expires"),
+            ]
+        elif param == "unknown":
+            issues[0]["severity"] = "future level"
+        elif param == "empty-severity":
+            issues[0]["severity"] = ""
+        elif param == "asterisk-severity":
+            issues[0]["severity"] = "mi*nor"
+        elif param == "newline-severity":
+            issues[0]["severity"] = "mi\nnor"
+        elif param == "asterisk-path":
+            issues[0]["file"] = "a*b.py"
+        elif param == "whitespace":
+            issues[0]["description"] = "\nfirst continuation"
+            issues[1]["description"] = "second  with internal spaces   "
+        elif param:
+            issues[0]["description"] += "\n- **details** ordinary continuation"
+            issues[0]["suggestion"] = "first line\n- **bold** second line"
+        reviewer = (
+            "claude)extension"
+            if param == "parenthesized-reviewer"
+            else "custom-r7"
+            if param == "round-looking-reviewer"
+            else "claude"
+        )
+        valid_lines = {"a.py": {1}, "b.py": {2}}
+        if param == "asterisk-path":
+            valid_lines = post_inline_comments.parse_diff(
+                "diff --git a/a*b.py b/a*b.py\n--- a/a*b.py\n+++ b/a*b.py\n"
+                "@@ -0,0 +1 @@\n+first\n"
+                "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n"
+                "@@ -0,0 +2 @@\n+second\n"
+            )
+            assert valid_lines == {"a*b.py": {1}, "b.py": {2}}
+        comments, no_location, out_of_range = build_comments(
+            issues, valid_lines, [], reviewer
+        )
+        assert len(comments) == 2 and no_location == out_of_range == 0
+        with monkeypatch.context() as scoped:
+            scoped.setattr(subprocess, "run", transport)
+            post_inline_comments.post_fallback("o/r", "7", reviewer, comments)
+            post_cutoff_summary("o/r", "7", reviewer, 14, comments)
+        return captured[0], captured[1]
+
+    @staticmethod
+    def run_gate(
+        body: str,
+        reply: str = "",
+        *,
+        source_author: str = "github-actions[bot]",
+        source_type: str = "Bot",
+        reply_author: str = "hyuk-hur",
+        reply_type: str = "User",
+        source_at: str = "2026-10-22T00:00:00Z",
+    ) -> subprocess.CompletedProcess[str]:
+        assert shutil.which("jq"), "jq must be on PATH: cutoff_findings is a jq program"
+        comments = [
+            {
+                "id": 1,
+                "author": source_author,
+                "type": source_type,
+                "created_at": source_at,
+                "body": body,
+            }
+        ]
+        if reply:
+            comments.append(
+                {
+                    "id": 2,
+                    "author": reply_author,
+                    "type": reply_type,
+                    "created_at": "2026-10-22T00:01:00Z",
+                    "body": reply,
+                }
+            )
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                gate_function("cutoff_findings")
+                + '\ncutoff_findings "2026-10-22T00:00:00Z"',
+            ],
+            input=json.dumps(comments),
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_each_real_producer_requires_every_item(
+        self, folded: tuple[str, str], index: int
+    ) -> None:
+        body = folded[index]
+        marker = body.splitlines()[0]
+        for reply, expected in [
+            ("", 1),
+            (marker + "\n> a.py:1\nFixed: first", 1),
+            (marker + "\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second", 0),
+        ]:
+            # A response names the marker inline, never in the producer's first-line form.
+            result = self.run_gate(body, "Dispositions: " + reply if reply else "")
+            assert result.returncode == expected, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "envelope",
+        ["<!-- fold-count: 2 -->", "<!-- fold-count: 2 head: " + "a" * 40 + " -->"],
+    )
+    def test_round_scoped_fallback_with_count_is_found(
+        self, folded: tuple[str, str], envelope: str
+    ) -> None:
+        _, rest = folded[0].split("\n", 1)
+        body = "<!-- inline-fallback-claude-r14 -->\n" + envelope + "\n" + rest
+        assert self.run_gate(body).returncode == 1
+        result = self.run_gate(
+            body,
+            "inline-fallback-claude-r14\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "envelope",
+        [
+            "<!-- fold-count: 3 -->",
+            "<!-- fold-count: bad -->",
+            "<!-- fold-count: 0 -->",
+        ],
+    )
+    def test_bad_counts_do_not_pass_with_all_locations_quoted(
+        self, folded: tuple[str, str], envelope: str
+    ) -> None:
+        first, rest = folded[0].split("\n", 1)
+        result = self.run_gate(
+            first + "\n" + envelope + "\n" + rest,
+            "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both",
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        reason = (
+            "malformed fold-count envelope"
+            if "bad" in envelope
+            else "declared fold-count does not match rendered findings"
+        )
+        assert "invalid folded findings: " + reason in result.stdout
+        assert result.stderr == ""
+
+    def test_same_location_findings_need_separate_whole_quotes(
+        self, folded: tuple[str, str]
+    ) -> None:
+        body = folded[0].replace("b.py:2", "a.py:1")
+        first, second = [line for line in body.splitlines() if line.startswith("- **")]
+        reply = "inline-fallback-claude\n> " + first + "\nFixed: first"
+        partial = self.run_gate(body, reply)
+        assert partial.returncode == 1
+        assert (
+            "a.py:1 (whole item line required: 2 items share this location)"
+            in partial.stdout
+        )
+        result = self.run_gate(body, reply + "\n> " + second + "\nFixed: second")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<!-- inline-fallback-claude -->\nheader only",
+            "<!-- round-cutoff-claude-r14 -->\n- **a.py:1** invalid",
+        ],
+    )
+    def test_empty_or_malformed_items_fail_closed(self, body: str) -> None:
+        result = self.run_gate(
+            body,
+            "inline-fallback-claude round-cutoff-claude-r14\n> a.py:1\nFixed: item",
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert (
+            "invalid folded findings: empty or unparseable folded finding list"
+            in result.stdout
+        )
+        assert result.stderr == ""
+
+    def test_crlf_and_marker_quotations(self, folded: tuple[str, str]) -> None:
+        crlf_body = folded[0].replace("\n", "\r\n")
+        absent = self.run_gate(crlf_body)
+        assert absent.returncode == 1
+        assert "carries findings that have no thread id" in absent.stdout
+        result = self.run_gate(
+            crlf_body, "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        for body in [
+            "Description\n" + folded[0],
+            "> " + folded[0],
+            folded[0].replace(" -->", " --> suffix", 1),
+        ]:
+            result = self.run_gate(body)
+            assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("index", [0, 1])
+    @pytest.mark.parametrize(
+        "author,kind",
+        [
+            ("github-actions[bot]", "Bot"),
+            ("ignite-ai-review-approver[bot]", "Bot"),
+            ("local-operator", "User"),
+        ],
+    )
+    def test_all_producer_identities_and_another_reviewer_can_answer(
+        self,
+        folded: tuple[str, str],
+        index: int,
+        author: str,
+        kind: str,
+    ) -> None:
+        body = folded[index]
+        assert (
+            self.run_gate(body, source_author=author, source_type=kind).returncode == 1
+        )
+        reply = (
+            "Dispositions for "
+            + body.splitlines()[0]
+            + "\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second"
+        )
+        result = self.run_gate(
+            body,
+            reply,
+            source_author=author,
+            source_type=kind,
+            reply_author="another-reviewer",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        result = self.run_gate(
+            body,
+            reply,
+            source_author=author,
+            source_type=kind,
+            reply_author="review-helper[bot]",
+            reply_type="Bot",
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "marker", ["inline-fallback-claude-r15", "round-cutoff-claude"]
+    )
+    def test_local_producer_repost_cannot_answer_earlier_fallback(
+        self, folded: tuple[str, str], marker: str
+    ) -> None:
+        reply = (
+            "<!-- " + marker + " -->\n"
+            "inline-fallback-claude\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second"
+        )
+        result = self.run_gate(
+            folded[0], reply, source_type="User", source_author="local-operator"
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "BLOCK: inline-fallback-claude (comment 1," in result.stdout
+
+    @pytest.mark.parametrize("folded", [True], indirect=True)
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_multiline_description_and_suggestion_are_not_extra_findings(
+        self,
+        folded: tuple[str, str],
+        index: int,
+    ) -> None:
+        body = folded[index]
+        assert "\n- **details** ordinary continuation" in body
+        assert "\n- **bold** second line" in body
+        marker = body.splitlines()[0]
+        partial = "Dispositions: " + marker + "\n> a.py:1\nFixed: first"
+        assert self.run_gate(body, partial).returncode == 1
+        result = self.run_gate(body, partial + "\n> b.py:2\nFixed: second")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_legacy_cutoff_marker_is_found_for_a_local_producer(
+        self, folded: tuple[str, str]
+    ) -> None:
+        body = folded[1].replace("round-cutoff-claude-r14", "round-cutoff-claude")
+        assert (
+            self.run_gate(
+                body, source_type="User", source_author="local-reviewer"
+            ).returncode
+            == 1
+        )
+        result = self.run_gate(
+            body, "round-cutoff-claude\n> a.py:1\n> b.py:2\nFixed: both"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "marker", ["inline-fallback-claude-r14", "prefix-inline-fallback-claude"]
+    )
+    def test_another_marker_does_not_answer_legacy_marker(
+        self, folded: tuple[str, str], marker: str
+    ) -> None:
+        result = self.run_gate(folded[0], marker + "\n> a.py:1\n> b.py:2\nFixed: both")
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("folded", ["separator"], indirect=True)
+    @pytest.mark.parametrize("index", [0, 1])
+    @pytest.mark.parametrize("with_count", [False, True])
+    def test_bold_separator_prose_is_not_a_location(
+        self,
+        folded: tuple[str, str],
+        index: int,
+        with_count: bool,
+    ) -> None:
+        body = folded[index]
+        assert "\n- **details** -- explanatory text" in body
+        assert "\n- **bold** -- explanatory text" in body
+        marker, rest = body.split("\n", 1)
+        if with_count:
+            body = marker + "\n<!-- fold-count: 2 head: " + "a" * 40 + " -->\n" + rest
+        reply = "Dispositions: " + marker + "\n> a.py:1\nFixed: first"
+        assert self.run_gate(body, reply).returncode == 1
+        result = self.run_gate(body, reply + "\n> b.py:2\nFixed: second")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("path", ["dir with space/a.py", "scheme:component/a.py"])
+    def test_location_paths_preserve_spaces_and_colons(
+        self, folded: tuple[str, str], path: str
+    ) -> None:
+        body = folded[0].replace("a.py", path)
+        reply = "inline-fallback-claude\n> " + path + ":1\n> b.py:2\nFixed: both"
+        result = self.run_gate(body, reply)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_missing_jq_fails_before_a_negative_case_can_pass(
+        self, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        with pytest.raises(AssertionError, match="jq must be on PATH"):
+            self.run_gate("<!-- inline-fallback-claude -->\n- **a.py:1** -- item")
+
+    @pytest.mark.parametrize("folded", ["whitespace"], indirect=True)
+    def test_collision_quotes_can_drop_only_trailing_whitespace(
+        self, folded: tuple[str, str]
+    ) -> None:
+        body = folded[0].replace("b.py:2", "a.py:1")
+        first, second = [line for line in body.splitlines() if line.startswith("- **")]
+        assert first.endswith(": ") and second.endswith("   ")
+        partial = "inline-fallback-claude\n> " + first.rstrip() + "\nFixed: first"
+        assert self.run_gate(body, partial).returncode == 1
+        wrong = (
+            partial + "\n> " + second.rstrip().replace("second  with", "second with")
+        )
+        assert self.run_gate(body, wrong).returncode == 1
+        result = self.run_gate(
+            body, partial + "\n> " + second.rstrip() + "\nFixed: second"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_jq_runtime_error_is_not_a_policy_diagnostic(
+        self, folded: tuple[str, str], monkeypatch: Any
+    ) -> None:
+        extracted = gate_function("cutoff_findings")
+        # Fail only the items query, after marker discovery and reply matching.
+        shim = 'jq() { if [[ " $* " == *" --arg i "* ]]; then return 17; fi; command jq "$@"; }'
+        monkeypatch.setattr(
+            sys.modules[__name__], "gate_function", lambda name: extracted + "\n" + shim
+        )
+        result = self.run_gate(
+            folded[0], "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "could not read the items" in result.stdout
+        assert "invalid folded findings" not in result.stdout
+
+    @pytest.mark.parametrize("folded", ["location-prose"], indirect=True)
+    @pytest.mark.parametrize("index", [0, 1])
+    @pytest.mark.parametrize("with_count", [False, True])
+    def test_path_like_description_and_suggestion_are_not_findings(
+        self, folded: tuple[str, str], index: int, with_count: bool
+    ) -> None:
+        body = folded[index]
+        assert "\n- **some/file.py:12** -- explanatory text" in body
+        assert "\n- **a.py:1** -- explanatory text" in body
+        marker, rest = body.split("\n", 1)
+        if with_count:
+            body = marker + "\n<!-- fold-count: 2 head: " + "a" * 40 + " -->\n" + rest
+        reply = "Dispositions: " + marker + "\n> a.py:1\nFixed: first"
+        assert self.run_gate(body, reply).returncode == 1
+        result = self.run_gate(body, reply + "\n> b.py:2\nFixed: second")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("folded", ["collision-template"], indirect=True)
+    def test_documented_collision_reply_answers_the_real_producer(
+        self, folded: tuple[str, str]
+    ) -> None:
+        section = SKILL.read_text().split("**Colliding folded locations**", 1)[1]
+        reply = section.split("```text\n", 1)[1].split("\n```", 1)[0]
+        quotes = [line for line in reply.splitlines() if line.startswith("> ")]
+        assert len(quotes) == 2
+        assert self.run_gate(folded[0], reply.replace(quotes[1], "", 1)).returncode == 1
+        result = self.run_gate(folded[0], reply)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("folded", ["unknown", "empty-severity"], indirect=True)
+    def test_prefix_does_not_whitelist_severity(self, folded: tuple[str, str]) -> None:
+        assert self.run_gate(folded[0]).returncode == 1
+        missing = self.run_gate(
+            folded[0], "inline-fallback-claude\n> b.py:2\nFixed: second"
+        )
+        assert missing.returncode == 1, missing.stdout + missing.stderr
+        assert "a.py:1" in missing.stdout
+        result = self.run_gate(
+            folded[0], "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("folded", ["asterisk-path"], indirect=True)
+    @pytest.mark.parametrize("index", [0, 1])
+    @pytest.mark.parametrize("counted", [False, True])
+    def test_real_asterisk_path_cannot_be_silently_dropped(
+        self, folded: tuple[str, str], index: int, counted: bool
+    ) -> None:
+        body = folded[index]
+        marker, rest = body.split("\n", 1)
+        if counted:
+            body = marker + "\n<!-- fold-count: 2 -->\n" + rest
+        partial = "Dispositions: " + marker + "\n> b.py:2\nFixed: second"
+        missing = self.run_gate(body, partial)
+        assert missing.returncode == 1, missing.stdout + missing.stderr
+        assert "a*b.py:1" in missing.stdout
+        result = self.run_gate(body, partial + "\n> a*b.py:1\nFixed: first")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "folded",
+        ["asterisk-severity", "newline-severity", "parenthesized-reviewer"],
+        indirect=True,
+    )
+    def test_raw_producer_fields_do_not_silently_drop_findings(
+        self, folded: tuple[str, str]
+    ) -> None:
+        body = folded[0]
+        marker = body.splitlines()[0]
+        partial = "Dispositions: " + marker + "\n> b.py:2\nFixed: second"
+        missing = self.run_gate(body, partial)
+        assert missing.returncode == 1, missing.stdout + missing.stderr
+        assert "a.py:1" in missing.stdout
+        result = self.run_gate(body, partial + "\n> a.py:1\nFixed: first")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("folded", ["identical-first-lines"], indirect=True)
+    def test_identical_first_lines_require_one_quote_per_finding(
+        self, folded: tuple[str, str]
+    ) -> None:
+        body = folded[0]
+        first, second = [line for line in body.splitlines() if line.startswith("- **")]
+        assert first == second
+        one = "inline-fallback-claude\n> " + first.rstrip() + "\nFixed: authentication"
+        assert self.run_gate(body, one).returncode == 1
+        result = self.run_gate(body, one + "\n> " + second.rstrip() + "\nFixed: socket")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("folded", [False, "round-looking-reviewer"], indirect=True)
+    def test_legacy_fallback_remains_visible_after_the_head_window_moves(
+        self, folded: tuple[str, str]
+    ) -> None:
+        body = folded[0]
+        old = "2026-10-21T00:00:00Z"
+        assert self.run_gate(body, source_at=old).returncode == 1
+        reply = (
+            "Dispositions: "
+            + body.splitlines()[0]
+            + "\n> a.py:1\n> b.py:2\nFixed: both"
+        )
+        result = self.run_gate(body, reply, source_at=old)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_round_scoped_fallback_history_is_also_retained(
+        self, folded: tuple[str, str]
+    ) -> None:
+        _, rest = folded[0].split("\n", 1)
+        body = (
+            "<!-- inline-fallback-claude-r14 -->\n<!-- fold-count: 2 head: "
+            + "a" * 40
+            + " -->\n"
+            + rest
+        )
+        old = "2026-10-21T00:00:00Z"
+        assert self.run_gate(body, source_at=old).returncode == 1
+        result = self.run_gate(
+            body,
+            "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both",
+            source_at=old,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_old_cutoff_stays_outside_the_current_head_window(
+        self, folded: tuple[str, str]
+    ) -> None:
+        result = self.run_gate(folded[1], source_at="2026-10-21T00:00:00Z")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "no round-cutoff or inline-fallback" in result.stdout
+
+    def test_old_invalid_fallback_remains_a_policy_block(
+        self, folded: tuple[str, str]
+    ) -> None:
+        marker, rest = folded[0].split("\n", 1)
+        body = marker + "\n<!-- fold-count: 3 -->\n" + rest
+        result = self.run_gate(
+            body,
+            "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both",
+            source_at="2026-10-21T00:00:00Z",
+        )
+        assert result.returncode == 1
+        assert "declared fold-count does not match rendered findings" in result.stdout
