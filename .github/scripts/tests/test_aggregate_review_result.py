@@ -105,15 +105,17 @@ def test_partial_error_payload_is_not_hidden_by_full_availability(
     assert "private provider detail" not in json.dumps(result)
 
 
-def test_missing_artifacts_keep_old_exit_policy_but_export_no_responses(
+def test_missing_artifacts_fail_ci_and_export_no_responses(
     result_round: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         aggregate, "load_reviews", lambda: {name: None for name in aggregate.REVIEWERS}
     )
-    aggregate.main()
+    with pytest.raises(SystemExit) as excinfo:
+        aggregate.main()
+    assert excinfo.value.code == 1
     result = read_result(result_round)
-    assert result["verdict"] == "approve"
+    assert result["verdict"] == "comment"
     assert result["responded"] == []
     assert set(result["partial"]) == set(aggregate.REVIEWERS)
 
