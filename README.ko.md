@@ -22,6 +22,17 @@
 
 `.github/schemas/review-schema.json` 스키마 (리뷰어별 출력 계약).
 
+## 리뷰 경로
+
+PR이 LENS 리뷰를 받는 경로는 네 가지입니다. 각 경로는 한 곳에만 문서화되어 있습니다:
+
+- **Actions, 같은 레포**: 레포가 자체 thin 트리거에서 오케스트레이터를 호출합니다. 이 경로는 이 README가 문서화합니다.
+- **조직 간, runner 경유**: `ignite-corp/ai-dev-pr-review-runner`가 `ignite-corp` 밖의 레포를 `ignite-corp`의 Actions 시간으로 리뷰합니다. [조직 간(cross-org) 사용](#조직-간cross-org-사용)을 참고하세요.
+- **로컬 리뷰**: Actions를 실행할 수 없을 때 `.github/scripts/review_pr_local.py`가 같은 스크립트를 로컬에서 실행합니다. [`docs/local-review.md`](docs/local-review.md)를 참고하세요.
+- **외부 수동 리뷰**: 리뷰어 세션이 판정을 직접 게시합니다. 누가 리뷰하고 판정을 어디에 남기는지는 작업 가이드라인(비공개 `hyuk-hur/dev-dotfiles`의 `claude/AGENTS.md`)의 *Review routing* 섹션이 정합니다. 이 레포는 그 규칙을 다시 적지 않습니다.
+
+Actions·로컬·cross-repo 경로 사이의 경계는 [`docs/tasks/AT-2564/design-record.md`](docs/tasks/AT-2564/design-record.md)에 기록되어 있습니다. 이 기록은 2026-10-01 시점의 것이라 cross-repo 경로를 설계만 되고 구현되지 않은 것으로 적고 있습니다. [조직 간(cross-org) 사용](#조직-간cross-org-사용)의 runner는 그 뒤에 구현되었으므로, 기록의 cross-repo 절은 현재 사용 가능 여부가 아니라 설계 근거로 읽으세요.
+
 ## 소비자 레포에 필요한 시크릿
 
 `OPENAI_API_KEY`와 `GOOGLE_AI_API_KEY`는 필수입니다. Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
