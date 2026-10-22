@@ -2087,6 +2087,8 @@ class _CodexStepHarness:
         timeout: float = 60,
         scripts_root: Path | None = None,
         marks_run: str | None = None,
+        records: Path | None = None,
+        existing_comments: str = "",
     ) -> None:
         """Run 'Run Codex review' with a CLI that acts out one run.
 
@@ -2095,13 +2097,18 @@ class _CodexStepHarness:
         reviewing. `links` are symlinks it can create there the same way:
         only the directory holding the link has to be writable, never the
         file it names (AT-2941). `stalls` never returns, so the caller can
-        kill the step the way timeout-minutes does.
+        kill the step the way timeout-minutes does. `records` is a
+        directory the CLI writes what it was handed into: `argv`, one
+        NUL-terminated element per argument, and `stdin` (AT-2411).
         """
         runner_temp = workdir / "runner-temp"
         runner_temp.mkdir(exist_ok=True)
         (runner_temp / "review_prompt.md").write_text("review this", encoding="utf-8")
         cls._link_scripts(workdir, scripts_root)
         body = ""
+        if records is not None:
+            rec = shlex.quote(str(records))
+            body += f"printf '%s\\0' \"$@\" > {rec}/argv\ncat > {rec}/stdin\n"
         if marks_run is not None:
             body += f"touch {marks_run}\n"
         if touches is not None:
@@ -2125,8 +2132,9 @@ class _CodexStepHarness:
                 "CODEX_MODEL": "stub-model",
                 "TMPDIR": str(runner_temp / "codex-tmp"),
                 "THREAD_COUNT": "0",
-                "EXISTING_COMMENTS": "",
+                "EXISTING_COMMENTS": existing_comments,
             },
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -2986,6 +2994,51 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         self._run_normalize_step(tmp_path)
         assert not (tmp_path / "review-codex.json").exists()
         assert not (tmp_path / "verdict-openai.json").exists()
+
+
+@requires_codex_step_tools
+class TestCodexPromptStaysOutOfArgv(_CodexStepHarness):
+    """The prompt reaches the CLI on stdin, never as an argument (AT-2411).
+
+    An argument is readable from /proc/<pid>/cmdline by any process on the
+    runner, and the prompt carries up to 50 PR review-thread excerpts.
+    codex-cli 0.147.0, the pinned version, reads the prompt from stdin when
+    the PROMPT argument is `-`.
+    """
+
+    _THREAD_TEXT = "thread-excerpt-sentinel"
+
+    def _handed(self, tmp_path: Path) -> tuple[list[str], str]:
+        records = tmp_path / "records"
+        records.mkdir()
+        comments = json.dumps([{"status": "unresolved", "body": self._THREAD_TEXT}])
+        self._run_codex_step(
+            tmp_path, records=records, existing_comments=comments
+        )
+        argv = (records / "argv").read_text(encoding="utf-8").split("\0")[:-1]
+        return argv, (records / "stdin").read_text(encoding="utf-8")
+
+    def test_the_prompt_is_not_an_argument(self, tmp_path: Path) -> None:
+        argv, _ = self._handed(tmp_path)
+        assert not any("review this" in arg for arg in argv), argv
+        assert not any(self._THREAD_TEXT in arg for arg in argv), argv
+        assert argv[-1] == "-", argv
+
+    def test_the_prompt_arrives_on_stdin(self, tmp_path: Path) -> None:
+        _, stdin = self._handed(tmp_path)
+        assert "review this" in stdin
+        assert self._THREAD_TEXT in stdin
+
+    def test_the_sandbox_and_model_flags_are_unchanged(self, tmp_path: Path) -> None:
+        argv, _ = self._handed(tmp_path)
+        assert argv == [
+            "exec",
+            "--sandbox",
+            "workspace-write",
+            "--model",
+            "stub-model",
+            "-",
+        ]
 
 
 class TestVerdictWriteDoesNotFollowLinks:
