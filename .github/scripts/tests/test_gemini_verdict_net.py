@@ -16,7 +16,8 @@ The net mirrors claude's shape rather than codex's because of what the two
 shapes do downstream, measured here in ``TestWhatTheAggregateMakesOfIt``: a
 ``failed`` payload reaches the aggregate, which names the reviewer on the
 headline and in the roster and exits 1, while an absent payload only lowers
-the response count -- three absent payloads end green.
+the response count -- three absent payloads end red too since AT-2569, but
+with nothing naming gemini.
 
 ``TestTheNetIsInTheWorkflow`` reads the YAML: its first test was red at
 ``d554aee``, where no gemini-gated step carried ``always()``, and the two
@@ -161,17 +162,18 @@ def _aggregate(
 
 
 class TestWhatTheAggregateMakesOfIt:
-    """The ticket's measurement: one failed verdict ends red, three absent end green."""
+    """One failed verdict ends red and names gemini; three absent end red unnamed."""
 
     def test_one_failed_gemini_verdict_with_two_absent_ends_red(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         nothing: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         code, verdict, roster = _aggregate(monkeypatch, tmp_path, nothing)
-        # Three absent payloads with every job green: approve, exit 0. This
-        # is the round a dead gemini step used to produce when the other two
-        # reviewers were also absent, and nothing in it names gemini.
-        assert (code, verdict) == (0, "approve")
+        # Three absent payloads with every job green: comment, exit 1
+        # (AT-2569; it was approve, exit 0). This is the round a dead gemini
+        # step used to produce when the other two reviewers were also
+        # absent, and nothing in it names gemini.
+        assert (code, verdict) == (1, "comment")
         assert roster["missing"] == {
             n: _missing_reason("success") for n in REVIEWER_NAMES
         }

@@ -51,8 +51,7 @@ from github_pr_support import REVIEW_MARKER, normalize_bot_login
 # Spelled out here rather than imported so a change to either prose breaks the
 # assertions that discriminate the paths instead of travelling with them.
 _INDETERMINATE_REASON = (
-    f"0/{len(REVIEWER_NAMES)} LLM responses -- all early-exit or no-output,"
-    " cause indeterminate"
+    f"0/{len(REVIEWER_NAMES)} LLM responses -- no reviewer output, cause indeterminate"
 )
 _ALL_FAILED_REASON = (
     f"0/{len(REVIEWER_NAMES)} LLM responses -- all failed, manual review required"
@@ -421,21 +420,22 @@ class TestMajorConsensusOverlap:
 
 
 class TestAllAbsentIsIndeterminate:
-    """all-success + 0-available -> approve, cause indeterminate;
-    1-failure + 0-available -> comment."""
+    """all-success + 0-available -> comment, cause indeterminate (AT-2569);
+    1-failure + 0-available -> comment, all failed."""
 
     def _empty_reviews(self) -> dict[str, dict[str, Any] | None]:
         return {name: None for name in REVIEWER_NAMES}
 
-    def test_all_success_no_payload_approves(
+    def test_all_success_no_payload_does_not_approve(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All REVIEWER_RESULT_* = "success", zero review files -> the
-        # indeterminate 0-response path.
+        # indeterminate 0-response path. Nothing was reviewed, and the same
+        # signature is a credential outage, so it must not approve.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         verdict, reason, _ = apply_verdict_rules(self._empty_reviews())
-        assert verdict == "approve"
+        assert verdict == "comment"
         assert reason == _INDETERMINATE_REASON
 
     def test_one_failure_no_payload_returns_comment(
@@ -459,6 +459,54 @@ class TestAllAbsentIsIndeterminate:
             monkeypatch.delenv(f"REVIEWER_RESULT_{name.upper()}", raising=False)
         verdict, _, _ = apply_verdict_rules(self._empty_reviews())
         assert verdict == "comment"
+
+
+class TestAllAbsentRoundFailsCi:
+    """AT-2569: a round with every job green and no valid payload fails CI.
+
+    Driven through main() with the real load_reviews reading the working
+    directory, so the exit code and the posted verdict are the ones the
+    aggregate job would produce. The same signature is what a credential
+    outage produces, so the round must neither approve nor end green.
+    """
+
+    def _run_main(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> tuple[int, str, str]:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh-output"))
+        monkeypatch.setenv("PR_NUMBER", "1")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        code = 0
+        with patch("aggregate_reviews.post_verdict") as mock_post:
+            try:
+                main()
+            except SystemExit as exc:
+                code = int(exc.code or 0)
+        comment, verdict = mock_post.call_args[0][:2]
+        return code, verdict, comment
+
+    def test_nothing_loaded_exits_1_with_comment_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        code, verdict, comment = self._run_main(monkeypatch, tmp_path)
+        assert (code, verdict) == (1, "comment")
+        assert _INDETERMINATE_REASON in comment
+
+    def test_three_schema_invalid_payloads_exit_1_with_comment_verdict(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Files exist but fail _is_valid_review, so load_reviews yields None
+        # for each: the same round as no files at all.
+        for name in REVIEWER_NAMES:
+            (tmp_path / f"review-{name}.json").write_text(
+                '{"issues": 5}', encoding="utf-8"
+            )
+        code, verdict, comment = self._run_main(monkeypatch, tmp_path)
+        assert (code, verdict) == (1, "comment")
+        assert _INDETERMINATE_REASON in comment
 
 
 class TestDependabotThresholdScoping:
@@ -596,18 +644,19 @@ class TestMainAllErrorPayloadsFail:
         assert posted_verdict == "comment"
 
 
-class TestMainAllAbsentExitsZero:
-    """main() must not exit non-zero when all reviewer jobs succeeded.
+class TestMainAllAbsentExitsNonzero:
+    """main() fails CI when all reviewer jobs succeeded but none responded.
 
-    Regression guard for R4: the indeterminate 0-response path posts
-    approve and exits 0.
+    The indeterminate 0-response path used to post approve and exit 0 (R4);
+    since AT-2569 it posts comment and exits 1, because the same signature
+    is what a credential outage produces.
     """
 
-    def test_main_all_absent_does_not_exit_nonzero(
+    def test_main_all_absent_exits_nonzero(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # All REVIEWER_RESULT_* = "success", no review files -> the
-        # indeterminate 0-response path -> exit 0.
+        # indeterminate 0-response path -> exit 1.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         monkeypatch.setenv("PR_NUMBER", "42")
@@ -619,15 +668,16 @@ class TestMainAllAbsentExitsZero:
                 return_value={n: None for n in REVIEWER_NAMES},
             ),
             patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
         ):
-            # main() should complete without raising SystemExit
             main()
 
-        # Verify approve verdict was posted
+        assert excinfo.value.code == 1
+        # The verdict is still posted before the exit.
         assert mock_post.call_count == 1
         call_args = mock_post.call_args
         posted_verdict = call_args[0][1]
-        assert posted_verdict == "approve"
+        assert posted_verdict == "comment"
 
 
 class TestReviewerToken:
@@ -762,8 +812,8 @@ class TestApproveQuorumGate:
     def test_main_zero_responses_withholds_formal_approval(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Verdict "approve" with 0 available payloads -> main()
-        # must request the comment downgrade (approve_quorum=False).
+        # 0 available payloads -> main() must request the comment
+        # downgrade (approve_quorum=False) whatever the verdict.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         monkeypatch.setenv("PR_NUMBER", "42")
@@ -775,10 +825,11 @@ class TestApproveQuorumGate:
                 return_value={n: None for n in REVIEWER_NAMES},
             ),
             patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit),
         ):
             main()
 
-        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args[0][1] == "comment"
         assert mock_post.call_args.kwargs["approve_quorum"] is False
 
     def test_main_full_quorum_allows_formal_approval(
@@ -3257,10 +3308,12 @@ class TestSizeSkipVerdict:
                 return_value={n: None for n in REVIEWER_NAMES},
             ) as mock_load,
             patch("aggregate_reviews.post_verdict") as mock_post,
+            # The all-absent round fails CI after posting (AT-2569).
+            pytest.raises(SystemExit),
         ):
             main()
         mock_load.assert_called_once()
-        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args[0][1] == "comment"
 
     def test_summary_is_ascii(self) -> None:
         """Public-repo invariant, asserted at the point the string is built."""
@@ -3898,10 +3951,12 @@ class TestPrepareFailureVerdict:
                 return_value={n: None for n in REVIEWER_NAMES},
             ) as mock_load,
             patch("aggregate_reviews.post_verdict") as mock_post,
+            # The all-absent round fails CI after posting (AT-2569).
+            pytest.raises(SystemExit),
         ):
             main()
         mock_load.assert_called_once()
-        assert mock_post.call_args[0][1] == "approve"
+        assert mock_post.call_args[0][1] == "comment"
 
     def test_summary_is_ascii(self) -> None:
         """Public-repo invariant, asserted at the point the string is built."""
@@ -4136,6 +4191,8 @@ class TestSupersededHeadPostsNoVerdict:
                 return_value={n: None for n in REVIEWER_NAMES},
             ),
             patch("aggregate_reviews.post_verdict") as mock_post,
+            # The all-absent round fails CI after posting (AT-2569).
+            pytest.raises(SystemExit),
         ):
             main()
         mock_post.assert_called_once()
