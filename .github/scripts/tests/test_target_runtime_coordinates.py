@@ -93,6 +93,7 @@ def test_runtime_target_coordinates(tmp_path, name, job, step, cross):
         "RUNNER_TEMP": str(tmp_path / "runner-temp"),
         "PR_NUMBER": "17",
         "PR_SIZE_LIMIT": "1",  # Exercise the size-skip comment API too.
+        "PR_SIZE_WARN_PERCENT": "80",  # The step's `vars.X || '80'` default.
         "PR_AUTHOR": "author",
         "BASE_REF": "",
         "HEAD_REF": "feature",

@@ -1059,6 +1059,10 @@ def test_the_size_gate_reports_the_numbers_the_aggregate_renders(monkeypatch):
         "SIZE_DELETIONS": "200",
         "SIZE_EXCEEDED": "PR_SIZE_LIMIT",
         "SIZE_AXES": "changed",
+        "SIZE_WARNED": "",
+        "SIZE_WARN_AXES": "",
+        "SIZE_WARN_TOTAL": "",
+        "SIZE_WARN_LIMIT": "",
     }
     assert body is not None
     # Without the marker the stale-item pass cannot fold this, so every
@@ -1068,8 +1072,56 @@ def test_the_size_gate_reports_the_numbers_the_aggregate_renders(monkeypatch):
         "<!-- lens:skipped reason=size-limit lines=5000 limit=3000"
         " var=PR_SIZE_LIMIT -->"
     ) in body
-    # The workflow's combined comment, unchanged by AT-3052.
-    assert "[!] PR too large (5000 lines changed, limit 3000)." in body
+    # The workflow's combined comment, with the AT-2415 overage sentence.
+    assert (
+        "[!] PR too large (5000 lines changed, limit 3000)."
+        " Over by 2000 changed lines; split into at least 2 PRs."
+        " Skipping AI review"
+    ) in body
+
+
+def test_under_the_warn_threshold_the_driver_warns_nothing(monkeypatch, capsys):
+    skipped, size, body = _size_gate(
+        monkeypatch, _refs(additions=2399), driver.SizeLimits(3000)
+    )
+    assert skipped is False and body is None
+    assert size["SIZE_WARNED"] == ""
+    assert "[!] size:" not in capsys.readouterr().out
+
+
+def test_the_driver_prints_the_workflow_warning_and_hands_it_on(monkeypatch, capsys):
+    skipped, size, body = _size_gate(
+        monkeypatch, _refs(additions=2400, deletions=126), driver.SizeLimits(3000)
+    )
+    assert skipped is False and body is None
+    assert (
+        "[!] size: 2526/3000 changed lines (84% of PR_SIZE_LIMIT); the review"
+        " is skipped above the limit. Consider splitting."
+    ) in capsys.readouterr().out
+    assert size["SIZE_WARNED"] == "PR_SIZE_LIMIT"
+    assert size["SIZE_WARN_AXES"] == "changed"
+    assert (size["SIZE_WARN_TOTAL"], size["SIZE_WARN_LIMIT"]) == ("2526", "3000")
+
+
+def test_the_driver_warns_per_axis_with_the_warn_percent(monkeypatch, capsys):
+    skipped, size, _ = _size_gate(
+        monkeypatch,
+        _refs(additions=1100, deletions=1600),
+        driver.SizeLimits(3000, additions=2000, warn_percent=50),
+    )
+    assert skipped is False
+    out = capsys.readouterr().out
+    assert "[!] size: 1100/2000 added lines (55% of PR_SIZE_LIMIT_ADDITIONS)" in out
+    assert "[!] size: 1600/3000 deleted lines (53% of PR_SIZE_LIMIT)" in out
+    assert size["SIZE_WARNED"] == "PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT"
+
+
+@pytest.mark.parametrize("value", ["0", "100", "-5", "many"])
+def test_an_invalid_warn_percent_fails_as_the_workflow_does(monkeypatch, value):
+    monkeypatch.setenv("PR_SIZE_WARN_PERCENT", value)
+    config = LocalConfig({}, workflow_defaults())
+    with pytest.raises(driver.ConfigError, match="PR_SIZE_WARN_PERCENT"):
+        driver.size_limits(config)
 
 
 def test_a_pr_within_the_limit_posts_nothing(monkeypatch):
@@ -1156,10 +1208,11 @@ def test_pre_review_reads_the_split_limits_from_config(monkeypatch, tmp_path):
     """Unset split vars read as None, so get_int('') never raises."""
     for name in ("PR_SIZE_LIMIT", "PR_SIZE_LIMIT_ADDITIONS", "PR_SIZE_LIMIT_DELETIONS"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("PR_SIZE_WARN_PERCENT", raising=False)
     monkeypatch.setenv("PR_SIZE_LIMIT_DELETIONS", "10000")
     config = LocalConfig({}, workflow_defaults())
     assert driver.size_limits(config) == driver.SizeLimits(
-        3000, additions=None, deletions=10000
+        3000, additions=None, deletions=10000, warn_percent=80
     )
 
 

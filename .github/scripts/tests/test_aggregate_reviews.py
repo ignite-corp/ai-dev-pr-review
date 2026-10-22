@@ -3550,7 +3550,8 @@ class TestSizeSkipPerAxis:
             "",
             "To proceed, either:",
             "",
-            "1. **Split this PR** so each part is at or under 3000 changed lines.",
+            "1. **Split this PR** so each part is at or under 3000 changed lines."
+            " Over by 1200 changed lines; split into at least 2 PRs.",
             "2. **Raise the limit for this repository** by setting the"
             " `PR_SIZE_LIMIT` repository variable above 4200"
             " (Settings -> Secrets and variables -> Actions -> Variables),"
@@ -3688,6 +3689,113 @@ class TestSizeSkipPerAxis:
             SIZE_LIMIT="1000",
         )
         assert "unknown deleted lines exceeds PR_SIZE_LIMIT_DELETIONS unknown" in body
+        # An overage cannot be computed from "unknown", so none is claimed.
+        assert "Over by" not in body
+
+    def test_both_axes_exceeded_name_each_overage_and_one_split_count(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body, _ = self._run(
+            monkeypatch,
+            capsys,
+            SIZE_EXCEEDED="PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT_DELETIONS",
+            SIZE_AXES="added deleted",
+            SIZE_TOTAL="1500 2500",
+            SIZE_LIMIT="1000 1200",
+        )
+        assert (
+            "at or under 1000 added lines and 1200 deleted lines."
+            " Over by 500 added lines and 1300 deleted lines;"
+            " split into at least 3 PRs."
+        ) in body
+
+
+class TestSizeWarning:
+    """A PR approaching its size limit is warned, not blocked (AT-2415).
+
+    prepare reports each check at or over PR_SIZE_WARN_PERCENT of its limit
+    in SIZE_WARNED / SIZE_WARN_AXES / SIZE_WARN_TOTAL / SIZE_WARN_LIMIT. The
+    aggregate renders one line per entry under the headline and changes
+    nothing else: not the headline, not the verdict, not the exit code.
+    """
+
+    _WARN_KEYS = ("SIZE_WARNED", "SIZE_WARN_AXES", "SIZE_WARN_TOTAL", "SIZE_WARN_LIMIT")
+
+    @classmethod
+    def _run(cls, monkeypatch: pytest.MonkeyPatch, **env: str) -> tuple[str, str]:
+        """Run main() on the reviewed path; return (posted body, verdict)."""
+        monkeypatch.delenv("SIZE_SKIPPED", raising=False)
+        for key in cls._WARN_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        for name in REVIEWER_NAMES:
+            monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with (
+            patch(
+                "aggregate_reviews.load_reviews",
+                return_value={n: None for n in REVIEWER_NAMES},
+            ),
+            patch("aggregate_reviews.post_verdict") as mock_post,
+        ):
+            main()
+        return mock_post.call_args[0][0], mock_post.call_args[0][1]
+
+    def test_under_the_threshold_nothing_is_added(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body, _ = self._run(monkeypatch, SIZE_WARNED="")
+        assert "[!] size:" not in body
+
+    def test_a_warned_check_adds_one_line_and_changes_nothing_else(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plain_body, plain_verdict = self._run(monkeypatch)
+        body, verdict = self._run(
+            monkeypatch,
+            SIZE_WARNED="PR_SIZE_LIMIT",
+            SIZE_WARN_AXES="changed",
+            SIZE_WARN_TOTAL="2526",
+            SIZE_WARN_LIMIT="3000",
+        )
+        line = (
+            "\n\n> [!] size: 2526/3000 changed lines (84% of PR_SIZE_LIMIT); the"
+            " review is skipped above the limit. Consider splitting."
+        )
+        assert line in body
+        assert verdict == plain_verdict
+        assert body.replace(line, "", 1) == plain_body
+
+    def test_per_axis_warnings_name_each_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body, _ = self._run(
+            monkeypatch,
+            SIZE_WARNED="PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT",
+            SIZE_WARN_AXES="added deleted",
+            SIZE_WARN_TOTAL="1700 2500",
+            SIZE_WARN_LIMIT="2000 3000",
+        )
+        assert (
+            "> [!] size: 1700/2000 added lines (85% of PR_SIZE_LIMIT_ADDITIONS);"
+            in body
+        )
+        assert "> [!] size: 2500/3000 deleted lines (83% of PR_SIZE_LIMIT);" in body
+
+    def test_an_unparseable_entry_is_dropped_not_rendered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A short list cannot invent a percentage; the review still posts."""
+        body, _ = self._run(
+            monkeypatch,
+            SIZE_WARNED="PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT",
+            SIZE_WARN_AXES="added deleted",
+            SIZE_WARN_TOTAL="1700",
+            SIZE_WARN_LIMIT="2000",
+        )
+        assert body.count("[!] size:") == 1
 
 
 _POLICY_SKIP_MARKER = "<!-- lens:skipped reason=policy-excluded-only files=2 -->"

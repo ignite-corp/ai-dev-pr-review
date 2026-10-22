@@ -70,9 +70,16 @@ from github_pr_support import (
     DELETIONS_SIZE_VAR,
     REVIEW_MARKER,
     REVIEWER_NAMES,
+    SIZE_WARN_PERCENT_DEFAULT,
+    SIZE_WARN_PERCENT_MAX,
+    SIZE_WARN_PERCENT_MIN,
+    SIZE_WARN_PERCENT_VAR,
     describe_size_breach,
+    describe_size_overage,
+    describe_size_warning,
     display_path,
     format_labels,
+    size_warn_reached,
 )
 from local_review_config import (
     CONFIG_PATH_ENV,
@@ -312,16 +319,24 @@ class Refs:
 
 @dataclass(frozen=True)
 class SizeLimits:
-    """PR_SIZE_LIMIT and the two per-axis limits; None is unset (AT-3052)."""
+    """PR_SIZE_LIMIT and the two per-axis limits; None is unset (AT-3052).
+
+    `warn_percent` is PR_SIZE_WARN_PERCENT (AT-2415).
+    """
 
     combined: int
     additions: int | None = None
     deletions: int | None = None
+    warn_percent: int = SIZE_WARN_PERCENT_DEFAULT
 
 
 @dataclass(frozen=True)
 class SizeBreach:
-    """One limit the PR exceeded: `{value} {axis} lines exceeds {var} {limit}`."""
+    """One size check the gate applies: `{value} {axis} lines` against `{var} {limit}`.
+
+    Named for its first use, the exceeded check; since AT-2415 it also
+    carries a check within its limit, which `warning()` renders.
+    """
 
     value: int
     axis: str
@@ -331,19 +346,29 @@ class SizeBreach:
     def describe(self) -> str:
         return describe_size_breach(self.value, self.axis, self.var, self.limit)
 
+    def warning(self) -> str:
+        return describe_size_warning(self.value, self.axis, self.var, self.limit)
+
 
 def size_limits(config: LocalConfig) -> SizeLimits:
+    warn_percent = config.get_unsigned_int(SIZE_WARN_PERCENT_VAR)
+    if not SIZE_WARN_PERCENT_MIN <= warn_percent <= SIZE_WARN_PERCENT_MAX:
+        raise ConfigError(
+            f"Invalid {SIZE_WARN_PERCENT_VAR}: {warn_percent}"
+            f" (must be integer {SIZE_WARN_PERCENT_MIN}-{SIZE_WARN_PERCENT_MAX})"
+        )
     # All three held to the workflow's `^[0-9]+$`: a bare int() accepts
     # `-1`, which would make every PR exceed the limit and skip review.
     return SizeLimits(
         combined=config.get_unsigned_int(COMBINED_SIZE_VAR),
         additions=config.get_optional_int(ADDITIONS_SIZE_VAR),
         deletions=config.get_optional_int(DELETIONS_SIZE_VAR),
+        warn_percent=warn_percent,
     )
 
 
-def size_breaches(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach]]:
-    """(split, exceeded limits), mirroring the workflow's `Check PR size`.
+def size_checks(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach]]:
+    """(split, every check the gate applies), mirroring `Check PR size`.
 
     With neither per-axis limit set the combined gate runs as it always
     has. With either set the combined check is dropped and each axis is
@@ -373,7 +398,7 @@ def size_breaches(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach
             ),
         ]
         split = True
-    return split, [check for check in checks if check.value > check.limit]
+    return split, checks
 
 
 def _axis_check(
@@ -409,6 +434,10 @@ def initial_size() -> dict[str, str]:
         "SIZE_DELETIONS": "",
         "SIZE_EXCEEDED": "",
         "SIZE_AXES": "",
+        "SIZE_WARNED": "",
+        "SIZE_WARN_AXES": "",
+        "SIZE_WARN_TOTAL": "",
+        "SIZE_WARN_LIMIT": "",
     }
 
 
@@ -2088,8 +2117,16 @@ def size_gate(
     workflow's `Check PR size` step emits; the caller branches on the bool
     rather than parsing them back.
     """
-    split, breaches = size_breaches(refs, limits)
+    split, checks = size_checks(refs, limits)
+    breaches = [check for check in checks if check.value > check.limit]
+    warnings = [
+        check
+        for check in checks
+        if size_warn_reached(check.value, check.limit, limits.warn_percent)
+    ]
     skipped = bool(breaches)
+    for warning in warnings:
+        print(warning.warning())
     if split:
         summary = "; ".join(breach.describe() for breach in breaches)
         size_total = " ".join(str(breach.value) for breach in breaches)
@@ -2099,7 +2136,8 @@ def size_gate(
         size_limit = str(limits.combined)
         summary = f"{size_total} lines changed, limit {size_limit}"
     if skipped:
-        print(f"PR too large: {summary}; skipping review")
+        overage = describe_size_overage([(b.value, b.axis, b.limit) for b in breaches])
+        print(f"PR too large: {summary}; {overage}; skipping review")
         gh_comment(
             repo,
             pr_number,
@@ -2122,7 +2160,8 @@ def size_gate(
                     f" lines={','.join(str(b.value) for b in breaches)}"
                     f" limit={','.join(str(b.limit) for b in breaches)}"
                     f" var={','.join(b.var for b in breaches)} -->",
-                    f"[!] PR too large ({summary}). Skipping AI review --"
+                    f"[!] PR too large ({summary}). {overage[0].upper()}{overage[1:]}."
+                    " Skipping AI review --"
                     " the aggregate verdict below explains how to proceed.",
                 ]
             ),
@@ -2135,6 +2174,10 @@ def size_gate(
         "SIZE_DELETIONS": str(refs.deletions),
         "SIZE_EXCEEDED": " ".join(breach.var for breach in breaches),
         "SIZE_AXES": " ".join(breach.axis for breach in breaches),
+        "SIZE_WARNED": " ".join(warning.var for warning in warnings),
+        "SIZE_WARN_AXES": " ".join(warning.axis for warning in warnings),
+        "SIZE_WARN_TOTAL": " ".join(str(warning.value) for warning in warnings),
+        "SIZE_WARN_LIMIT": " ".join(str(warning.limit) for warning in warnings),
     }
 
 
