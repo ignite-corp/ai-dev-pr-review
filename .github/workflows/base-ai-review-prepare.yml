@@ -22,7 +22,7 @@ on:
         type: string
         default: ""
       default_prompts_path:
-        description: "Directory in the caller repository holding default prompts for a target that ships none; honoured on a cross-repository run only; empty means no default (AT-2520)"
+        description: "Directory in the caller repository holding default prompts for a target whose base branch ships none; honoured on a cross-repository run only, which never reads prompts from the PR head (AT-3032); empty means no default (AT-2520)"
         required: false
         type: string
         default: ""
@@ -563,6 +563,8 @@ jobs:
           CHECKLIST_PATH: ${{ inputs.code-review-checklist-path }}
           # Empty on a same-repository run; see 'Checkout caller default prompts'.
           DEFAULT_PROMPTS_PATH: ${{ steps.target.outputs.cross == 'true' && inputs.default_prompts_path || '' }}
+          # A cross-repository run never reads prompts from the PR head (AT-3032).
+          CROSS_REPO: ${{ steps.target.outputs.cross }}
           # See 'Fetch PR head': the checkout persisted no credential, and
           # this step fetches (the base branch below; the merge commit
           # inside extract_pr_diff.sh).
@@ -603,6 +605,14 @@ jobs:
           # the PR head copy and emit a warning so the security caveat is
           # surfaced. Future PRs will use the base version once merged.
           #
+          # Same-repository runs only (AT-3032). A cross-repository run is
+          # the caller's -- the LENS runner's, dispatched for every non-draft
+          # PR on an allowlisted target -- and runs under the caller's
+          # secrets, so a head copy there would let the PR author write the
+          # reviewer prompt for a run on someone else's credentials. There
+          # the order is the base branch, then the caller default; the head
+          # is never read, not even to inspect its mode.
+          #
           # A target with the file on neither side gets the CALLER's default
           # when the caller passed default_prompts_path (AT-2520): a target
           # reviewed cross-repo need not ship prompts, and the caller that
@@ -626,12 +636,17 @@ jobs:
           : > context.md
           append_prompt() {
             local path="$1" name="$2"
-            local rev mode source part default=""
+            local rev mode source part searched nodefault default=""
             part=$(mktemp)
             rev="origin/${BASE_REF}"
             source="base branch '${BASE_REF}'"
             mode=$(git ls-tree --format='%(objectmode)' "$rev" -- "$path")
-            if [ -z "$mode" ]; then
+            if [ -z "$mode" ] && [ "$CROSS_REPO" = "true" ]; then
+              searched="is not on the base branch '${BASE_REF}' (a cross-repository run never reads the PR head)"
+              nodefault="no default_prompts_path was given"
+            elif [ -z "$mode" ]; then
+              searched="is on neither the base branch '${BASE_REF}' nor the PR head"
+              nodefault="no default_prompts_path applies (unset, or ignored on a same-repository run)"
               rev="$HEAD_SHA"
               source="PR head"
               mode=$(git ls-tree --format='%(objectmode)' "$rev" -- "$path")
@@ -649,7 +664,7 @@ jobs:
               esac
             else
               if [ -z "$DEFAULT_PROMPTS_PATH" ]; then
-                echo "::error title=Missing review prompt::${path} is on neither the base branch '${BASE_REF}' nor the PR head, and no default_prompts_path applies (unset, or ignored on a same-repository run)"
+                echo "::error title=Missing review prompt::${path} ${searched}, and ${nodefault}"
                 exit 1
               fi
               default="${DEFAULT_PROMPTS_PATH%/}/${name}"
@@ -658,7 +673,7 @@ jobs:
               case "$mode" in
                 100644|100755) git -C .ai-dev-pr-review-caller cat-file blob "HEAD:${default}" > "$part" ;;
                 "")
-                  echo "::error title=Missing default review prompt::${path} is on neither the base branch '${BASE_REF}' nor the PR head, and the caller has no ${default}"
+                  echo "::error title=Missing default review prompt::${path} ${searched}, and the caller has no ${default}"
                   exit 1
                   ;;
                 *)
