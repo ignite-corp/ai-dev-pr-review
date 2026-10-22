@@ -337,14 +337,14 @@ def _emit_partial_observability(
 
 
 def _all_reviewer_jobs_succeeded(total: int) -> bool:
-    """True when every reviewer job exited 0 but produced no review payload.
+    """True when every reviewer job reported `success`.
 
-    Says nothing about why. The reviewer step in base-ai-review-single.yml
-    is continue-on-error, so a reviewer whose CLI or action dies on a
-    missing or bad credential reports `success` having uploaded nothing --
-    the same two facts this reads. Callers must not treat it as a benign
-    classification; it only suppresses the sub-quorum CI failure, which is
-    pre-existing behaviour on this path.
+    Says nothing about why no payload arrived. The reviewer step in
+    base-ai-review-single.yml is continue-on-error, so a reviewer whose CLI
+    or action dies on a missing or bad credential reports `success` having
+    uploaded nothing. Callers must not treat it as a benign classification;
+    it only selects the indeterminate reason, and the round still fails CI
+    (AT-2569).
     """
     conclusions = load_reviewer_conclusions()
     return len(conclusions) == total and all(
@@ -355,10 +355,13 @@ def _all_reviewer_jobs_succeeded(total: int) -> bool:
 def _artifacts_entirely_absent(
     reviews: dict[str, dict[str, Any] | None],
 ) -> bool:
-    """True when no reviewer wrote any artifact at all.
+    """True when no reviewer has a valid payload.
 
-    Error-bearing fallback payloads (e.g. the codex CLI-failure verdict)
-    are artifacts: their presence marks an infrastructure failure the
+    ``reviews`` comes from load_reviews, which maps a missing file, an
+    unparseable one and a schema-invalid one alike to None, so this cannot
+    tell "nothing was written" from "something unusable was written".
+    Error-bearing fallback payloads (e.g. the codex CLI-failure verdict) are
+    valid payloads: their presence marks an infrastructure failure the
     reviewer was able to report, which is strictly more than this predicate
     can tell its callers.
     """
@@ -381,8 +384,8 @@ def _check_insufficient(
                 total
             ):
                 return (
-                    "approve",
-                    f"0/{total} LLM responses -- all early-exit or no-output,"
+                    "comment",
+                    f"0/{total} LLM responses -- no reviewer output,"
                     " cause indeterminate",
                 )
             return (
@@ -1904,24 +1907,6 @@ def _aggregate(result: dict[str, Any]) -> None:
     sequential_bypass = review_mode == _REVIEW_MODE_SEQUENTIAL and _has_early_exit(
         available
     )
-    # Every job exited 0 AND no reviewer wrote any artifact. Error-bearing
-    # fallback payloads disqualify the bypass -- provider failures must fail
-    # CI. It suppresses the sub-quorum exit below and nothing else: it is
-    # NOT a benign classification, and does not reach the roster. The same
-    # signature is what a credential outage produces
-    # (SEQUENTIAL_EARLY_EXIT_ROSTER_REASON's comment), and the aggregate is
-    # given nothing that separates the two, so the reasons say
-    # "early-exit or no-output" and a gate reading the reason table blocks
-    # on it even though this run stays green. Keeping the run green is the
-    # pre-existing behaviour on this path -- _check_insufficient already
-    # returns "approve" here -- and turning it red is a fleet decision
-    # across the consumers, not one to
-    # make as a side effect of naming the reason honestly.
-    no_artifact_bypass = (
-        _artifacts_entirely_absent(reviews)
-        and _all_reviewer_jobs_succeeded(len(REVIEWERS))
-        and verdict == "approve"
-    )
     # Computed before the emit, not just before the exit check below, so the
     # roster and the exit code read the same flags. A round sequential_bypass
     # lets through ends green sub-quorum by design, and the reason string is
@@ -1956,11 +1941,7 @@ def _aggregate(result: dict[str, Any]) -> None:
     )
     print(f"Final verdict: {verdict} -- {reason}")
 
-    if (
-        len(available) < MIN_REVIEWERS_FOR_VERDICT
-        and not sequential_bypass
-        and not no_artifact_bypass
-    ):
+    if len(available) < MIN_REVIEWERS_FOR_VERDICT and not sequential_bypass:
         print("ERROR: Insufficient LLM responses -- failing CI", file=sys.stderr)
         sys.exit(1)
 
