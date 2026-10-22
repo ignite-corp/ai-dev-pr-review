@@ -1,0 +1,121 @@
+name: probe-at3054-codex-sandbox
+
+# PROBE (AT-3054). Measurement only; never merged. The PR carrying it targets
+# a throwaway base branch, not main, so self-review and CI do not run on it.
+#
+# Re-measures the codex sandbox with the PATCHED reviewer setup: the
+# 'Restrict the Codex sandbox' step body is taken verbatim from
+# base-ai-review-single.yml and run as its own step, and the command runs
+# through `codex exec` without --sandbox, as the patched job runs it. A
+# local mock stands in for the model, so nothing leaves the runner.
+#
+# Public logs: status words and variable NAMES only (probe-at3054/check.sh).
+# No content, no values, no secrets (dummy key), no artifacts.
+
+on:
+  pull_request:
+    branches: [probe/AT-3054-base2]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: >-
+      github.head_ref == 'task/AT-3054-probe2'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout ai-dev-pr-review scripts (pinned to release tag)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ignite-corp/ai-dev-pr-review
+          ref: v1.15.1
+          path: .ai-dev-pr-review
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Copy ai-dev-pr-review scripts outside the workspace
+        run: |
+          set -euo pipefail
+          TRUSTED="${RUNNER_TEMP}/ai-dev-pr-review"
+          rm -rf -- "$TRUSTED"
+          cp -a -- .ai-dev-pr-review "$TRUSTED"
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@0.147.0
+
+      - name: Authenticate Codex CLI with a dummy API key
+        env:
+          OPENAI_API_KEY: sk-at3054-dummy-not-a-real-key
+        run: |
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          if [ ! -s "$HOME/.codex/auth.json" ]; then
+            echo "::error::codex login did not produce auth.json"
+            exit 1
+          fi
+          echo "codex auth.json populated"
+
+      # The patched step's body, extracted from the workflow under test and
+      # exec'd so that its parent is the runner's worker, as in the real job.
+      - name: Restrict the Codex sandbox (verbatim from base-ai-review-single.yml)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          python3 -c '
+          import sys, yaml
+          steps = yaml.safe_load(open(".github/workflows/base-ai-review-single.yml"))["jobs"]["review"]["steps"]
+          sys.stdout.write([s for s in steps if s.get("name") == "Restrict the Codex sandbox"][0]["run"])
+          ' > "${RUNNER_TEMP}/at3054-restrict.sh"
+          exec bash -e "${RUNNER_TEMP}/at3054-restrict.sh"
+
+      - name: Enable bubblewrap sandbox on Actions runner
+        id: sysctl
+        run: |
+          orig_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          orig_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          echo "orig_userns=${orig_userns}" >> "$GITHUB_OUTPUT"
+          echo "orig_apparmor=${orig_apparmor}" >> "$GITHUB_OUTPUT"
+          if [ -n "$orig_userns" ] && [ "$orig_userns" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [ -n "$orig_apparmor" ] && [ "$orig_apparmor" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Write a sibling file under RUNNER_TEMP
+        run: echo placeholder > "${RUNNER_TEMP}/at3054-sibling.md"
+
+      - name: Probe reads inside the codex sandbox
+        env:
+          OPENAI_API_KEY: sk-at3054-dummy-not-a-real-key
+          CODEX_MODEL: gpt-5.6-luna
+          TMPDIR: ${{ runner.temp }}/codex-tmp
+          AT3054_CONTROL: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p -- "$TMPDIR"
+          WORKER_PID=$PPID
+          RUNNER_DIR=$(dirname "$(dirname "$(readlink -f "/proc/${WORKER_PID}/exe")")")
+          export WORKER_PID RUNNER_DIR
+          bash probe-at3054/drive.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore sysctl after Codex
+        if: always()
+        env:
+          ORIG_USERNS: ${{ steps.sysctl.outputs.orig_userns }}
+          ORIG_APPARMOR: ${{ steps.sysctl.outputs.orig_apparmor }}
+        run: |
+          if [ -n "$ORIG_USERNS" ] && [ "$ORIG_USERNS" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone="$ORIG_USERNS"
+          fi
+          if [ -n "$ORIG_APPARMOR" ] && [ "$ORIG_APPARMOR" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns="$ORIG_APPARMOR"
+          fi
