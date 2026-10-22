@@ -297,9 +297,13 @@ The paths that end red before reaching a reviewer — the head was superseded, p
 
 These tune behavior without code changes. Set them under repository or organization `Settings -> Secrets and variables -> Actions -> Variables`.
 
+They are read in the repository that runs the workflow. On the runner path ([automatic dispatch](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch)) that is `ignite-corp/ai-dev-pr-review-runner`, so the values come from the runner repository and its `ignite-corp` organization variables, never from the target repository: a target cannot set its own `PR_SIZE_LIMIT`.
+
 | Var | Default | Affects |
 |---|---|---|
-| `PR_SIZE_LIMIT` | `3000` | Skip review when added+deleted lines exceed this. Comments on the PR and returns `skip=true`. |
+| `PR_SIZE_LIMIT` | `3000` | Skip review when added+deleted lines exceed this. Comments on the PR and returns `skip=true`. Once `PR_SIZE_LIMIT_ADDITIONS` or `PR_SIZE_LIMIT_DELETIONS` is set this combined check is dropped, and `PR_SIZE_LIMIT` is only the limit for an axis whose own var is unset. |
+| `PR_SIZE_LIMIT_ADDITIONS` | _(unset)_ | Per-axis size limit on added lines (AT-3052). Setting it, or `PR_SIZE_LIMIT_DELETIONS`, replaces the combined check with one check per axis: added lines against this var, deleted lines against `PR_SIZE_LIMIT_DELETIONS`, each falling back to `PR_SIZE_LIMIT` when its own var is unset, and the PR is reviewed only when every check holds. The skip comment and verdict name the var that was exceeded, for example `4200 added lines exceeds PR_SIZE_LIMIT_ADDITIONS 3000`, joined with `; ` when several were. Must be an integer, or `prepare` fails. |
+| `PR_SIZE_LIMIT_DELETIONS` | _(unset)_ | Per-axis size limit on deleted lines; see `PR_SIZE_LIMIT_ADDITIONS`. A high value lets a deletion-heavy PR through without raising the limit on added lines. Must be an integer, or `prepare` fails. |
 | `REVIEW_MODE` | `parallel` | `parallel` (default) runs all three reviewers concurrently. `sequential` runs Claude -> Codex -> Gemini and stops on `early_exit`. |
 | `CRITICAL_THRESHOLD` | `1` | Human PRs: number of critical issues that triggers `request_changes`. |
 | `DEPENDABOT_CRITICAL_THRESHOLD` | `2` | Dependabot PRs only: same gate, raised. |
@@ -349,7 +353,7 @@ dist/**
 
 The rule file is read from the PR head (the tree `prepare` already checks out), so a sensitive file added by the same PR can be covered by the same PR. The price is that a PR can also edit the rules, and the mitigation is fixed: `.github/lens-ignore` itself is never excludable. A rule that matches it is ignored for that path with a warning, so every change to the policy is always in the reviewed diff, and the verdict comment lists what the policy removed.
 
-The size gate is unchanged: `PR_SIZE_LIMIT` compares GitHub's own additions+deletions for the PR, and excluded files still count toward it. A PR that is over the limit is skipped for size before the policy runs; the verdict says which gate it hit (`size_skipped` and `policy_skipped` are separate outputs of `prepare`, and `skip` is their combination).
+The size gate is unchanged: `PR_SIZE_LIMIT` compares GitHub's own additions+deletions for the PR (`PR_SIZE_LIMIT_ADDITIONS` / `PR_SIZE_LIMIT_DELETIONS` compare GitHub's additions and deletions separately), and excluded files still count toward it. A PR that is over the limit is skipped for size before the policy runs; the verdict says which gate it hit (`size_skipped` and `policy_skipped` are separate outputs of `prepare`, and `skip` is their combination).
 
 ### When every changed file is excluded
 

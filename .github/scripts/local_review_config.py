@@ -42,6 +42,7 @@ _CONFIG_LINE_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>
 # A `#` that opens a trailing comment: whitespace before it, so a `#` inside
 # a value (`BOT_LOGIN=a#b`) is left alone.
 _TRAILING_COMMENT_RE = re.compile(r"\s+#.*$")
+_UNSIGNED_INT_RE = re.compile(r"[0-9]+")
 
 
 class ConfigError(ValueError):
@@ -157,6 +158,26 @@ class LocalConfig:
             return int(raw)
         except ValueError:
             raise ConfigError(f"Invalid {name}: {raw!r} (must be integer)") from None
+
+    def get_unsigned_int(self, name: str) -> int:
+        """An integer held to the workflow's own `^[0-9]+$`.
+
+        int() alone would accept `-1` and `+5`, which the workflow fails.
+        """
+        raw = self.get(name)
+        if not _UNSIGNED_INT_RE.fullmatch(raw):
+            raise ConfigError(f"Invalid {name}: {raw!r} (must be integer)")
+        return int(raw)
+
+    def get_optional_int(self, name: str) -> int | None:
+        """get_unsigned_int, or None for a var the workflow writes `|| ''`.
+
+        Empty means unset, as it does for `vars.X || ''` in Actions, so it
+        cannot reach int('').
+        """
+        if self.get(name) == "":
+            return None
+        return self.get_unsigned_int(name)
 
 
 def prompt_path_defaults() -> tuple[str, str]:

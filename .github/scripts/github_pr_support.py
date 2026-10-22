@@ -21,6 +21,21 @@ _DEFAULT_PAGE_SIZE = 50
 # looking for the exact same string the aggregate script emits.
 REVIEW_MARKER = "<!-- multi-llm-review -->"
 
+# The PR size gate's vocabulary (AT-3052), one definition for the aggregate
+# and the local driver. base-ai-review-prepare.yml's `Check PR size` spells
+# the same words in bash; test_prepare_size_check pins the two together.
+COMBINED_SIZE_VAR = "PR_SIZE_LIMIT"
+ADDITIONS_SIZE_VAR = "PR_SIZE_LIMIT_ADDITIONS"
+DELETIONS_SIZE_VAR = "PR_SIZE_LIMIT_DELETIONS"
+COMBINED_SIZE_AXIS = "changed"
+ADDITIONS_SIZE_AXIS = "added"
+DELETIONS_SIZE_AXIS = "deleted"
+
+
+def describe_size_breach(value: object, axis: str, var: str, limit: object) -> str:
+    """`{value} {axis} lines exceeds {VAR} {limit}` -- one exceeded size limit."""
+    return f"{value} {axis} lines exceeds {var} {limit}"
+
 _APP_LOGIN_PREFIX = "app/"
 _BOT_LOGIN_SUFFIX = "[bot]"
 

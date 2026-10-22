@@ -236,9 +236,13 @@ it; the fold no longer reads it.
 ### One asymmetry worth knowing
 
 The driver's size-skip comment carries
-`<!-- lens:skipped reason=size-limit ... -->`, because without a marker the
-stale-item pass cannot fold it and every re-run leaves another copy standing
-(AT-2208). `aggregate_reviews.py`'s **own** size-skip verdict does not carry
+`<!-- lens:skipped reason=size-limit lines=... limit=... var=... -->`, because
+without a marker the stale-item pass cannot fold it and every re-run leaves
+another copy standing (AT-2208). `var=` names the limit that was exceeded --
+`PR_SIZE_LIMIT`, or `PR_SIZE_LIMIT_ADDITIONS` / `PR_SIZE_LIMIT_DELETIONS` when
+either per-axis limit is set (AT-3052); several are comma-joined, aligned with
+`lines=` and `limit=`. The driver reads all three the way the workflow does,
+and an unset per-axis limit stays unset rather than becoming 0. `aggregate_reviews.py`'s **own** size-skip verdict does not carry
 that prefix. A consumer gate keyed on "`lens:skipped` present means skipped"
 therefore sees it in one place and not the other. The driver keeps its
 marker; aligning the aggregate would change behaviour for every consumer and

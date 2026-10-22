@@ -28,7 +28,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import local_reviewer_support as support  # noqa: E402
 import review_pr_local as driver  # noqa: E402
-from local_review_config import LocalConfig  # noqa: E402
+from local_review_config import LocalConfig, workflow_defaults  # noqa: E402
 from reviewer_prompts import existing_threads_block  # noqa: E402
 
 NEW_MODULES = (
@@ -1002,7 +1002,9 @@ def test_this_repositorys_own_prompt_paths_exist_where_self_review_says():
         assert (root / path).is_file(), path
 
 
-def _refs(base_ref="main", head_sha="deadbeef", changed_lines=10) -> driver.Refs:
+def _refs(
+    base_ref="main", head_sha="deadbeef", additions=10, deletions=0
+) -> driver.Refs:
     """A Refs with the fields these tests vary, and defaults for the rest.
 
     Named parameters rather than `**overrides`: forwarding a mixed-type dict
@@ -1012,34 +1014,143 @@ def _refs(base_ref="main", head_sha="deadbeef", changed_lines=10) -> driver.Refs
     return driver.Refs(
         base_ref=base_ref, head_sha=head_sha, head_ref="topic", pr_author="a",
         pr_merged="false", merge_commit_sha="", pr_commits="1", labels="",
-        changed_lines=changed_lines,
+        additions=additions, deletions=deletions,
     )
 
 
 # --------------------------------------------------------- gates and outcomes
 
 
-def test_the_size_gate_reports_the_numbers_the_aggregate_renders(monkeypatch):
+def _size_gate(monkeypatch, refs, limits):
+    """Run size_gate; return (skipped, size dict, posted body or None)."""
     posted = {}
     monkeypatch.setattr(
         driver, "gh_comment", lambda repo, pr, body: posted.update(body=body)
     )
-    skipped, size = driver.size_gate("o/r", "1", _refs(changed_lines=5000), 3000)
+    skipped, size = driver.size_gate("o/r", "1", refs, limits)
+    return skipped, size, posted.get("body")
+
+
+def test_the_size_gate_reports_the_numbers_the_aggregate_renders(monkeypatch):
+    skipped, size, body = _size_gate(
+        monkeypatch, _refs(additions=4800, deletions=200), driver.SizeLimits(3000)
+    )
 
     assert skipped is True
-    assert size == {"SIZE_SKIPPED": "true", "SIZE_TOTAL": "5000", "SIZE_LIMIT": "3000"}
+    assert size == {
+        "SIZE_SKIPPED": "true",
+        "SIZE_TOTAL": "5000",
+        "SIZE_LIMIT": "3000",
+        "SIZE_ADDITIONS": "4800",
+        "SIZE_DELETIONS": "200",
+        "SIZE_EXCEEDED": "PR_SIZE_LIMIT",
+        "SIZE_AXES": "changed",
+    }
     # Without the marker the stale-item pass cannot fold this, so every
     # re-run left another copy standing (AT-2208).
-    assert driver.REVIEW_MARKER in posted["body"]
-    assert "<!-- lens:skipped reason=size-limit" in posted["body"]
+    assert driver.REVIEW_MARKER in body
+    assert (
+        "<!-- lens:skipped reason=size-limit lines=5000 limit=3000"
+        " var=PR_SIZE_LIMIT -->"
+    ) in body
+    # The workflow's combined comment, unchanged by AT-3052.
+    assert "[!] PR too large (5000 lines changed, limit 3000)." in body
 
 
 def test_a_pr_within_the_limit_posts_nothing(monkeypatch):
     monkeypatch.setattr(
         driver, "gh_comment", lambda *a: pytest.fail("commented on a normal PR")
     )
-    skipped, size = driver.size_gate("o/r", "1", _refs(changed_lines=10), 3000)
+    skipped, size = driver.size_gate(
+        "o/r", "1", _refs(additions=10), driver.SizeLimits(3000)
+    )
     assert skipped is False and size["SIZE_SKIPPED"] == "false"
+    assert size["SIZE_EXCEEDED"] == ""
+
+
+def test_a_deletions_heavy_pr_under_its_deletions_limit_is_reviewed(monkeypatch):
+    skipped, size, body = _size_gate(
+        monkeypatch,
+        _refs(additions=100, deletions=5000),
+        driver.SizeLimits(3000, deletions=10000),
+    )
+    assert skipped is False
+    assert body is None
+    assert (size["SIZE_ADDITIONS"], size["SIZE_DELETIONS"]) == ("100", "5000")
+
+
+def test_additions_over_their_limit_skip_naming_that_var(monkeypatch):
+    skipped, size, body = _size_gate(
+        monkeypatch,
+        _refs(additions=2500, deletions=10),
+        driver.SizeLimits(3000, additions=2000),
+    )
+    assert skipped is True
+    assert size["SIZE_EXCEEDED"] == "PR_SIZE_LIMIT_ADDITIONS"
+    assert size["SIZE_AXES"] == "added"
+    assert (size["SIZE_TOTAL"], size["SIZE_LIMIT"]) == ("2500", "2000")
+    assert "var=PR_SIZE_LIMIT_ADDITIONS -->" in body
+    assert "2500 added lines exceeds PR_SIZE_LIMIT_ADDITIONS 2000" in body
+
+
+def test_an_axis_without_its_own_limit_falls_back_to_pr_size_limit(monkeypatch):
+    skipped, size, body = _size_gate(
+        monkeypatch,
+        _refs(additions=3500, deletions=10),
+        driver.SizeLimits(3000, deletions=10000),
+    )
+    assert skipped is True
+    assert size["SIZE_EXCEEDED"] == "PR_SIZE_LIMIT"
+    assert size["SIZE_AXES"] == "added"
+    assert "3500 added lines exceeds PR_SIZE_LIMIT 3000" in body
+
+
+def test_the_combined_check_is_dropped_once_a_split_limit_is_set(monkeypatch):
+    skipped, _, _ = _size_gate(
+        monkeypatch,
+        _refs(additions=2900, deletions=2900),
+        driver.SizeLimits(3000, additions=3000),
+    )
+    assert skipped is False
+
+
+def test_both_axes_exceeded_join_their_messages(monkeypatch):
+    skipped, size, body = _size_gate(
+        monkeypatch,
+        _refs(additions=1500, deletions=2000),
+        driver.SizeLimits(3000, additions=1000, deletions=1200),
+    )
+    assert skipped is True
+    assert size["SIZE_EXCEEDED"] == "PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT_DELETIONS"
+    assert size["SIZE_AXES"] == "added deleted"
+    assert (size["SIZE_TOTAL"], size["SIZE_LIMIT"]) == ("1500 2000", "1000 1200")
+    assert (
+        "lines=1500,2000 limit=1000,1200"
+        " var=PR_SIZE_LIMIT_ADDITIONS,PR_SIZE_LIMIT_DELETIONS -->"
+    ) in body
+    assert (
+        "1500 added lines exceeds PR_SIZE_LIMIT_ADDITIONS 1000;"
+        " 2000 deleted lines exceeds PR_SIZE_LIMIT_DELETIONS 1200"
+    ) in body
+
+
+def test_pre_review_reads_the_split_limits_from_config(monkeypatch, tmp_path):
+    """Unset split vars read as None, so get_int('') never raises."""
+    for name in ("PR_SIZE_LIMIT", "PR_SIZE_LIMIT_ADDITIONS", "PR_SIZE_LIMIT_DELETIONS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PR_SIZE_LIMIT_DELETIONS", "10000")
+    config = LocalConfig({}, workflow_defaults())
+    assert driver.size_limits(config) == driver.SizeLimits(
+        3000, additions=None, deletions=10000
+    )
+
+
+def test_a_negative_combined_limit_fails_as_the_workflow_does(monkeypatch):
+    """`-1` would make every PR exceed the limit and skip review silently."""
+    monkeypatch.setenv("PR_SIZE_LIMIT", "-1")
+    config = LocalConfig({}, workflow_defaults())
+    with pytest.raises(driver.ConfigError, match="PR_SIZE_LIMIT"):
+        driver.size_limits(config)
 
 
 def test_a_reviewer_that_never_reported_is_skipped_not_approved():

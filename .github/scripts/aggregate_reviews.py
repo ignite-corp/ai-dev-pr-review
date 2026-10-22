@@ -50,10 +50,13 @@ from typing import Any, NamedTuple, TypeGuard
 # put it behind that module's PyYAML dependency and broke every consumer
 # (AT-2510).
 from github_pr_support import (
+    COMBINED_SIZE_AXIS,
+    COMBINED_SIZE_VAR,
     REVIEW_MARKER,
     REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
+    describe_size_breach,
     display_path,
     fetch_paginated_nodes,
     int_env,
@@ -564,7 +567,8 @@ def format_prepare_failure_summary(result: str, run_url: str) -> str:
     causes = [
         "Known causes:",
         "",
-        "1. **`PR_SIZE_LIMIT` is not an integer.** Fix the repository variable"
+        "1. **`PR_SIZE_LIMIT` (or `PR_SIZE_LIMIT_ADDITIONS` /"
+        " `PR_SIZE_LIMIT_DELETIONS`) is not an integer.** Fix the repository variable"
         " (Settings -> Secrets and variables -> Actions -> Variables) or remove"
         " it to fall back to the default.",
         "2. **The PR head could not be resolved**, or the checked-out tree did"
@@ -594,44 +598,95 @@ def format_prepare_failure_summary(result: str, run_url: str) -> str:
     return "\n".join(lines)
 
 
-def _size_skip_details() -> tuple[str, str] | None:
-    """(total, limit) when prepare skipped the review for size, else None.
+class SizeBreach(NamedTuple):
+    """One size limit the PR exceeded, as prepare measured it (AT-3052).
 
-    prepare gates the reviewer jobs on PR_SIZE_LIMIT but cannot skip this job:
-    its name is a required status context, and a job that never runs reports
-    nothing, so the check sits Pending with no failure to explain it. The
-    aggregate therefore runs on the skip path and renders it (AT-1975).
+    `axis` is `changed` on the combined gate, `added` or `deleted` on the
+    per-axis one; `var` is the variable the axis was held to, which is
+    PR_SIZE_LIMIT for an axis whose own variable is unset.
+    """
+
+    value: str
+    axis: str
+    var: str
+    limit: str
+
+    def describe(self) -> str:
+        return describe_size_breach(self.value, self.axis, self.var, self.limit)
+
+
+def _size_skip_details() -> list[SizeBreach] | None:
+    """Each exceeded size limit when prepare skipped for size, else None.
+
+    prepare gates the reviewer jobs on the size limits but cannot skip this
+    job: its name is a required status context, and a job that never runs
+    reports nothing, so the check sits Pending with no failure to explain it.
+    The aggregate therefore runs on the skip path and renders it (AT-1975).
+
+    SIZE_EXCEEDED / SIZE_AXES / SIZE_TOTAL / SIZE_LIMIT are space-separated
+    and aligned by position. An empty SIZE_EXCEEDED is a prepare from before
+    AT-3052, which only ever had the combined gate.
     """
     if os.environ.get("SIZE_SKIPPED", "false").strip().lower() != "true":
         return None
+    exceeded = os.environ.get("SIZE_EXCEEDED", "").split() or [COMBINED_SIZE_VAR]
+    axes = os.environ.get("SIZE_AXES", "").split()
+    totals = os.environ.get("SIZE_TOTAL", "").split()
+    limits = os.environ.get("SIZE_LIMIT", "").split()
+
+    def at(values: list[str], index: int, fallback: str) -> str:
+        return values[index] if index < len(values) else fallback
+
+    return [
+        SizeBreach(
+            value=at(totals, index, "unknown"),
+            axis=at(axes, index, COMBINED_SIZE_AXIS),
+            var=var,
+            limit=at(limits, index, "unknown"),
+        )
+        for index, var in enumerate(exceeded)
+    ]
+
+
+def format_size_skip_reason(breaches: list[SizeBreach]) -> str:
+    """`{value} {axis} lines exceeds {VAR} {limit}`, joined with `; `."""
+    return "; ".join(breach.describe() for breach in breaches)
+
+
+def _is_combined_breach(breaches: list[SizeBreach]) -> bool:
     return (
-        os.environ.get("SIZE_TOTAL", "").strip() or "unknown",
-        os.environ.get("SIZE_LIMIT", "").strip() or "unknown",
+        len(breaches) == 1
+        and breaches[0].axis == COMBINED_SIZE_AXIS
+        and breaches[0].var == COMBINED_SIZE_VAR
     )
 
 
-def format_size_skip_summary(total: str, limit: str) -> str:
+def format_size_skip_summary(breaches: list[SizeBreach]) -> str:
     """Verdict body for a review skipped because the PR is too large.
 
     Names the measurement and both remedies: the original defect was not that
     large PRs are blocked -- they already were -- but that nothing said so or
-    said what to do about it.
+    said what to do about it. On the combined gate the headline keeps its
+    pre-AT-3052 wording, which consumers' gates and the drill pin.
     """
-    headline = (
-        f"**Result: [X] Review skipped -- PR too large** --"
-        f" {total} changed lines exceeds the limit of {limit}"
-    )
+    if _is_combined_breach(breaches):
+        only = breaches[0]
+        measurement = f"{only.value} changed lines exceeds the limit of {only.limit}"
+    else:
+        measurement = format_size_skip_reason(breaches)
+    headline = f"**Result: [X] Review skipped -- PR too large** -- {measurement}"
     why_red = (
         "No reviewer ran, so this check reports a failure rather than a"
         " verdict. That is deliberate: a required check that is never"
         " reported stays Pending forever with nothing to act on."
     )
-    remedy_split = (
-        f"1. **Split this PR** so each part is at or under {limit} changed lines."
+    each_part = " and ".join(f"{b.limit} {b.axis} lines" for b in breaches)
+    remedy_split = f"1. **Split this PR** so each part is at or under {each_part}."
+    raise_vars = " and ".join(
+        f"the `{b.var}` repository variable above {b.value}" for b in breaches
     )
     remedy_limit = (
-        "2. **Raise the limit for this repository** by setting the"
-        f" `PR_SIZE_LIMIT` repository variable above {total}"
+        f"2. **Raise the limit for this repository** by setting {raise_vars}"
         " (Settings -> Secrets and variables -> Actions -> Variables),"
         " then re-run this workflow."
     )
@@ -1807,8 +1862,7 @@ def _aggregate(result: dict[str, Any]) -> None:
     size_skip = _size_skip_details()
     if size_skip is not None:
         result["reason"] = "size_skipped"
-        total, limit = size_skip
-        comment = format_size_skip_summary(total, limit)
+        comment = format_size_skip_summary(size_skip)
         _post_recorded_verdict(
             result,
             comment,
@@ -1817,8 +1871,8 @@ def _aggregate(result: dict[str, Any]) -> None:
             unreviewed_majors=0,
         )
         print(
-            f"Final verdict: request_changes -- review skipped, {total} changed"
-            f" lines exceeds PR_SIZE_LIMIT {limit}"
+            "Final verdict: request_changes -- review skipped,"
+            f" {format_size_skip_reason(size_skip)}"
         )
         # Blocking is the pre-existing policy (an unreported required check
         # already made these PRs unmergeable); this only makes it visible.
