@@ -416,8 +416,8 @@ class TestBenignSubQuorumRounds:
     skip got one (AT-2511).
 
     A third path was claimed and is not one: a parallel round where every
-    job exited 0 and no reviewer uploaded an artifact. See
-    ``TestNoArtifactRoundIsNotBenign``.
+    job exited 0 and no reviewer uploaded an artifact. It is not green
+    either (AT-2569). See ``TestNoArtifactRoundIsNotBenign``.
     """
 
     @staticmethod
@@ -681,7 +681,7 @@ class TestNoArtifactRoundIsNotBenign:
         ):
             try:
                 main()
-            except SystemExit as exc:  # pragma: no cover - only on a regression
+            except SystemExit as exc:
                 code = int(exc.code or 0)
         return _read_back(output_path), mock_post.call_args[0][0], code
 
@@ -698,10 +698,8 @@ class TestNoArtifactRoundIsNotBenign:
             n: _missing_reason("success") for n in REVIEWER_NAMES
         }
         assert BENIGN_ROSTER_REASONS.isdisjoint(out["roster"]["missing"].values())
-        # The classification changed; the run's colour did not. Whether a
-        # 0/3 round should go red is a fleet decision, and _check_insufficient
-        # already approved this path before the roster existed.
-        assert code == 0
+        # And the run goes red: nothing reviewed is not a pass (AT-2569).
+        assert code == 1
 
     def test_a_sequential_round_does_not_borrow_a_parallel_reason(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -720,7 +718,7 @@ class TestNoArtifactRoundIsNotBenign:
         assert (
             SEQUENTIAL_EARLY_EXIT_ROSTER_REASON not in out["roster"]["missing"].values()
         )
-        assert code == 0
+        assert code == 1
 
     def test_the_comment_and_the_roster_give_the_same_reason(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -935,10 +933,10 @@ class TestDocumentedGateSnippet:
         self, readme: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The gate side of TestNoArtifactRoundIsNotBenign, and the one that
-        # decides a merge: every job green, nothing uploaded. The run is
-        # green, so a gate keyed on the conclusion merges; this one must
-        # not, because the same roster is what a credential outage
-        # produces. Driven through main() rather than through
+        # decides a merge: every job green, nothing uploaded. The run now
+        # ends red (AT-2569), but the gate must block on the roster alone,
+        # because the same roster is what a credential outage produces.
+        # Driven through main() rather than through
         # _missing_reviewer_reasons directly, so reinstating the benign
         # label anywhere on the emit path -- the constant, the branch, or
         # the flag main() threads in -- fails here.
@@ -951,6 +949,7 @@ class TestDocumentedGateSnippet:
         with (
             patch("aggregate_reviews.load_reviews", return_value=_nothing_written()),
             patch("aggregate_reviews.post_verdict"),
+            pytest.raises(SystemExit),
         ):
             main()
         emitted = _read_back(output_path)

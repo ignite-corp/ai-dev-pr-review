@@ -376,24 +376,27 @@ REST client. The decomposition above is **attributed** to AT-2564's
 ticket body, not derived from the code.)
 
 **2. Failure state and review verdict are not separated.** The aggregate
-reaches the `approve` verdict when every payload is absent and every
-reviewer job reported success — it infers "review complete" from "process
-succeeded" because, as its own comment states, it is given nothing that
-separates the two. **What follows from that label is split, and only half
-of it is withheld.** Measured at `4309344`: `_has_full_reviewer_coverage`
-is false with no payloads, so `post_verdict` withholds the formal
-APPROVED review and posts a comment carrying "Auto-approve withheld".
-The other half is not withheld — `no_artifact_bypass` suppresses the
-sub-quorum `sys.exit(1)`, so the job exits 0, and the code comment beside
-the withholding says exactly this: *"The verdict (and thus the merge-gate
-exit code) is unchanged; only the posted event is downgraded to a
-comment."* Since the merge gate is that job's status context
-(section 2.3), **absence of every result still satisfies the merge gate,
-and must not.** The formal approval is the part the design already
-refuses; the green check is the part that still follows from nothing.
-That is AT-2569, and section 7 carries it — this is the one place the
-record says current behaviour is wrong rather than merely unseparated, so
-it owes the reader a ticket rather than a verdict.
+reached the `approve` verdict when every payload was absent and every
+reviewer job reported success — it inferred "review complete" from
+"process succeeded" because, as its own comment then stated, it was given
+nothing that separates the two. **What followed from that label was
+split, and only half of it was withheld.** Measured at `4309344`:
+`_has_full_reviewer_coverage` was false with no payloads, so
+`post_verdict` withheld the formal APPROVED review and posted a comment
+carrying "Auto-approve withheld". The other half was not withheld —
+`no_artifact_bypass` suppressed the sub-quorum `sys.exit(1)`, so the job
+exited 0, and the code comment beside the withholding said exactly this:
+*"The verdict (and thus the merge-gate exit code) is unchanged; only the
+posted event is downgraded to a comment."* Since the merge gate is that
+job's status context (section 2.3), **absence of every result still
+satisfied the merge gate, and must not have.** The formal approval was
+the part the design already refused; the green check was the part that
+followed from nothing. That was AT-2569, and section 7 carries it — this
+was the one place the record said current behaviour was wrong rather than
+merely unseparated, so it owed the reader a ticket rather than a verdict.
+*Resolved by AT-2569 (2026-10-22):* `no_artifact_bypass` is gone, and the
+same round now gets a `comment` verdict, "no reviewer output, cause
+indeterminate", and exits 1, so the merge-gate context goes red.
 A common result format would have to distinguish states that today
 collapse into payload-present or payload-absent: a completed review and
 its verdict; an explicit policy skip; an execution failure or
@@ -493,10 +496,12 @@ the orchestrator's note above `review-codex-s` covers what
 `continue-on-error` costs the chaining guard and points at the
 single-reviewer note for the per-reviewer mechanisms, so neither file
 restates the other; that division is also `b3555a9`'s work.
-The aggregate's green-with-nothing bypass additionally requires
-`_artifacts_entirely_absent` — *every* payload missing — together with
-every reviewer job reporting `success`, so gemini alone failing does not
-reach it. (measured)
+The aggregate's green-with-nothing bypass (removed by AT-2569)
+additionally required `_artifacts_entirely_absent` (since renamed
+`_no_valid_payloads`) — no reviewer with a valid payload, where a
+missing, an unparseable and a schema-invalid file all count alike —
+together with every reviewer job reporting `success`, so gemini alone
+failing did not reach it. (measured)
 
 Locally the corresponding guarantee is uniform rather than per-reviewer:
 `guarded_main` in `local_reviewer_support.py` catches `Exception`, writes
@@ -832,7 +837,7 @@ if the boundary were clean.
 | **AT-2427** | A verdict is identified by **who wrote it**, not by `REVIEW_MARKER`. `fetch_round_count` filters on `.user.type == "Bot"`, so a local verdict never raises the round counter and the convergence cutoff never fires; `BOT_LOGIN` folds one author's history, so on a pull request carrying both Actions and local rounds neither value is right. Both close together by keying on the marker. **Superseded in part by AT-2599:** the stale-item fold now keys on the marker, so only the `fetch_round_count` half is still open. | Local verdicts are invisible to Actions-path bookkeeping. Open; reproduces at `4309344`. |
 | **AT-2510** | The import inversion is **gone** and the guard exists and passes; what remains is the two residuals of sections 3.3 and 3.4 — the dependency axis does not deny by default, and the guard covers import rather than execution. The ticket is still open, which makes a merged boundary violation look live when it is not. | The boundary itself. |
 | **AT-2539** | gemini's run step has no `always()` net, where claude's and codex's steps do (section 4.1). | Actions path only; the local path's `guarded_main` closes the same hole. |
-| **AT-2569** | `no_artifact_bypass` lets the aggregate job exit 0 with every reviewer payload absent, so the merge-gate context of section 2.3 is satisfied by nothing. The formal APPROVED review is withheld by the coverage check; the green status is not. Reachable only when every reviewer step dies without writing — section 6 carries the evidence status. Not via a credential outage: claude's `always()` net writes a failed verdict file and codex's `always()` step exits 1, and either one breaks the every-payload-absent-and-every-job-success conjunction, even though gemini records nothing (section 4.1). | **The merge gate, on both paths**: the aggregate is the same script locally, though a local run starts no job and so reaches no context (section 2.3). |
+| **AT-2569** (resolved 2026-10-22: the round now posts `comment` and exits 1) | `no_artifact_bypass` let the aggregate job exit 0 with every reviewer payload absent, so the merge-gate context of section 2.3 was satisfied by nothing. The formal APPROVED review was withheld by the coverage check; the green status was not. Reachable only when every reviewer step dies without writing — section 6 carries the evidence status. Not via a credential outage: claude's `always()` net writes a failed verdict file and codex's `always()` step exits 1, and either one breaks the every-payload-absent-and-every-job-success conjunction, even though gemini records nothing (section 4.1). | **The merge gate, on both paths**: the aggregate is the same script locally, though a local run starts no job and so reaches no context (section 2.3). |
 | **AT-2411** | The Actions path passes the codex prompt as one argv element. | Divergence; local uses stdin. |
 | **AT-2424** | Filed when the Actions path promoted legacy verdict names after the fallbacks, so an error verdict masked the real one. At both `4309344` and `b3555a9` the codex promotion is gated on the run step's marker and carries `--target-is-ours`, so that masking no longer occurs; the ticket is still open in Jira against a behaviour whose workflow-side fix has shipped. | Divergence; local promotes before the fallbacks (section 4). |
 | **AT-2520 / AT-2538 / AT-2560** | Cross-repo promotion. Section 5 records which sites the tickets name as important and why the important ones are elsewhere; the appendix records where their line citations have moved. | The unbuilt path. |
