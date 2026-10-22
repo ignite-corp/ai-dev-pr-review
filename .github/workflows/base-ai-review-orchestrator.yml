@@ -338,6 +338,10 @@ jobs:
       size_deletions: ${{ needs.prepare.outputs.size_deletions }}
       size_exceeded: ${{ needs.prepare.outputs.size_exceeded }}
       size_axes: ${{ needs.prepare.outputs.size_axes }}
+      size_warned: ${{ needs.prepare.outputs.size_warned }}
+      size_warn_axes: ${{ needs.prepare.outputs.size_warn_axes }}
+      size_warn_total: ${{ needs.prepare.outputs.size_warn_total }}
+      size_warn_limit: ${{ needs.prepare.outputs.size_warn_limit }}
       policy_skipped: ${{ needs.prepare.outputs.policy_skipped }}
       excluded_count: ${{ needs.prepare.outputs.excluded_count }}
       excluded_paths: ${{ needs.prepare.outputs.excluded_paths }}

@@ -64,6 +64,18 @@ on:
       size_axes:
         description: "The axis of each entry in size_exceeded, in the same order: changed, added or deleted. Needed because an axis with no var of its own is reported as PR_SIZE_LIMIT (AT-3052)"
         value: ${{ jobs.prepare.outputs.size_axes }}
+      size_warned:
+        description: "The var name of each size check within its limit but at or over PR_SIZE_WARN_PERCENT of it, space-separated; empty when none was (AT-2415)"
+        value: ${{ jobs.prepare.outputs.size_warned }}
+      size_warn_axes:
+        description: "The axis of each size_warned entry, in the same order: changed, added or deleted (AT-2415)"
+        value: ${{ jobs.prepare.outputs.size_warn_axes }}
+      size_warn_total:
+        description: "The measured lines of each size_warned entry, in the same order (AT-2415)"
+        value: ${{ jobs.prepare.outputs.size_warn_total }}
+      size_warn_limit:
+        description: "The limit of each size_warned entry, in the same order (AT-2415)"
+        value: ${{ jobs.prepare.outputs.size_warn_limit }}
       head_sha:
         description: "The PR head commit the diff was computed against. Callers check out THIS, not github.ref"
         value: ${{ jobs.prepare.outputs.head_sha }}
@@ -101,6 +113,10 @@ jobs:
       size_deletions: ${{ steps.size-check.outputs.deletions }}
       size_exceeded: ${{ steps.size-check.outputs.exceeded }}
       size_axes: ${{ steps.size-check.outputs.axes }}
+      size_warned: ${{ steps.size-check.outputs.warned }}
+      size_warn_axes: ${{ steps.size-check.outputs.warn_axes }}
+      size_warn_total: ${{ steps.size-check.outputs.warn_total }}
+      size_warn_limit: ${{ steps.size-check.outputs.warn_limit }}
       pr_author: ${{ steps.refs.outputs.pr_author }}
     steps:
       # Cross-repository review (AT-2520). `target_repo` names the repository
@@ -367,6 +383,10 @@ jobs:
           # checked against PR_SIZE_LIMIT instead.
           PR_SIZE_LIMIT_ADDITIONS: ${{ vars.PR_SIZE_LIMIT_ADDITIONS || '' }}
           PR_SIZE_LIMIT_DELETIONS: ${{ vars.PR_SIZE_LIMIT_DELETIONS || '' }}
+          # A check at or over this percentage of its limit, and not over
+          # it, gets a notice and a verdict line; the review still runs
+          # (AT-2415).
+          PR_SIZE_WARN_PERCENT: ${{ vars.PR_SIZE_WARN_PERCENT || '80' }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           # Through env, never interpolated into the script: target_repo is
           # caller-supplied text, and the regex guard above is a different
@@ -385,6 +405,13 @@ jobs:
               exit 1
             fi
           done
+          if ! [[ "$PR_SIZE_WARN_PERCENT" =~ ^[0-9]+$ ]] \
+            || [ "$((10#$PR_SIZE_WARN_PERCENT))" -lt 1 ] \
+            || [ "$((10#$PR_SIZE_WARN_PERCENT))" -gt 99 ]; then
+            echo "::error::Invalid PR_SIZE_WARN_PERCENT: $PR_SIZE_WARN_PERCENT (must be integer 1-99)"
+            exit 1
+          fi
+          WARN_PERCENT=$((10#$PR_SIZE_WARN_PERCENT))
 
           PR_DATA=$(gh pr view "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" --json additions,deletions)
@@ -398,11 +425,26 @@ jobs:
           # One entry per exceeded check, at the same position in each list:
           # exceeded/axes/total/limit are space-separated and the aggregate
           # renders one message part per position.
+          # A check within its limit but at or over WARN_PERCENT of it fills
+          # the warn_* lists instead, the same way (AT-2415).
           EXCEEDED=(); AXES=(); VALUES=(); LIMITS=(); PARTS=()
+          OVERS=(); SPLIT=1; SPLIT_KNOWN=true
+          WARNED=(); WARN_AXES=(); WARN_VALUES=(); WARN_LIMITS=()
           breach() { # $1 value, $2 axis word, $3 var name, $4 limit
-            if [ "$1" -gt "$4" ]; then
+            local LIMIT=$((10#$4))
+            if [ "$1" -gt "$LIMIT" ]; then
               EXCEEDED+=("$3"); AXES+=("$2"); VALUES+=("$1"); LIMITS+=("$4")
               PARTS+=("$1 $2 lines exceeds $3 $4")
+              OVERS+=("$(($1 - LIMIT)) $2 lines")
+              if [ "$LIMIT" -gt 0 ]; then
+                local NEED=$(( ($1 + LIMIT - 1) / LIMIT ))
+                [ "$NEED" -le "$SPLIT" ] || SPLIT=$NEED
+              else
+                SPLIT_KNOWN=false
+              fi
+            elif [ "$LIMIT" -gt 0 ] && [ $(($1 * 100)) -ge $((LIMIT * WARN_PERCENT)) ]; then
+              WARNED+=("$3"); WARN_AXES+=("$2"); WARN_VALUES+=("$1"); WARN_LIMITS+=("$LIMIT")
+              echo "::notice::[!] size: $1/$LIMIT $2 lines ($(($1 * 100 / LIMIT))% of $3); the review is skipped above the limit. Consider splitting."
             fi
           }
           if [ -z "${PR_SIZE_LIMIT_ADDITIONS:-}" ] && [ -z "${PR_SIZE_LIMIT_DELETIONS:-}" ]; then
@@ -424,14 +466,24 @@ jobs:
             printf -v SUMMARY '%s; ' "${PARTS[@]}"
             SUMMARY="${SUMMARY%; }"
           fi
-          echo "exceeded=${EXCEEDED[*]}" >> "$GITHUB_OUTPUT"
-          echo "axes=${AXES[*]}" >> "$GITHUB_OUTPUT"
+          {
+            echo "exceeded=${EXCEEDED[*]}"
+            echo "axes=${AXES[*]}"
+            echo "warned=${WARNED[*]}"
+            echo "warn_axes=${WARN_AXES[*]}"
+            echo "warn_total=${WARN_VALUES[*]}"
+            echo "warn_limit=${WARN_LIMITS[*]}"
+          } >> "$GITHUB_OUTPUT"
 
           if [ "${#EXCEEDED[@]}" -gt 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            # github_pr_support.describe_size_overage, capitalized.
+            printf -v OVERAGE '%s and ' "${OVERS[@]}"
+            OVERAGE="Over by ${OVERAGE% and }"
+            [ "$SPLIT_KNOWN" = false ] || OVERAGE="${OVERAGE}; split into at least ${SPLIT} PRs"
             gh pr comment "$PR_NUMBER" \
               --repo "$GITHUB_REPOSITORY" \
-              --body "[!] PR too large (${SUMMARY}). Skipping AI review -- the aggregate verdict below explains how to proceed."
+              --body "[!] PR too large (${SUMMARY}). ${OVERAGE}. Skipping AI review -- the aggregate verdict below explains how to proceed."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi

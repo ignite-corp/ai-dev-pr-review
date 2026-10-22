@@ -20,6 +20,10 @@ import pytest
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from github_pr_support import (  # noqa: E402
+    SIZE_WARN_PERCENT_DEFAULT,
+    SIZE_WARN_PERCENT_VAR,
+)
 from local_review_config import (  # noqa: E402
     ORCHESTRATOR_YML,
     WORKFLOW_DIR,
@@ -33,6 +37,7 @@ from local_review_config import (  # noqa: E402
 # Names the driver and the reviewer shims resolve through LocalConfig.
 CONSUMED = (
     "PR_SIZE_LIMIT",
+    "PR_SIZE_WARN_PERCENT",
     "REVIEW_MODE",
     "CLAUDE_MODEL",
     "CODEX_MODEL",
@@ -326,3 +331,8 @@ def test_load_without_a_file_falls_back_to_the_workflow_defaults(tmp_path, monke
     monkeypatch.delenv("CLAUDE_MODEL", raising=False)
     monkeypatch.setenv("LENS_LOCAL_CONFIG", str(tmp_path / "absent.env"))
     assert LocalConfig.load().get("CLAUDE_MODEL") == workflow_defaults()["CLAUDE_MODEL"]
+
+
+def test_the_warn_percent_default_matches_the_shared_constant():
+    """SizeLimits built without a config must warn where the workflow does."""
+    assert int(workflow_defaults()[SIZE_WARN_PERCENT_VAR]) == SIZE_WARN_PERCENT_DEFAULT
