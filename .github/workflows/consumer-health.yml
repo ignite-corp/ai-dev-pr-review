@@ -219,7 +219,8 @@ jobs:
     if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      # Needed for .github/scripts/pin_freshness.py (stdlib only, no install).
+      # Needed for .github/scripts/pin_freshness.py and prompt_guidance.py
+      # (stdlib only, no install).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Mint App token
@@ -276,6 +277,25 @@ jobs:
             exit 1
           fi
           echo "latest release: ${LATEST_RELEASE}"
+
+          # Reviewer prompt guidance (AT-2844). The items a consumer prompt
+          # must carry are listed once, in prompt_guidance.py, which this
+          # repo's own tests read too. A consumer reads its prompts from
+          # CONSUMER_PROMPT_DIR, the orchestrator's default paths; this repo's
+          # entry reads BASE_PROMPT_DIR, the pair self-review.yml passes. The
+          # runner's default prompts are what every runner target without
+          # its own is reviewed against (AT-2520); the runner's name is
+          # already public in both READMEs. The congruence questions are not
+          # read here: they live in the reviewers' own instructions, which
+          # travel with the pin, so whether they reach a consumer is its pin
+          # freshness (check 2) and whether they reach a runner target is the
+          # runner's pin, RUNNER_WORKFLOW's, checked after the loop.
+          PROMPT_GUIDANCE="${GITHUB_WORKSPACE}/.github/scripts/prompt_guidance.py"
+          CONSUMER_PROMPT_DIR=".github/prompts"
+          BASE_PROMPT_DIR="examples/prompts"
+          RUNNER_REPO="ignite-corp/ai-dev-pr-review-runner"
+          RUNNER_PROMPT_DIR="default-prompts"
+          RUNNER_WORKFLOW=".github/workflows/review.yml"
 
           # Stale cutoff for known-bad startup_failure runs
           STALE_BEFORE="2026-06-09T00:00:00Z"
@@ -343,6 +363,101 @@ jobs:
             gh api "repos/${slug}/${scope}/secrets/${key}" >/dev/null 2>&1
           }
 
+          # check_prompt_guidance <slug> <ref> <system-path> <checklist-path> [--control]
+          # Reads the two prompt files from <slug> at <ref> (the default
+          # branch when empty) and runs prompt_guidance.py over the pair,
+          # which reads them together the way prepare concatenates them into
+          # context.md; --control requires every group, for the positive
+          # control. Prints the missing item ids, or for a 404 the path that
+          # is absent. Returns 0 when nothing is missing, 1 when items are, 2
+          # when a prompt file is absent (HTTP 404), 3 when a fetch failed
+          # otherwise, and 4 when the matcher failed. 3 and 4 are checks not
+          # performed, not verdicts; the positive control tells them apart.
+          check_prompt_guidance() {
+            local slug="$1" ref="$2" mode=("${@:5}")
+            local paths=("$3" "$4")
+            local work idx path resp b64 found rc
+            work=$(mktemp -d)
+            for idx in 0 1; do
+              path="${paths[$idx]}"
+              if ! resp=$(gh api "repos/${slug}/contents/${path}${ref:+?ref=${ref}}" 2>"${work}/err"); then
+                rc=3
+                if grep -q 'HTTP 404' "${work}/err"; then
+                  rc=2
+                  echo "$path"
+                fi
+                rm -rf "$work"
+                return "$rc"
+              fi
+              if ! b64=$(jq -er '.content | strings' <<<"$resp" 2>/dev/null) \
+                || ! base64 -d <<<"$b64" > "${work}/prompt-${idx}.md" 2>/dev/null \
+                || [ ! -s "${work}/prompt-${idx}.md" ]; then
+                # An empty file -- committed empty, or a file too large for
+                # the contents API to inline -- is not a verdict: the pin
+                # group is all-or-none, so it would read as complete.
+                # prepare fails on an empty prompt too.
+                rm -rf "$work"
+                return 3
+              fi
+            done
+            if found=$(python3 "$PROMPT_GUIDANCE" "${mode[@]}" "${work}/prompt-0.md" "${work}/prompt-1.md"); then
+              rc=0
+            else
+              rc=$?
+            fi
+            rm -rf "$work"
+            echo "${found//$'\n'/ }"
+            # CPython also exits 1 on an unhandled exception; a 1 that names
+            # no item is a crash, not a verdict.
+            case "$rc" in
+              0) return 0 ;;
+              1) [ -n "$found" ] && return 1 ;;
+            esac
+            return 4
+          }
+
+          SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          # Consumers whose declared prompt path check 6 does not read. A
+          # standing condition, not a blip, so it is counted apart from
+          # scan_errors and has its own notice.
+          prompt_paths_unread=0
+          plain_path_re='^[A-Za-z0-9._-][A-Za-z0-9._/-]*$'
+          # Positive control: this commit's examples/prompts, read through the
+          # same fetch and matcher as every consumer with every group
+          # required, must come back complete. Without it a fetch path that
+          # returned nothing would read as a clean fleet -- the pin group is
+          # all-or-none, so an empty prompt owes nothing. A control that
+          # comes back incomplete or absent, or that the matcher crashed on,
+          # proves the matcher path broken, which fails the run like an
+          # unresolvable release tag does. A control that could not be
+          # fetched proves nothing either way, so it skips this check alone
+          # -- like the consumer and runner fetches below -- and leaves every
+          # other check to run.
+          prompt_check=1
+          control_result="complete"
+          if pc_missing=$(check_prompt_guidance "$GITHUB_REPOSITORY" "$GITHUB_SHA" \
+            "${BASE_PROMPT_DIR}/code-review-system.md" "${BASE_PROMPT_DIR}/code-review-checklist.md" --control); then
+            echo "prompt guidance positive control: complete"
+          else
+            pc_rc=$?
+            if [ "$pc_rc" -eq 3 ]; then
+              echo "::notice::prompt guidance positive control could not be read -- reviewer prompts not evaluated this run"
+              prompt_check=0
+              control_result="not read; prompts not evaluated this run"
+            else
+              echo "::error::prompt guidance positive control failed (exit ${pc_rc}${pc_missing:+; ${pc_missing}}); reviewer prompts unjudgeable"
+              exit 1
+            fi
+          fi
+          {
+            echo "## Reviewer prompt guidance (AT-2844)"
+            echo ""
+            echo "Items are listed in \`.github/scripts/prompt_guidance.py\`. Positive control (\`${BASE_PROMPT_DIR}\` at this commit): ${control_result}."
+            echo ""
+            echo "| Entry | Result |"
+            echo "|---|---|"
+          } >> "$SUMMARY"
+
           total=${#CONSUMERS[@]}
           i=0
           for name in "${CONSUMERS[@]}"; do
@@ -352,6 +467,16 @@ jobs:
             echo "::group::Consumer ${i}/${total}"
             consumer_flags=0
             consumer_scan_error=0
+            # Read by check 6 for the prompt paths; reset so an entry never
+            # inherits the previous entry's workflow. wf_read says check 2
+            # actually read it: an empty content is otherwise a body that
+            # declares no path, and check 6 would read the defaults.
+            # wf_absent says check 2 found no workflow to read -- none
+            # found, a 404, or an empty body -- as opposed to a fetch that
+            # failed otherwise, which is the only case not yet a verdict.
+            content=""
+            wf_read=0
+            wf_absent=0
 
             # Resolve the review-workflow filename for this consumer.
             # Most consumers use review-ai.yml; some still use ai-review.yml.
@@ -390,6 +515,7 @@ jobs:
             if [ -z "$wf" ]; then
               echo "  [FLAG] entry ${i}/${total}: no review workflow found"
               consumer_flags=$((consumer_flags + 1))
+              wf_absent=1
             else
               echo "  workflow=${wf}"
 
@@ -453,12 +579,21 @@ jobs:
               if [ "$is_base_repo" = 1 ]; then
                 echo "  pin: n/a (base repo calls the orchestrator by local path)"
               else
-                content_b64=$(gh api "repos/${slug}/contents/.github/workflows/${wf}" 2>/dev/null | jq -r '.content // empty')
+                wf_err=$(mktemp)
+                content_b64=""
+                if wf_resp=$(gh api "repos/${slug}/contents/.github/workflows/${wf}" 2>"$wf_err"); then
+                  content_b64=$(jq -r '.content // empty' <<<"$wf_resp")
+                  if [ -z "$content_b64" ]; then wf_absent=1; fi
+                elif grep -q 'HTTP 404' "$wf_err"; then
+                  wf_absent=1
+                fi
+                rm -f "$wf_err"
                 if [ -z "$content_b64" ]; then
                   echo "  [FLAG] entry ${i}/${total}: no review workflow found"
                   consumer_flags=$((consumer_flags + 1))
                 else
                   content=$(echo "$content_b64" | base64 -d 2>/dev/null || true)
+                  wf_read=1
                   pin=$(echo "$content" \
                     | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
                     | head -1 \
@@ -617,6 +752,90 @@ jobs:
               --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
             echo "  dependabot PRs (recent): ${dependabot_count}"
 
+            # 6. Reviewer prompt guidance (AT-2844). A consumer's prompts are
+            # its own files, changed only by a PR in the consumer, so a rule
+            # added to examples/prompts reaches nobody already onboarded
+            # (MIGRATION.md). Missing items flag like a stale pin: the
+            # consumer is reviewed against a contract that has moved on. The
+            # paths are the ones the consumer's review workflow passes the
+            # orchestrator (check 2 read it), else the orchestrator's
+            # defaults. A declared path comes from the consumer's file and
+            # goes into a URL the fleet App requests, so only a plain
+            # relative path -- no expression, no `..`, no query -- is used;
+            # any other is not evaluated rather than flagged. A declared path
+            # can name a product, so the public log prints a path only when
+            # it is one of the default files themselves.
+            sys_path="${CONSUMER_PROMPT_DIR}/code-review-system.md"
+            chk_path="${CONSUMER_PROMPT_DIR}/code-review-checklist.md"
+            if [ "$is_base_repo" = 1 ]; then
+              sys_path="${BASE_PROMPT_DIR}/code-review-system.md"
+              chk_path="${BASE_PROMPT_DIR}/code-review-checklist.md"
+            fi
+            custom_sys=$(sed -nE 's/^[[:space:]]*code-review-system-prompt-path:[[:space:]]*["'"'"']?([^"'"'"'#]*[^"'"'"'# ]).*/\1/p' <<<"$content" | head -1)
+            custom_chk=$(sed -nE 's/^[[:space:]]*code-review-checklist-path:[[:space:]]*["'"'"']?([^"'"'"'#]*[^"'"'"'# ]).*/\1/p' <<<"$content" | head -1)
+            sys_path="${custom_sys:-$sys_path}"
+            chk_path="${custom_chk:-$chk_path}"
+            plain_paths=1
+            for declared in "$sys_path" "$chk_path"; do
+              if ! [[ $declared =~ $plain_path_re ]] || [[ $declared == *..* ]]; then
+                plain_paths=0
+              fi
+            done
+            prompt_note=""
+            if [ "$prompt_check" -eq 0 ]; then
+              echo "  prompt guidance: skipped (positive control not read)"
+              prompt_note=" (prompt guidance not evaluated: positive control not read)"
+              prompt_result="not evaluated (positive control not read)"
+            elif [ "$is_base_repo" = 0 ] && [ "$wf_read" -eq 0 ]; then
+              # The paths come from the workflow body, so without one the
+              # defaults are a guess and an absent default proves nothing.
+              # An absent workflow is check 2's standing flag, not a scan
+              # error: counting it would keep the recovery notice up forever.
+              if [ "$wf_absent" -eq 1 ]; then
+                wf_state="no review workflow found"
+              else
+                wf_state="review workflow could not be read"
+                consumer_scan_error=1
+              fi
+              echo "  [WARN] entry ${i}/${total}: prompt guidance not evaluated (${wf_state})"
+              prompt_result="not evaluated (${wf_state})"
+            elif [ "$plain_paths" -eq 0 ]; then
+              echo "  prompt guidance: not evaluated (declared prompt path is not a plain repository path)"
+              prompt_paths_unread=$((prompt_paths_unread + 1))
+              prompt_note=" (prompt guidance not evaluated: declared prompt path)"
+              prompt_result="not evaluated (declared prompt path is not a plain repository path)"
+            elif prompt_missing=$(check_prompt_guidance "$slug" "" "$sys_path" "$chk_path"); then
+              echo "  prompt guidance: complete"
+              prompt_result="complete"
+            else
+              case $? in
+                1)
+                  echo "  [FLAG] entry ${i}/${total}: reviewer prompt lacks: ${prompt_missing}"
+                  consumer_flags=$((consumer_flags + 1))
+                  prompt_result="FLAG: lacks ${prompt_missing}"
+                  ;;
+                2)
+                  # The exact default files only: a declared file under the
+                  # default directory can still carry a product name.
+                  case "$prompt_missing" in
+                    "${CONSUMER_PROMPT_DIR}/code-review-system.md" | "${CONSUMER_PROMPT_DIR}/code-review-checklist.md" \
+                      | "${BASE_PROMPT_DIR}/code-review-system.md" | "${BASE_PROMPT_DIR}/code-review-checklist.md")
+                      shown="$prompt_missing" ;;
+                    *) shown="its declared prompt path" ;;
+                  esac
+                  echo "  [FLAG] entry ${i}/${total}: no reviewer prompt at ${shown}"
+                  consumer_flags=$((consumer_flags + 1))
+                  prompt_result="FLAG: no prompt at ${shown}"
+                  ;;
+                *)
+                  echo "  [WARN] entry ${i}/${total}: could not read the reviewer prompt -- not evaluated this run"
+                  consumer_scan_error=1
+                  prompt_result="not evaluated"
+                  ;;
+              esac
+            fi
+            echo "| ${i}/${total} | ${prompt_result} |" >> "$SUMMARY"
+
             if [ "$consumer_scan_error" -ne 0 ]; then
               scan_errors=$((scan_errors + 1))
             fi
@@ -624,12 +843,89 @@ jobs:
               echo "Consumer ${i}/${total}: ${consumer_flags} flag(s)"
               any_flag=1
             elif [ "$consumer_scan_error" -ne 0 ]; then
-              echo "Consumer ${i}/${total}: not evaluated (reviewer-error streak check did not run)"
+              echo "Consumer ${i}/${total}: not evaluated (a check above did not run; see its [WARN])"
             else
-              echo "Consumer ${i}/${total}: OK"
+              echo "Consumer ${i}/${total}: OK${prompt_note}"
             fi
             echo "::endgroup::"
           done
+
+          # The runner's default prompts and its review pin, after the
+          # consumers: the runner is not a consumer, so it neither counts in
+          # scan_errors nor takes an entry index, and a flag here raises its
+          # own error rather than the consumers' one.
+          echo "::group::Runner default prompts and review pin"
+          runner_not_evaluated=0
+          runner_flag=0
+          if [ "$prompt_check" -eq 0 ]; then
+            echo "  prompt guidance: skipped (positive control not read)"
+            prompt_result="not evaluated (positive control not read)"
+          elif prompt_missing=$(check_prompt_guidance "$RUNNER_REPO" "" \
+            "${RUNNER_PROMPT_DIR}/code-review-system.md" "${RUNNER_PROMPT_DIR}/code-review-checklist.md"); then
+            echo "  prompt guidance: complete"
+            prompt_result="complete"
+          else
+            case $? in
+              1)
+                echo "  [FLAG] runner default prompts lack: ${prompt_missing}"
+                runner_flag=1
+                prompt_result="FLAG: lacks ${prompt_missing}"
+                ;;
+              2)
+                echo "  [FLAG] runner has no ${prompt_missing}"
+                runner_flag=1
+                prompt_result="FLAG: no ${prompt_missing}"
+                ;;
+              *)
+                echo "  [WARN] could not read the runner default prompts -- not evaluated this run"
+                runner_not_evaluated=1
+                prompt_result="not evaluated"
+                ;;
+            esac
+          fi
+          echo "| ${RUNNER_REPO} \`${RUNNER_PROMPT_DIR}/\` | ${prompt_result} |" >> "$SUMMARY"
+
+          # The runner's review pin: every runner target is reviewed by the
+          # orchestrator RUNNER_WORKFLOW pins, so this is check 2's pin
+          # freshness applied to the one workflow that reviews every target,
+          # and like check 2 it flags a workflow that is not there. A stale
+          # pin means the targets are reviewed against reviewer instructions
+          # that have moved on.
+          runner_err=$(mktemp)
+          if runner_resp=$(gh api "repos/${RUNNER_REPO}/contents/${RUNNER_WORKFLOW}" 2>"$runner_err"); then
+            runner_wf=$(jq -r '.content // empty' <<<"$runner_resp" 2>/dev/null || true)
+          else
+            runner_wf=""
+            if grep -q 'HTTP 404' "$runner_err"; then
+              runner_wf="404"
+            fi
+          fi
+          rm -f "$runner_err"
+          if [ "$runner_wf" = "404" ]; then
+            echo "  [FLAG] runner has no ${RUNNER_WORKFLOW}"
+            runner_flag=1
+            pin_result="FLAG: no ${RUNNER_WORKFLOW}"
+          elif [ -z "$runner_wf" ]; then
+            echo "  [WARN] could not read the runner's ${RUNNER_WORKFLOW} -- pin not evaluated this run"
+            runner_not_evaluated=1
+            pin_result="not evaluated"
+          else
+            runner_pin=$(echo "$runner_wf" | base64 -d 2>/dev/null \
+              | grep -Eo 'ai-dev-pr-review/\.github/workflows/[a-z-]+\.yml@[^ "'"'"']+' \
+              | head -1 \
+              | sed -E 's|.*@||')
+            echo "  runner pin=${runner_pin:-<none>}"
+            if freshness=$(python3 "$PIN_FRESHNESS" --tags "$RELEASE_TAGS" --pin "$runner_pin"); then
+              echo "  runner pin freshness: ${freshness}"
+              pin_result="pin fresh"
+            else
+              echo "  [FLAG] runner ${RUNNER_WORKFLOW}: ${freshness}"
+              runner_flag=1
+              pin_result="FLAG: ${freshness}"
+            fi
+          fi
+          echo "| ${RUNNER_REPO} \`${RUNNER_WORKFLOW}\` pin | ${pin_result} |" >> "$SUMMARY"
+          echo "::endgroup::"
 
           # Informational notes (always printed, never failure)
           echo "::group::Known-issue classifications (informational only)"
@@ -645,8 +941,19 @@ jobs:
           if [ "$scan_errors" -gt 0 ]; then
             echo "::notice::recovery not confirmed -- ${scan_errors} consumer(s) could not be fetched or evaluated"
           fi
+          if [ "$prompt_paths_unread" -gt 0 ]; then
+            echo "::notice::${prompt_paths_unread} consumer(s) declare a prompt path this check does not read -- prompt guidance not evaluated for them"
+          fi
+          if [ "$runner_not_evaluated" -ne 0 ]; then
+            echo "::notice::runner default prompts or review pin could not be fetched -- not evaluated"
+          fi
 
+          if [ "$runner_flag" -ne 0 ]; then
+            echo "::error::Runner default prompts or review pin flagged"
+          fi
           if [ "$any_flag" -ne 0 ]; then
             echo "::error::One or more consumers flagged"
+          fi
+          if [ "$any_flag" -ne 0 ] || [ "$runner_flag" -ne 0 ]; then
             exit 1
           fi

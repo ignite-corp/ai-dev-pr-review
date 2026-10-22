@@ -526,6 +526,8 @@ updates:
    ```
 4. 프롬프트를 소비자의 **BASE** 브랜치에 커밋. `prepare` 워크플로우는 프롬프트 인젝션 방지를 위해 항상 PR head가 아닌 base 브랜치에서 읽으므로 — 변경은 머지 후 다음 PR부터 적용됩니다.
 
+**필수 지침(AT-2844).** 소비자 프롬프트가 지켜야 할 것은 하나, `.github/scripts/prompt_guidance.py`에 나열된 pin 항목입니다: `## GitHub Actions SHA Pins` 제목과 그 라벨들. 제목도 라벨도 하나도 없는 프롬프트는 아무것도 지지 않고, 하나라도 있으면 전부를 지며, 제목이 있으면 라벨은 그 섹션 안에 있어야 합니다. congruence 질문은 소비자 프롬프트에 복사하지 않습니다: 이 레포의 리뷰어 지침 자체에 있고 pin과 함께 전달되므로, 소비자는 pin을 최신으로 유지하면 받습니다. `consumer-health.yml`이 추적 중인 소비자의 두 파일, 러너의 `default-prompts/`, 러너의 리뷰 pin을 매일 읽고 빠진 항목이나 오래된 pin을 flag 합니다. [MIGRATION.md](MIGRATION.md#congruence-questions-at-2844) 참고.
+
 ### system 프롬프트 vs checklist — 각각 어떻게 작성하나
 
 두 파일은 이어붙인 `context.md` 안에서 역할이 다릅니다:
