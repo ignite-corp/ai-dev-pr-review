@@ -935,3 +935,42 @@ def test_the_loop_roster_ignores_a_commented_loop() -> None:
         )
     }
     assert _loop_roster(step) == {"claude", "gemini"}
+
+
+# --- Symlinked workspace paths host steps read or write (AT-2941) ---
+# The PR head is checked out at the workspace root and the codex CLI runs
+# with --sandbox workspace-write, so a workspace path a host step later
+# reads, writes, or uploads can be a symlink the PR committed or the model
+# planted, pointing at the scripts snapshot or any runner-writable file.
+# These guard the two host steps that would otherwise follow such a link:
+# the context download (write-through) and the codex log upload (reads the
+# link's target and ships it as an artifact).
+
+
+def test_context_paths_are_cleared_before_the_download() -> None:
+    steps = _single_steps()
+    copy = _index(steps, "Copy ai-dev-pr-review scripts outside the workspace")
+    clear = _index(steps, "Clear context paths the PR may have symlinked")
+    download = _index(steps, "Download review context")
+    # The clear sits between the snapshot copy and the download: it must
+    # run before the download (so no link is followed) and the names it
+    # removes are exactly the ones the download repopulates.
+    assert copy < clear < download, (copy, clear, download)
+    _assert_not_advisory(steps[clear], "context clear")
+    body = _body(steps[clear])
+    for name in ("pr.diff", "context.md", ".review-context"):
+        assert name in body, f"{name} is not cleared before the context download"
+
+
+def test_symlinked_codex_artifacts_are_dropped_before_upload() -> None:
+    steps = _single_steps()
+    drop = _index(steps, "Drop symlinked codex artifacts before upload")
+    upload = _index(steps, "Upload Codex logs")
+    assert drop < upload, (drop, upload)
+    # always(), so a run step killed by its timeout does not leave a link
+    # standing for the upload to follow.
+    assert _is_always(steps[drop]), "the drop step must run on always()"
+    _assert_not_advisory(steps[drop], "codex artifact drop")
+    body = _body(steps[drop])
+    for name in ("review-codex.json", "verdict-codex.json", "verdict-openai.json"):
+        assert name in body, f"{name} is not dropped before the codex upload"

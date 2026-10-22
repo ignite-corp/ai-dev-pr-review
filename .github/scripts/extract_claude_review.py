@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from review_status import stamp_model_status
+from review_status import stamp_model_status, write_verdict_json
 
 
 _MAX_SCAN_BYTES = 50_000
@@ -70,8 +70,9 @@ def review_json_schema() -> dict[str, Any]:
 
 def _write_review(obj: dict[str, Any]) -> bool:
     stamp_model_status(obj)
-    with open(_OUTPUT_FILE, "w", encoding="utf-8") as out:
-        json.dump(obj, out, indent=2, ensure_ascii=False)
+    # Link-safe: the workspace is model-writable, so _OUTPUT_FILE may be a
+    # symlink; do not write through it (AT-2941).
+    write_verdict_json(_OUTPUT_FILE, obj, indent=2, ensure_ascii=False)
     print(f"Extracted review-claude.json: {len(obj['issues'])} issues")
     return True
 

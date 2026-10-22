@@ -18,7 +18,7 @@ from typing import cast
 from google import genai
 from google.genai import types as genai_types
 
-from review_status import stamp_model_status
+from review_status import stamp_model_status, write_verdict_json
 
 REVIEW_FILE = "review-gemini.json"
 REVIEW_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "review-schema.json"
@@ -363,7 +363,9 @@ def main() -> None:
             "error": str(exc),
         }
 
-    Path(REVIEW_FILE).write_text(json.dumps(review, indent=2, ensure_ascii=False))
+    # Link-safe: the workspace is model-writable, so REVIEW_FILE may be a
+    # symlink; do not write through it (AT-2941).
+    write_verdict_json(REVIEW_FILE, review, indent=2, ensure_ascii=False)
     print(f"Gemini: {len(review.get('issues', []))} issue(s) found")
 
 

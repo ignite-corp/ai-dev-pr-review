@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from review_status import stamp_model_status
+from review_status import stamp_model_status, write_verdict_json
 from aggregate_reviews import (
     _count_unreviewed_majors,
     _get_available,
@@ -2081,6 +2081,7 @@ class _CodexStepHarness:
         log: str = "codex: done",
         exit_code: int = 0,
         touches: str | None = None,
+        links: Sequence[tuple[str, Path]] = (),
         stalls: bool = False,
         timeout: float = 60,
         scripts_root: Path | None = None,
@@ -2090,8 +2091,10 @@ class _CodexStepHarness:
 
         `touches` is a workspace write the model can be induced to make --
         `codex exec --sandbox workspace-write` lets it write the tree it is
-        reviewing. `stalls` never returns, so the caller can kill the step
-        the way timeout-minutes does.
+        reviewing. `links` are symlinks it can create there the same way:
+        only the directory holding the link has to be writable, never the
+        file it names (AT-2941). `stalls` never returns, so the caller can
+        kill the step the way timeout-minutes does.
         """
         runner_temp = workdir / "runner-temp"
         runner_temp.mkdir(exist_ok=True)
@@ -2102,6 +2105,8 @@ class _CodexStepHarness:
             body += f"touch {marks_run}\n"
         if touches is not None:
             body += f"touch {touches}\n"
+        for name, link_target in links:
+            body += f"ln -s -- {shlex.quote(str(link_target))} {shlex.quote(name)}\n"
         for name, text in writes:
             body += f"cat > {name} <<'VERDICT'\n{text}\nVERDICT\n"
         if stalls:
@@ -2613,6 +2618,108 @@ class TestCodexVerdictProvenance(_CodexStepHarness):
         )
         assert self._verdict(tmp_path)["summary"] == "the real verdict"
 
+    def test_symlinked_codex_verdict_is_replaced_not_followed(
+        self, tmp_path: Path
+    ) -> None:
+        # review-codex.json is a workspace path, and the CLI runs with
+        # --sandbox workspace-write, so the model can plant it as a symlink
+        # pointing at a file outside the workspace -- the scripts snapshot,
+        # or any runner-writable path. The host-side error-verdict write
+        # must land a regular file at that name, never follow the link onto
+        # the file it points at (AT-2941).
+        # The harness's RUNNER_TEMP stand-in, where the scripts snapshot lives.
+        (tmp_path / "runner-temp").mkdir(exist_ok=True)
+        outside = tmp_path / "runner-temp" / "scripts-snapshot"
+        outside.write_text("do not overwrite me", encoding="utf-8")
+        self._run_codex_step(
+            tmp_path,
+            links=[("review-codex.json", outside)],
+            exit_code=1,
+        )
+        assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+        assert not (tmp_path / "review-codex.json").is_symlink()
+        assert self._verdict(tmp_path)["status"] == "failed"
+
+    def test_symlinked_codex_verdict_from_stdout_extract_is_not_followed(
+        self, tmp_path: Path
+    ) -> None:
+        # The stdout-extract fallback (gpt-5-mini / low-reasoning models)
+        # reaches review-codex.json when the CLI wrote no sandbox file. A
+        # symlink to an empty file outside the workspace makes that path
+        # non-empty-test false, so the extractor runs; it too must not write
+        # through the link (AT-2941).
+        (tmp_path / "runner-temp").mkdir(exist_ok=True)
+        outside = tmp_path / "runner-temp" / "empty-file"
+        outside.write_text("", encoding="utf-8")
+        verdict = {"summary": "real", "early_exit": False, "issues": []}
+        self._run_codex_step(
+            tmp_path,
+            links=[("review-codex.json", outside)],
+            log=json.dumps(verdict),
+            exit_code=0,
+        )
+        assert outside.read_text(encoding="utf-8") == ""
+        assert not (tmp_path / "review-codex.json").is_symlink()
+        # The extractor wrote a real verdict at the workspace name.
+        assert self._verdict(tmp_path)["summary"] == "real"
+
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    def test_an_older_script_without_write_still_yields_an_error_verdict(
+        self, tmp_path: Path, exit_code: int
+    ) -> None:
+        # Self-review runs this YAML against scripts pinned to the last
+        # release, which may not carry the `write` verb yet. The error
+        # branches must still leave a failed verdict, and still not follow
+        # a link at the name (AT-2941).
+        scripts_root = tmp_path / "pinned"
+        shutil.copytree(_REPO_ROOT / ".github", scripts_root / ".github")
+        promote = scripts_root / ".github/scripts/promote_legacy_verdict.sh"
+        real = promote.with_name("promote_real.sh")
+        promote.rename(real)
+        promote.write_text(
+            "#!/usr/bin/env bash\n"
+            '[ "${1:-}" = write ] && { echo "usage" >&2; exit 2; }\n'
+            f'exec bash {shlex.quote(str(real))} "$@"\n',
+            encoding="utf-8",
+        )
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        (workdir / "runner-temp").mkdir()
+        outside = workdir / "runner-temp" / "scripts-snapshot"
+        outside.write_text("do not overwrite me", encoding="utf-8")
+        self._run_codex_step(
+            workdir,
+            links=[("review-codex.json", outside)],
+            exit_code=exit_code,
+            scripts_root=scripts_root,
+        )
+        assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+        assert not (workdir / "review-codex.json").is_symlink()
+        assert self._verdict(workdir)["status"] == "failed"
+
+    def test_a_refused_write_is_not_installed_by_the_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        # The direct-write fallback is for a script without the verb (usage
+        # exit 2) only. A `write` that refuses its payload exits 1, and that
+        # refusal must stand rather than be installed anyway (AT-2941).
+        scripts_root = tmp_path / "pinned"
+        shutil.copytree(_REPO_ROOT / ".github", scripts_root / ".github")
+        promote = scripts_root / ".github/scripts/promote_legacy_verdict.sh"
+        real = promote.with_name("promote_real.sh")
+        promote.rename(real)
+        promote.write_text(
+            "#!/usr/bin/env bash\n"
+            '[ "${1:-}" = write ] && { cat > /dev/null; exit 1; }\n'
+            f'exec bash {shlex.quote(str(real))} "$@"\n',
+            encoding="utf-8",
+        )
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        with pytest.raises(AssertionError):
+            self._run_codex_step(workdir, exit_code=1, scripts_root=scripts_root)
+        assert not (workdir / "review-codex.json").exists()
+
     def test_a_directory_at_a_candidate_name_does_not_kill_the_step(
         self, tmp_path: Path
     ) -> None:
@@ -2880,6 +2987,54 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         assert not (tmp_path / "verdict-openai.json").exists()
 
 
+class TestVerdictWriteDoesNotFollowLinks:
+    """The Python verdict writers share one link-safe write (AT-2941).
+
+    extract_codex_json.py, extract_claude_review.py and review_gemini.py
+    all write their verdict through review_status.write_verdict_json, which
+    must replace a symlink at the path rather than write through it -- the
+    host-side mirror of promote_legacy_verdict.sh's temp+mv. The workspace
+    is model-writable, so the path can be a link the model planted.
+    """
+
+    def test_a_symlinked_output_is_replaced_not_followed(
+        self, tmp_path: Path
+    ) -> None:
+        outside = tmp_path / "outside"
+        outside.write_text("do not overwrite me", encoding="utf-8")
+        target = tmp_path / "review-x.json"
+        target.symlink_to(outside)
+        write_verdict_json(target, {"summary": "real", "issues": []})
+        assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+        assert not target.is_symlink()
+        assert json.loads(target.read_text(encoding="utf-8"))["summary"] == "real"
+
+    def test_the_local_shim_writer_does_not_follow_a_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        # The local shims run their CLI over a PR checkout too, so their
+        # writer takes the same link-safe path.
+        from local_reviewer_support import write_verdict
+
+        outside = tmp_path / "outside"
+        outside.write_text("do not overwrite me", encoding="utf-8")
+        target = tmp_path / "review-claude.json"
+        target.symlink_to(outside)
+        write_verdict(str(target), {"summary": "real", "issues": []})
+        assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+        assert not target.is_symlink()
+        assert json.loads(target.read_text(encoding="utf-8"))["summary"] == "real"
+
+    def test_a_plain_path_is_written(self, tmp_path: Path) -> None:
+        target = tmp_path / "review-x.json"
+        write_verdict_json(target, {"summary": "real", "issues": []})
+        assert json.loads(target.read_text(encoding="utf-8"))["summary"] == "real"
+        # The umask-derived mode the writers it replaced produced.
+        mask = os.umask(0)
+        os.umask(mask)
+        assert target.stat().st_mode & 0o777 == 0o666 & ~mask
+
+
 @requires_codex_step_tools
 class TestPromotionScriptAgreesWithItsCallers:
     """The script's contracts, checked rather than asserted.
@@ -2979,7 +3134,94 @@ class TestPromotionScriptAgreesWithItsCallers:
         written = json.loads((tmp_path / "review-codex.json").read_text())
         assert written["status"] == expected_status
 
-    @pytest.mark.parametrize("mode", ["clear", "promote", "stamp"])
+    def test_target_is_ours_drops_a_symlinked_target_before_reading_it(
+        self, tmp_path: Path
+    ) -> None:
+        # The `ours` fast path asks is_verdict of the target, and jq reads
+        # through a link, so a link to a valid-looking verdict outside the
+        # workspace used to stand as this run's verdict (AT-2941).
+        outside = tmp_path / "outside.json"
+        outside.write_text(
+            json.dumps({"summary": "s", "status": "ok", "early_exit": False, "issues": []})
+        )
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        (workdir / "review-codex.json").symlink_to(outside)
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), "promote", "--target-is-ours", "review-codex.json"],
+            cwd=workdir,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not (workdir / "review-codex.json").is_symlink()
+        assert json.loads(outside.read_text())["summary"] == "s"
+
+    def test_a_symlinked_legacy_candidate_is_not_promoted(
+        self, tmp_path: Path
+    ) -> None:
+        # A legacy candidate planted as a link between the clear and the
+        # in-run promotion must not have the link's target promoted onto
+        # the canonical verdict (AT-2941).
+        outside = tmp_path / "outside.json"
+        outside.write_text(
+            json.dumps({"summary": "from outside", "early_exit": False, "issues": []})
+        )
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        (workdir / "verdict-openai.json").symlink_to(outside)
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), "promote", "review-codex.json"],
+            cwd=workdir,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not (workdir / "review-codex.json").exists()
+        assert not (workdir / "verdict-openai.json").is_symlink()
+        assert json.loads(outside.read_text())["summary"] == "from outside"
+
+    @pytest.mark.parametrize("payload", ["", "not json", "[]", '{"foo": 1}'])
+    def test_write_refuses_a_payload_that_is_not_a_verdict(
+        self, tmp_path: Path, payload: str
+    ) -> None:
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), "write", "review-codex.json"],
+            cwd=tmp_path,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+        assert not (tmp_path / "review-codex.json").exists()
+
+    def test_write_installs_a_verdict(self, tmp_path: Path) -> None:
+        verdict = {"summary": "s", "status": "failed", "early_exit": False, "issues": []}
+        result = subprocess.run(
+            ["bash", str(_PROMOTE_SCRIPT), "write", "review-codex.json"],
+            cwd=tmp_path,
+            env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+            input=json.dumps(verdict),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads((tmp_path / "review-codex.json").read_text()) == verdict
+        # The umask-derived mode a plain redirect would have produced, the
+        # same rule the Python writer follows.
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = (tmp_path / "review-codex.json").stat().st_mode & 0o777
+        assert mode == 0o666 & ~mask
+
+    @pytest.mark.parametrize("mode", ["clear", "promote", "stamp", "write"])
     @pytest.mark.parametrize(
         "target",
         [

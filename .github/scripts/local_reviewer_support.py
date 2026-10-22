@@ -25,14 +25,12 @@ one place is what keeps the three sides agreeing.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import signal
 import sys
 import traceback
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 # Re-exported for the two shims: the payload shape is aggregate_reviews.py's
@@ -46,6 +44,7 @@ from github_pr_support import (  # noqa: F401
     usable_verdict,
 )
 from local_review_config import LocalConfig
+from review_status import write_verdict_json
 
 # The `error` values aggregate_reviews.py distinguishes. Named here so a
 # shim cannot invent a fourth spelling that renders as an unknown failure.
@@ -272,7 +271,9 @@ def error_verdict(summary: str, kind: str, detail: str) -> dict[str, Any]:
 
 
 def write_verdict(path: str, payload: dict[str, Any]) -> None:
-    Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # One link-safe writer for CI and the local shims: the CLI runs over a
+    # PR checkout, so the verdict path may be a symlink (AT-2941).
+    write_verdict_json(path, payload, indent=2)
 
 
 def spawn_exit_reason(exit_code: int, timeout_sec: int) -> str:
