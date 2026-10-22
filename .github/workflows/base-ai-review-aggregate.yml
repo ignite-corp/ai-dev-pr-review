@@ -62,6 +62,26 @@ on:
         required: false
         default: ""
         description: "The axis of each size_exceeded entry: changed, added or deleted (AT-3052)"
+      size_warned:
+        type: string
+        required: false
+        default: ""
+        description: "Space-separated var names of the size checks at or over PR_SIZE_WARN_PERCENT of their limit; empty when none was (AT-2415)"
+      size_warn_axes:
+        type: string
+        required: false
+        default: ""
+        description: "The axis of each size_warned entry (AT-2415)"
+      size_warn_total:
+        type: string
+        required: false
+        default: ""
+        description: "The measured lines of each size_warned entry (AT-2415)"
+      size_warn_limit:
+        type: string
+        required: false
+        default: ""
+        description: "The limit of each size_warned entry (AT-2415)"
       policy_skipped:
         type: string
         required: false
@@ -414,6 +434,10 @@ jobs:
           SIZE_DELETIONS: ${{ inputs.size_deletions }}
           SIZE_EXCEEDED: ${{ inputs.size_exceeded }}
           SIZE_AXES: ${{ inputs.size_axes }}
+          SIZE_WARNED: ${{ inputs.size_warned }}
+          SIZE_WARN_AXES: ${{ inputs.size_warn_axes }}
+          SIZE_WARN_TOTAL: ${{ inputs.size_warn_total }}
+          SIZE_WARN_LIMIT: ${{ inputs.size_warn_limit }}
           POLICY_SKIPPED: ${{ inputs.policy_skipped }}
           EXCLUDED_COUNT: ${{ inputs.excluded_count }}
           EXCLUDED_PATHS: ${{ inputs.excluded_paths }}
