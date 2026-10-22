@@ -297,7 +297,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # Codex runs with write access through `--sandbox workspace-write`.
+      # Codex runs with write access through a workspace-write profile.
       # Claude has only Read/Glob/Grep; a host step writes its verdict.
       # .ai-dev-pr-review is checked out INSIDE that workspace, and the
       # steps after the model run its scripts -- promote_legacy_verdict.sh,
@@ -954,6 +954,51 @@ jobs:
           fi
           echo "codex auth.json populated ($(wc -c < $HOME/.codex/auth.json) bytes)"
 
+      # The sandboxed shell must not inherit credentials, nor read the
+      # CLI's or the runner's own files (AT-3054). The profile
+      # extends :workspace, the profile behind workspace-write, and only
+      # takes effect while `codex exec` gets no `--sandbox` flag, which
+      # would replace it. No continue-on-error: without this config the
+      # model must not run.
+      - name: Restrict the Codex sandbox
+        if: inputs.reviewer == 'codex'
+        run: |
+          set -euo pipefail
+          CODEX_DIR="$HOME/.codex"
+          # A step's shell is a child of the runner's worker, which lives
+          # in <runner directory>/bin.
+          WORKER=$(readlink -f "/proc/$PPID/exe")
+          if [ "$(basename -- "$WORKER")" != "Runner.Worker" ]; then
+            echo "::error::cannot locate the runner directory; not running Codex unrestricted"
+            exit 1
+          fi
+          RUNNER_DIR=$(dirname -- "$(dirname -- "$WORKER")")
+          COMMANDS_DIR="${RUNNER_TEMP}/_runner_file_commands"
+          for dir in "$CODEX_DIR" "$RUNNER_DIR" "$COMMANDS_DIR"; do
+            case "$dir" in
+              /|*"'"*|*$'\n'*) echo "::error::unusable path for the sandbox config"; exit 1 ;;
+              /*) ;;
+              *) echo "::error::unusable path for the sandbox config"; exit 1 ;;
+            esac
+          done
+          mkdir -p -- "$CODEX_DIR"
+          cat > "$CODEX_DIR/config.toml" <<EOF
+          default_permissions = "review"
+
+          [shell_environment_policy]
+          inherit = "core"
+          ignore_default_excludes = false
+          exclude = ["*KEY*", "*TOKEN*", "*SECRET*"]
+
+          [permissions.review]
+          extends = ":workspace"
+
+          [permissions.review.filesystem]
+          '${CODEX_DIR}' = "none"
+          '${RUNNER_DIR}' = "none"
+          '${COMMANDS_DIR}' = "none"
+          EOF
+
       - name: Enable bubblewrap sandbox on Actions runner
         id: sysctl
         if: inputs.reviewer == 'codex'
@@ -1102,10 +1147,12 @@ jobs:
           # this run. Marked only after the clear actually happened.
           : > "${RUNNER_TEMP}/codex-start"
           mkdir -p -- "$TMPDIR"
-          # `codex exec` 0.147.0 rejects `--full-auto` (removed upstream);
-          # `--sandbox workspace-write` alone preserves the prior behavior.
+          # The sandbox comes from the profile 'Restrict the Codex sandbox'
+          # configured; a `--sandbox` flag here would replace it. Naming the
+          # profile makes the CLI refuse to start if that config is missing,
+          # rather than fall back to a default sandbox.
           codex exec \
-            --sandbox workspace-write \
+            -c 'default_permissions="review"' \
             --model "$CODEX_MODEL" \
             "$(cat "$COMBINED")" \
             2>&1 | tee "${RUNNER_TEMP}/codex-run.log"
