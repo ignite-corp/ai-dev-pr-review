@@ -1013,7 +1013,7 @@ def _refs(
     """
     return driver.Refs(
         base_ref=base_ref, head_sha=head_sha, head_ref="topic", pr_author="a",
-        pr_merged="false", merge_commit_sha="", pr_commits="1", labels="",
+        pr_merged="false", merge_commit_sha="", labels="",
         additions=additions, deletions=deletions,
     )
 
