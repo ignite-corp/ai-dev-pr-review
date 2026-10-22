@@ -517,8 +517,10 @@ jobs:
             # 4. Consecutive reviewer error verdicts in recent aggregate reviews.
             # A reviewer that keeps emitting error fallback verdicts while the
             # aggregate still passes (e.g. a broken codex CLI) is a silent
-            # coverage loss. Matches the AT-1792 error markers plus the legacy
-            # fallback wording so the check also works retroactively.
+            # coverage loss. Matches the section headers aggregate_reviews
+            # renders for a reviewer that did not run (see is_error below);
+            # older verdicts that carried the failure only in summary prose
+            # are not counted.
             owner="${slug%%/*}"
             repo_name="${slug#*/}"
             if ! prs_json=$(gh api graphql \
@@ -562,11 +564,33 @@ jobs:
                      | map(select(ascii_downcase | startswith($r)))
                      | first) // "";
                   def is_error($body):
-                    # Only the section header + summary line carry error markers;
-                    # issue bullets may legitimately quote error-like phrases.
-                    section($body)
-                    | (split("\n") | .[:2] | join("\n"))
-                    | test("cli_invocation_failed|script_invocation_failed|output[ _]unparseable|provenance_unavailable|review failed:|unavailable \\(quota/auth error\\)"; "i");
+                    # Line 1 of a section is the header aggregate_reviews renders;
+                    # line 2 is the summary the reviewer wrote, and issue bullets
+                    # may quote anything. A reviewer that did not run is matched
+                    # on the header alone: `[ ] not run (<detail>)`, written only
+                    # for a payload whose status normalizes to failed (whatever
+                    # the error text, Gemini exception text included), or a
+                    # no-payload `[ ] N/A -- failed (see logs)`,
+                    # `[ ] N/A -- early-exit or no-output` (a green job that
+                    # wrote no verdict, which the prompt forbids even for an
+                    # early exit) or `[ ] N/A -- no verdict (unknown)`. An N/A
+                    # header with an `_<error>_` line under it (a payload with an
+                    # error but no summary, e.g. when no job conclusion was
+                    # passed and the header is a bare `[ ] N/A`) also counts;
+                    # line 2 is printed by aggregate_reviews here, not written by
+                    # the reviewer. Benign
+                    # absences render other N/A reasons (skipped, sequential
+                    # early exit, cancelled); a real early exit writes a payload.
+                    # A summary quoting any of these is not an error. Older
+                    # renderings that carried the failure only in summary prose,
+                    # e.g. `Review failed:`, the quota wording, or a pre-AT-2123
+                    # `(partial: <kind>)` header, no longer count.
+                    (section($body) | split("\n")) as $lines
+                    | ($lines[0] // "") as $header
+                    | ($header
+                       | test("\\[ \\] not run \\(|\\[ \\] N/A -- (failed \\(see logs\\)|early-exit or no-output|no verdict \\(unknown\\))"; "i"))
+                      or (($header | test("\\[ \\] N/A"))
+                          and (($lines[1] // "") | test("^_.+_")));
                   [ .data.repository.pullRequests.nodes[]?
                     | [ (.reviews.nodes[]?, .comments.nodes[]?)
                         | select(.body | contains("<!-- multi-llm-review -->")) ]
