@@ -974,7 +974,7 @@ def _missing_reviewer_reasons(
             # differ; a caller that reimplements the chain can make them.
             # Telling them apart needs a dispatched-reviewer set the
             # aggregate is not given, which is a new consumer-facing input
-            # across the orchestrator and the wrapper's lockstep -- so the
+            # on the orchestrator -- so the
             # wider meaning is documented in the README reason table
             # instead of narrowed here (AT-2511).
             reasons[name] = SEQUENTIAL_EARLY_EXIT_ROSTER_REASON
@@ -1002,8 +1002,8 @@ def write_reviewer_roster(
     was a parenthesis in the comment body.
 
     This changes no conclusion and no exit status. Whether a 2/3 round
-    should go red is a fleet policy question -- 17 pilot consumers plus the
-    wrapper's lockstep -- and the point of emitting the roster is to let
+    should go red is a fleet policy question -- every consumer of the
+    orchestrator -- and the point of emitting the roster is to let
     that decision be made somewhere it can be made, not to pre-empt it here.
 
     ``responded`` is derived from ``available``, the same dict the coverage
@@ -1915,7 +1915,7 @@ def _aggregate(result: dict[str, Any]) -> None:
     # on it even though this run stays green. Keeping the run green is the
     # pre-existing behaviour on this path -- _check_insufficient already
     # returns "approve" here -- and turning it red is a fleet decision
-    # across the pilot consumers and the wrapper's lockstep, not one to
+    # across the consumers, not one to
     # make as a side effect of naming the reason honestly.
     no_artifact_bypass = (
         _artifacts_entirely_absent(reviews)

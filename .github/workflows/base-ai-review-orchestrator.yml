@@ -203,7 +203,7 @@ jobs:
   #     chain, which is the one legitimate reason to skip. The failure
   #     clause was originally written for codex only (in review-gemini-s);
   #     the wrapper broke both directions in AT-2114, and this is base
-  #     following the wrapper's shape (docs/pilot-usage.md, Architecture).
+  #     following the wrapper's shape (docs/pilot-usage.md before AT-3036).
   #
   # What this tolerance does NOT cover, so nobody reads it as protection
   # against a reviewer outage: the reviewer step is continue-on-error, so

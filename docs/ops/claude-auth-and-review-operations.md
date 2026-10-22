@@ -5,10 +5,8 @@ Durable, reusable operating lessons for the AI review fleet. Keep tight.
 ## Auth model - the SSOT composite
 
 The Claude review step lives in one shared composite action,
-`.github/actions/claude-review`, consumed by both `base-ai-review-single.yml`
-and the pilot wrapper (via the local checkout path
-`./.ai-dev-pr-review/.github/actions/claude-review`). It is the single source of
-truth for:
+`.github/actions/claude-review`, consumed by `base-ai-review-single.yml`. It is
+the single source of truth for:
 
 - **OAuth-preferred auth ternary** - the composite passes
   `anthropic_api_key: ${{ inputs.claude_code_oauth_token == '' && inputs.anthropic_api_key || '' }}`.
@@ -49,9 +47,11 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
   (reusable-workflow context), NOT the base repo.
 - **ignite-corp** sets one org var (visibility all) that covers all its
   consumers. **ignite-pilot-org has no org-level `CLAUDE_MODEL` or
-  `CODEX_MODEL`** -> each wrapper consumer needs its own repo-level
-  `CLAUDE_MODEL` AND `CODEX_MODEL`, else it falls through to the workflow's
-  hard-coded default.
+  `CODEX_MODEL`** -> a pilot repo that calls the orchestrator from its own
+  thin trigger needs its own repo-level `CLAUDE_MODEL` AND `CODEX_MODEL`, else
+  it falls through to the workflow's hard-coded default. A repo reviewed by
+  the runner (`ignite-corp/ai-dev-pr-review-runner`) does not: the runner is
+  the caller, so the variables resolve there and in `ignite-corp`.
   The defaults, the onboarding commands, and the AT-2202 cost incident are
   under "Op hazard - pilot consumer onboarding must set CODEX_MODEL and
   CLAUDE_MODEL repo vars" below.
@@ -74,7 +74,9 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
   passive - it says nothing is stopping you. A formal `APPROVED` review is an
   affirmative, attributable claim that the code was reviewed; on that PR it is
   a false attestation.
-  - **What the release gate covers.** Pilot consumers track `wrapper.yml@v1`,
+  - **What the release gate covers.** (Written while the pilot wrapper was
+    live; it is retired (AT-3036) and pilot repos are reviewed by the runner.)
+    Pilot consumers track `wrapper.yml@v1`,
     and `v1` floats to release tags rather than to `main`, so merging changes
     nothing for them - they begin running the new behaviour when the float
     moves. Wrapper PR #28 (AT-2114, merged) stops one reviewer's auth failure
@@ -122,12 +124,9 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
     variable values.
 
     Adjust the workflow filename for any consumer not using `ai-review.yml`.
-- base <-> wrapper keep **MAJOR.MINOR in lockstep**; patch versions independent.
-  The wrapper reimplements the single-review job inline instead of calling base's
-  reusable workflows, so a `base-ai-review-single.yml` change must be hand-ported
-  into `wrapper.yml` and released with it. Only `.github/scripts/*` (including
-  `review_prompt.md`) and the `claude-review` composite ride along on their own -
-  the per-repo prompts come from the consumer. See `docs/pilot-usage.md`.
+- There is no base <-> wrapper release lockstep any more: the pilot wrapper is
+  retired (AT-3036), so a base change is not ported anywhere and no wrapper
+  release is cut. See `docs/pilot-usage.md`.
 - **Pin-bump rule** - `single.yml`, `prepare.yml`, `aggregate.yml` each run
   different scripts from their own pinned checkout. Bump only the pin(s) serving
   the changed script:
@@ -251,8 +250,8 @@ that already have an exit path:
   observation finished at branch/PR level);
 - a manual dispatch instead of a synthetic event - the thin trigger in the
   consumer (`ai-review.yml`; `self-review.yml` here) owns `workflow_dispatch`
-  and forwards `pr_number` to the reusable orchestrator or `wrapper.yml`, which
-  are `workflow_call` only (the wrapper also takes `upstream_ref`), so a review
+  and forwards `pr_number` to the reusable orchestrator, which is
+  `workflow_call` only, so a review
   can be run against an existing PR at a chosen ref without creating anything
   (README, "Input contract reference");
 - the runtime dry-run under "GHA expression pitfall" above: set a gate
@@ -283,6 +282,10 @@ belong to another operator's onboarding work; a human confirms they are dead
 before anything is removed.
 
 ## Op hazard - pilot consumer onboarding must set CODEX_MODEL and CLAUDE_MODEL repo vars
+
+This applies to a pilot repo that calls the orchestrator from its own thin
+trigger. A repo reviewed by the runner takes its model variables from the
+runner, which is the caller (see "Model selection" above).
 
 `ignite-pilot-org` has no org-level `CODEX_MODEL` or `CLAUDE_MODEL`: its org
 variable list holds only `PR_SIZE_LIMIT` and `REVIEW_MODE` (measured

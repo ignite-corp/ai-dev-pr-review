@@ -186,11 +186,9 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 `ai-tf-t2a/.github/workflows/claude-code-review.yml`이 체크아웃 스텝에 달고 있는
 것과 같은 "왜" 주석을 달아야 합니다.
 
-이는 파일럿 래퍼 자체의 내부 체크아웃(`wrapper.yml` 안의
-`actions/checkout ignite-corp/ai-dev-pr-review@${{ inputs.upstream_ref }}`,
-[파일럿 사용법](docs/pilot-usage.md) 참조)과는 다른 것입니다 — 그것은 모든 래퍼
-소비자를 위한 래퍼 자신의 단일 메커니즘이지, 한 소비자의 트리 안에서 다른 핀
-옆에 나란히 사는 두 번째 경로가 아닙니다.
+은퇴한 파일럿 래퍼(AT-3036)는 이와 또 다른 메커니즘을 썼습니다: `wrapper.yml` 안에서
+`upstream_ref`로 이 레포를 직접 체크아웃하는 방식입니다. 이제 파일럿 조직 레포는
+러너가 리뷰하므로, 그 체크아웃은 소비자가 고르는 핀 정책이 아닙니다.
 
 `consumer-health.yml`의 핀 최신성 검사는 구조적으로 이 경로를 볼 수 없습니다 —
 그 이유와, 왜 현재는 고치지 않고 받아들이는지는 핀 추출 정규식에 달린 주석을
@@ -412,7 +410,14 @@ orchestrator는 `concurrency: { group: ai-review-<repository>-<pr-number>, cance
 
 ## 조직 간(cross-org) 사용
 
-GitHub은 조직 간에 `secrets: inherit`를 전파하지 **않습니다**. `ignite-pilot-org`(또는 다른 조직) 소비자의 경우:
+`ignite-corp` 밖의 레포에 대해 지원되는 경로는 러너 [`ignite-corp/ai-dev-pr-review-runner`](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch)입니다. 러너는 `ignite-corp`에서 `target_repo`를 지정해 이 레포의 오케스트레이터를 호출하므로, 리뷰는 `ignite-corp`의 Actions 시간과 `ignite-corp` 시크릿으로 실행됩니다. 대상 레포에 필요한 것은 두 가지입니다:
+
+1. 러너 allowlist(`.github/review-targets.txt`)의 항목 — 레포 단위 항목이거나, 소유자 단위 `owner/*` 레코드.
+2. 대상 레포에 설치된 리뷰어 App(`ignite-ai-review-approver`). App이 설치되어 있으면 pull request 이벤트가 러너로 자동 디스패치됩니다.
+
+대상 레포에는 시크릿도 리뷰 워크플로우도 필요 없습니다. 프롬프트 파일은 대상의 base 브랜치에서 읽고, 없으면 러너의 기본값을 씁니다([소비자 레포별 프롬프트 재정의](#소비자-레포별-프롬프트-재정의) 참조).
+
+대안으로, 리뷰를 자기 조직의 Actions 시간으로 돌리려는 조직은 각 레포의 thin 트리거에서 오케스트레이터를 호출할 수 있습니다. GitHub은 조직 간에 `secrets: inherit`를 전파하지 **않으므로**:
 
 1. 조직 관리자: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`를 조직 수준 시크릿으로 구성하고 소비자 레포에 접근 권한 부여.
 2. 소비자 thin 트리거: 위에 표시된 명시적 `secrets:` 매핑 사용. `secrets: inherit`를 사용하지 **마세요**.
@@ -462,9 +467,7 @@ updates:
 - 마이너(`v1.x.0`): 새 선택적 입력, 추가적 리뷰어 기능, 특정 이슈 유형에 프롬프트가 규정하는 심각도를 낮추는 변경 — 완화 방향만 해당하며, 올리는 변경은 소비자를 새로 차단할 수 있음.
 - 메이저(`v2.0.0`): 입력 계약 변경, 스크립트 시그니처 깨짐, 심각도 임계 기본값 변경, 특정 이슈 유형에 프롬프트가 규정하는 심각도를 올리는 변경.
 
-래퍼 버전 정렬: 이 레포와 파일럿 래퍼 `ignite-pilot-org/ai-dev-pr-review-wrapper`는 릴리스 버전의 MAJOR.MINOR를 lockstep으로 유지하며, PATCH는 레포별로 독립적으로 올립니다. 현재 페어링: base `v1.15.0` ↔ wrapper `v1.14.0`. 한쪽 레포가 MINOR(또는 MAJOR)를 올리면, 다른 쪽도 매칭되는 정렬(alignment) 릴리스를 냅니다 — 변경 사항이 없으면 내용이 동일한 릴리스입니다. 두 레포 모두 릴리스 발행 시 `move-major-tag.yml`로 `v1` 메이저 태그를 자동 이동하므로, `@v1` 소비자는 별도 조치가 필요 없습니다.
-
-lockstep이 필요한 이유는 래퍼가 이 레포의 재사용 워크플로우를 호출하지 않고 단일 리뷰 job을 인라인으로 재구현하고 있기 때문입니다. 따라서 `base-ai-review-single.yml`의 변경은 파일럿 소비자에게 자동으로 전달되지 않습니다 — `wrapper.yml`로 직접 포팅한 뒤 대응되는 래퍼 릴리스로 배포해야 합니다. 자동으로 전파되는 것은 래퍼의 `upstream_ref` 체크아웃을 타고 오는 `.github/scripts/*`(`review_prompt.md` 포함)와 `.github/actions/claude-review` 컴포지트뿐입니다. 레포별 프롬프트인 `code-review-system.md` / `code-review-checklist.md`는 이 레포가 아니라 소비자 레포에서 읽습니다. [파일럿 사용법](docs/pilot-usage.md) 참조.
+파일럿 래퍼 `ignite-pilot-org/ai-dev-pr-review-wrapper`는 은퇴했으며(AT-3036), 이 레포는 더 이상 래퍼와 릴리스 lockstep을 유지하지 않습니다. 파일럿 조직 레포는 러너가 리뷰합니다. [자동 디스패치](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch) 참조.
 
 ## 소비자 레포별 프롬프트 재정의
 
