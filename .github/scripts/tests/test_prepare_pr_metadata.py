@@ -217,7 +217,6 @@ def _dispatch_context(pr_number: str = "35") -> dict[str, str]:
         "github.event.pull_request.head.sha": "",
         "github.event.pull_request.merged": "",
         "github.event.pull_request.merge_commit_sha": "",
-        "github.event.pull_request.commits": "",
         "inputs.pr_number || github.event.pull_request.number": pr_number,
         "inputs.target_repo || github.repository": "ignite-corp/ai-dev-pr-review",
         "steps.target.outputs.cross": "false",
@@ -260,7 +259,6 @@ def _pull_request_context(
         "github.event.pull_request.head.sha": head_sha,
         "github.event.pull_request.merged": merged,
         "github.event.pull_request.merge_commit_sha": merge_commit_sha,
-        "github.event.pull_request.commits": "2",
         "inputs.pr_number || github.event.pull_request.number": "35",
         "inputs.target_repo || github.repository": target,
         "steps.target.outputs.cross": cross,
@@ -333,7 +331,6 @@ class TestDispatchPath:
             "pr_author": "",
             "pr_merged": "false",
             "merge_commit_sha": "",
-            "pr_commits": "",
             "labels": "",
         }
 
@@ -343,13 +340,10 @@ class TestMergeState:
     """The diff step learns that a PR is merged, and only then which commit landed (AT-2201)."""
 
     def test_dispatch_on_a_merged_pr_exports_the_merge_commit(self, tmp_path: Path) -> None:
-        rest = {**_DEPENDABOT_REST, "merged": True, "merge_commit_sha": _MERGE_SHA, "commits": 3}
+        rest = {**_DEPENDABOT_REST, "merged": True, "merge_commit_sha": _MERGE_SHA}
         outputs, _ = _run_refs_step(tmp_path, context=_dispatch_context(), rest=rest)
         assert outputs["pr_merged"] == "true"
         assert outputs["merge_commit_sha"] == _MERGE_SHA
-        # The commit count is what tells a one-commit squash or rebase, whose
-        # landed commit is the whole PR, from a longer one that is not.
-        assert outputs["pr_commits"] == "3"
 
     def test_dispatch_on_an_open_pr_withholds_the_test_merge_commit(
         self, tmp_path: Path
@@ -383,7 +377,6 @@ class TestMergeState:
         outputs, calls = _run_refs_step(tmp_path, context=context)
         assert outputs["pr_merged"] == "true"
         assert outputs["merge_commit_sha"] == _MERGE_SHA
-        assert outputs["pr_commits"] == "2"
         assert calls == []
 
 
@@ -588,7 +581,6 @@ def _run_extract_context_step(
         "steps.refs.outputs.head_ref": head_ref,
         "steps.refs.outputs.pr_merged": "false",
         "steps.refs.outputs.merge_commit_sha": "",
-        "steps.refs.outputs.pr_commits": "1",
         "steps.refs.outputs.labels": labels,
         "inputs.code-review-system-prompt-path": "examples/prompts/code-review-system.md",
         "inputs.code-review-checklist-path": "examples/prompts/code-review-checklist.md",
