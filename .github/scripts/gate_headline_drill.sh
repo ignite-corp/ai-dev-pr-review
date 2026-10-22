@@ -803,10 +803,14 @@ Fixed: both names are in the single parenthesized block.
 > **suggestion** `.github/scripts/review_pr_local.py:1814` (claude, R7 verdict body) -- The rewritten docstring now states the resolved value is inert ...
 
 Fixed: the docstring extension.'
+# R9 retains the measured marker and timestamp, but its item is synthetic:
+# an empty list is no longer a valid producer-shaped positive fixture.
 CUT_R9='<!-- round-cutoff-claude-r9 -->
 ## [bot] claude Round Cutoff Summary (R9)
 
-R9 convergence cutoff -- the following minor items are recommended for follow-up:'
+R9 convergence cutoff -- the following minor items are recommended for follow-up:
+
+- **c.py:9** -- - **minor** (claude): an R9 item'
 C_CUTOFF=$(cmt 6015282943 2026-10-06T11:28:32Z 'github-actions[bot]' Bot "$CUT_BODY")
 C_DISP=$(cmt 6015452260 2026-10-06T11:39:40Z hyuk-hur User "$DISP_BODY")
 C_CUTOFF_R9=$(cmt 6026034008 2026-10-06T21:45:38Z 'github-actions[bot]' Bot "$CUT_R9")
@@ -911,7 +915,7 @@ chk "a cutoff comment before the window start is a previous round's, not this on
 chk "a second round's cutoff, undispositioned beside a dispositioned first, blocks" \
     "$(cutoff "$FN" "$(lst "$C_CUTOFF" "$C_DISP" "$C_CUTOFF_R9")" "$W_CUT")" block
 chk "both dispositioned passes" \
-    "$(cutoff "$FN" "$(lst "$C_CUTOFF" "$C_DISP" "$C_CUTOFF_R9" "$(cmt 106 2026-10-06T22:00:00Z hyuk-hur User '> an R9 item
+    "$(cutoff "$FN" "$(lst "$C_CUTOFF" "$C_DISP" "$C_CUTOFF_R9" "$(cmt 106 2026-10-06T22:00:00Z hyuk-hur User '> c.py:9 -- an R9 item
 Deferred to #176: round-cutoff-claude-r9')")" "$W_CUT")" ok
 # shellcheck disable=SC1090
 out=$(. "$FN"; printf '%s' "$(lst "$C_CUTOFF" "$C_DISP" "$C_CUTOFF_R9")" | "$CUTOFF_FN" "$W_CUT")
@@ -993,14 +997,17 @@ R9_OVER_R7='## [bot] claude Round Cutoff Summary (R9)
 
 R9 convergence cutoff -- still open from round-cutoff-claude-r7:
 
+- **c.py:9** -- - **minor** (claude): an R9 item
+
 > **minor** `.github/scripts/aggregate_reviews.py:61` -- dead helper
 > **suggestion** `.github/scripts/tests/test_aggregate_reviews.py:44` -- second import'
 C_R9_LOCAL=$(cmt 125 2026-10-06T11:35:00Z hyuk-hur User '<!-- round-cutoff-claude-r9 -->
 '"$R9_OVER_R7")
 C_R9_AS_HUMAN=$(cmt 126 2026-10-06T11:35:00Z hyuk-hur User "$R9_OVER_R7")
-# R9 itself is dispositioned, so r9 is not what any verdict below turns on:
-# it carries no `- **loc** --` item line, and naming its marker answers it.
-C_DISP_R9=$(cmt 127 2026-10-06T11:50:00Z hyuk-hur User 'round-cutoff-claude-r9 handled in the fixup.')
+# R9 itself is dispositioned, so r9 is not what any verdict below turns on.
+C_DISP_R9=$(cmt 127 2026-10-06T11:50:00Z hyuk-hur User 'round-cutoff-claude-r9:
+> c.py:9 -- an R9 item
+Fixed: handled in the fixup.')
 chk "a later locally-posted cutoff comment does not answer the round it re-reports" \
     "$(cutoff "$FN" "$(lst "$C_CUT_LOCAL" "$C_R9_LOCAL" "$C_DISP_R9")" "$W_CUT")" block
 # shellcheck disable=SC1090
@@ -1473,7 +1480,7 @@ CTRL_DIGIT="$D/fn-no-digit-guard.sh"
 # The marker's trailing guard is one lookahead on that line; without it the
 # marker binds as the bare substring round 7 of #194 found.
 # shellcheck disable=SC2016  # matched literally: the guard as SKILL.md spells it
-sed 's/(\$m | rx) + "(?!\[0-9\])"/($m | rx)/' "$FN" > "$CTRL_DIGIT"
+sed 's/(\$m | rx) + "(?!\[0-9A-Za-z_-\])"/($m | rx)/' "$FN" > "$CTRL_DIGIT"
 chk "the digit-guard control differs from the real function" "$(cmp -s "$FN" "$CTRL_DIGIT" && echo same || echo differs)" differs
 # shellcheck disable=SC1090
 chk "digit-guard control still loads" "$(. "$CTRL_DIGIT"; type -t "$CUTOFF_FN")" function
@@ -1499,7 +1506,7 @@ CTRL_AUTHOR_SCAN="$D/fn-bot-only-scan.sh"
 # the operator's own login posts the cutoff comment as a `User` under
 # review_pr_local.py, and that filter is what made it go unseen.
 # shellcheck disable=SC2016  # matched literally: the scan as SKILL.md spells it
-sed '/^'"${CUTOFF_FN}"'() {$/,/^}$/{s/select((\.created_at | type) == "string" and \.created_at >= \$s)/select(.type == "Bot") | &/;}' "$FN" > "$CTRL_AUTHOR_SCAN"
+sed '/^'"${CUTOFF_FN}"'() {$/,/^}$/{s/select((\.created_at | type) == "string")/select(.type == "Bot") | &/;}' "$FN" > "$CTRL_AUTHOR_SCAN"
 chk "the Bot-only scan control differs from the real function" "$(cmp -s "$FN" "$CTRL_AUTHOR_SCAN" && echo same || echo differs)" differs
 # shellcheck disable=SC1090
 chk "Bot-only scan control still loads" "$(. "$CTRL_AUTHOR_SCAN"; type -t "$CUTOFF_FN")" function

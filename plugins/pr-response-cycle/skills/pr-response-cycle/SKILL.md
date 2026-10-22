@@ -420,6 +420,29 @@ Fixed in <commit-sha>: <what changed>
 Deferred to TICKET-XXX: <out-of-scope reason>
 ```
 
+**Colliding folded locations**: if cutoff/fallback items share a location,
+quote each original rendered first line on its own, with no label or other
+prefix inside the quote. If first lines are identical, repeat the quote once
+per finding and explain each separately. Put the disposition on the following
+line. For example:
+
+```text
+Dispositions for `inline-fallback-claude`:
+
+> - **a.py:1** -- - **minor** (claude): Validate authentication before forwarding credentials
+Fixed: validate authentication first.
+
+> - **a.py:1** -- - **minor** (claude): Close the socket after the retry budget expires
+Fixed: close the socket on exhaustion.
+```
+
+**Invalid folded source comments**: a reply or minimization cannot repair an
+empty, unparseable, or count-mismatched source comment. Inspect that comment
+and ask its author or an authorized maintainer to repair the producer output
+at the source, preserving every real finding; then rerun the gate. Do not
+discard findings or change a count merely to obtain a pass. Until the source
+is repaired, the merge remains blocked. Minimized comments are still read.
+
 **Two failure modes**:
 1. **GraphQL parse errors on reply text**: avoid parens-with-colons inside body when shell-quoting. Pass body via `-F body=...` (variable substitution), never inline in the query string. If you see `Expected COLON, actual: IDENTIFIER`, simplify the body's punctuation.
 2. **Race against new review rounds**: if you reply while a new bot review fires, your replies may land on now-outdated threads. Per AGENTS.md PR Comment Management: finish all code work and push BEFORE the cleanup pass. Don't interleave.
@@ -587,7 +610,7 @@ A refusal here is not a merge block: it says this round is not the one that ends
 
 The merge call runs only when, **on the same head SHA, read immediately before the call**: (a) at least one verdict exists on that SHA — a completed/success run of the review workflow whose aggregate — a comment or a review, step 8's shape table — reports every configured reviewer, kind (i), or a local-review verdict comment opening with the repository's verdict header for that SHA whose newest instance approves, kind (ii); (b) that head's threads are all resolved; (c) every item each verdict raised has a disposition; and (d) no check on that SHA is still running. Each is a block on its own; a failed one means no merge — back to Stage 2 for the new items (reply + resolve, or a fixup, which pushes a new head, starts a new round, and brings you back to this gate). This block is the gate's only home; paste it whole. (a), (b) and (d) decide for themselves and exit non-zero, loud, on anything but a pass — the step 9 shape, because a query that does not block is not a gate. (c) is a read of the verdicts (a) named, so the merge call is a separate block after it — except the major items a verdict lists in the aggregate's item shape, the aggregate's unreviewed majors and a local verdict's items in that same shape, which the block checks itself on every verdict (a) named and exits non-zero on; what (c) can no longer do is read an empty list as a pass, because (a) refuses to reach it without a verdict.
 
-**Where (c) reads a round's findings: on the verdict comment's body, on the aggregate's body, and on any `round-cutoff-*` comment the round posted — never on the thread count.** (b) returning zero unresolved threads is a statement about threads, and not about findings: from the convergence cutoff onward a round folds its remaining items into a cutoff comment, and those items carry no thread id at all, so a PR that has finished its reply pass reads 0 unresolved while carrying findings nobody has dispositioned. Observed on four PRs over 2026-10-06..08; the clearest had 11 threads and 0 unresolved, and then a round produced three findings, none of them a thread. A cutoff item is dispositioned instead by a quoted-response comment, Stage 4's issue-comment pattern, which names the cutoff comment it answers. The worked example to read rather than a description of one: `ignite-corp/ai-dev-pr-review#188`, comment `6015452260` at 2026-10-06T11:39:40Z — three items quoted with their round and their source (`(claude, R7 cutoff comment)` twice, `(claude, R7 verdict body)` once), two `Fixed:` with file:line, one `By design:`, and the cutoff comment it names now minimized `OUTDATED`. `cutoff_findings` in the block below is that read, and it blocks.
+**Where (c) reads a round's findings: on the verdict comment's body, on the aggregate's body, and on every first-line `round-cutoff-*` comment in the current-head review window and every first-line `inline-fallback-*` comment the PR carries, regardless of round — never on the thread count.** (b) returning zero unresolved threads is a statement about threads, and not about findings: from the convergence cutoff onward a round folds its remaining items into a cutoff comment, and those items carry no thread id at all, so a PR that has finished its reply pass reads 0 unresolved while carrying findings nobody has dispositioned. Observed on four PRs over 2026-10-06..08; the clearest had 11 threads and 0 unresolved, and then a round produced three findings, none of them a thread. When several folded items share a location, quote each item's whole rendered first line separately. A folded item is dispositioned instead by a quoted-response comment, Stage 4's issue-comment pattern, which names the cutoff comment it answers. The worked example to read rather than a description of one: `ignite-corp/ai-dev-pr-review#188`, comment `6015452260` at 2026-10-06T11:39:40Z — three items quoted with their round and their source (`(claude, R7 cutoff comment)` twice, `(claude, R7 verdict body)` once), two `Fixed:` with file:line, one `By design:`, and the cutoff comment it names now minimized `OUTDATED`. `cutoff_findings` in the block below is that read, and it blocks.
 
 What counts as a verdict is the repository's `AGENTS.md`'s to declare, not this skill's: the review workflow's name, which step 8 already requires, and, for a local review, the header its verdict comment opens with. The two kinds are bound differently, and the block below does both. Kind (i)'s aggregate is bound to an identity — `github-actions[bot]` or `ignite-ai-review-approver[bot]`, user type `Bot`, the workflow's own token or its App's — because those are identities no session's account can post under, so they tell the workflow's comment or review from everyone else's. Kind (ii)'s verdict cannot be: every session posts as one account, so an author list there — `Bot`, a `[bot]` suffix, `github-actions`, a login — would be a list of whom to trust rather than of what was said, and the gate carries none for it. With identity unavailable, the content check is the only thing that separates a verdict from a request that quotes one, so kind (ii) is a contract of **position and form, default-deny**: the comment's first non-empty line, whole, is `## LENS 판정 — **<word>** · head `<40-char SHA>`` — `LENS verdict` is accepted in the same slot — with the full head SHA, a prefix being no name. The captured word is the verdict, and it approves only when it is exactly `승인` or, case-insensitively, `APPROVE` / `APPROVED`. Any other word — `차단 1건`, `승인 보류`, `승인 아님`, `CHANGES REQUESTED` — is a verdict that does not approve, and it blocks. A comment whose first line is any other shape is not a verdict, whatever its body says: a review request, a quotation of a verdict, a gate record never count — and must never be posted in the header shape, because the shape is the whole of what the gate reads. On one head the newest verdict decides: an approval followed by a non-approval blocks. This is the contract a local reviewer posts to; the defaults below are LENS's actual header, and a repository that declares its own overrides both regexes. When both kinds exist on the same head, both are dispositioned: two reviewers, not duplicates. What a kind (ii) verdict leaves to the operator it lists in the aggregate's item shape, `- + **major** `<path>[:<line>]` -- <description>`, and the gate checks those the way it checks the aggregate's own: `verdict_dispositions` below runs `major_dispositions` on every verdict (a) named, whichever kind, so an approval that lists an item nobody answered blocks on either path. An item in any other shape is the human read (c) prints, and the verdict word is the reviewer's own disposition of it — a hand verdict has no `Approved with N` headline, so nothing but its item lines can count its majors.
 
@@ -1026,16 +1049,27 @@ review_workflow_known() {
 # binding: the location check below carries it, refusing a location
 # mentioned in prose, nothing more. What this asserts is only that each
 # item was addressed by name; whether the disposition is adequate stays the
-# human read in (c), which is why the gate prints these. A cutoff comment
-# with no parseable item has no location to bind and naming the marker
-# alone decides; the item count is printed so a changed producer format
-# shows up as a 0 here.
+# human read in (c), which is why the gate prints these. Both convergence
+# cutoff and inline-API fallback comments carry findings without threads.
+# Main's fallback marker has no round suffix. Pending PR #191 at
+# 49e7c61029c7ad1fb3de94f13eb5cf1e6f025602 adds a round-scoped form;
+# it is accepted here for forward compatibility, not emitted by main yet.
+# Each location must be quoted, and when several items share one location,
+# each item's whole rendered first line must be quoted separately. A list
+# with no recognized items, malformed declared metadata, or a declared count
+# differing from recognized items blocks. Unescaped legacy bodies do not
+# make every arbitrary malformed mixed item distinguishable from prose.
 # Reads the comment list on stdin, in the shape the gate builds.
 # Arguments: the window start, as cutoff_window_start prints it — the
 # earliest review-workflow run's createdAt on the head or the first verdict's
 # timestamp, whichever is earlier, so no round's cutoff is missed. Prints
 # one line per cutoff comment at or after it and returns 1 for any with no
-# such response. The marker scan's own
+# such response. All inline-fallback history remains in scope: the legacy
+# producer deduplicates that marker across heads, and a reviewer name can
+# end in -rN, so a suffix alone cannot establish round scope. Even newer
+# round-suffixed fallbacks are retained conservatively until dispositioned;
+# count/head metadata is not used as authentication or permission to skip one.
+# The marker scan's own
 # `select` is the only thing that decides what is a cutoff comment, so a
 # comment with no marker — the aggregate's own, every other bot comment in the
 # window — never reaches the loop; a second guard inside the loop would make
@@ -1048,10 +1082,12 @@ review_workflow_known() {
 # surface` and let (c) pass over findings nobody dispositioned (AT-2803;
 # reachable, not yet observed, because the cutoff only fires at
 # ROUND_CUTOFF_N and `fetch_round_count` counts Bot verdicts only — a
-# mixed drive reaches it). What stands in for the author is the producer's
-# signature, `cutoff_marker`: the first line is nothing but the
-# marker's HTML comment, which only the producer writes. That shape is
-# also what keeps the regress out — a disposition comment names the marker
+# mixed drive reaches it). `cutoff_marker` recognizes the producer format,
+# not an authenticated identity: anyone can post that first-line marker.
+# Such a comment can conservatively add a blocker, never grant approval.
+# No personal account allowlist applies to responses: another non-Bot
+# reviewer may answer, and adequacy of each disposition stays the human read.
+# The first-line shape also keeps the regress out: a response names the marker
 # inline in backticks, never as a line of its own, so it stays an answer
 # and is never mistaken for the thing it answers. The reply scans exclude
 # it by the same shape rather than by author, for the same reason: under
@@ -1068,56 +1104,81 @@ cutoff_findings() {
   # shellcheck disable=SC2016  # jq's own text, not shell
   rx='def rx: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\])"; "\\" + .c);
       def cutoff_marker: ((((.body // "") | gsub("\r"; "") | split("\n") | (.[0] // "")
-        | [capture("^<!--\\s*(?<m>round-cutoff-\\S+?)\\s*-->$") | .m]) | .[0]) // "");'
+        | [capture("^<!--\\s*(?<m>(?:round-cutoff|inline-fallback)-\\S+?)\\s*-->$") | .m]) | .[0]) // "");'
   comments=$(cat) || { echo "(c) BLOCK: could not read the comments for the cutoff surface"; return 1; }
   markers=$(printf '%s' "$comments" | jq -r --arg s "$since" "$rx"'
      [ .[]
-       | select((.created_at | type) == "string" and .created_at >= $s)
+       | select((.created_at | type) == "string")
+       | select(.created_at >= $s or (cutoff_marker | startswith("inline-fallback-")))
        | [ (.id | tostring), .created_at, cutoff_marker ]
        | select(.[2] != "")
      ] | .[] | @tsv') \
     || { echo "(c) BLOCK: could not read the cutoff comments"; return 1; }
-  [ -n "$markers" ] || { echo "(c) no round-cutoff comment on this round's surface"; return 0; }
+  [ -n "$markers" ] || { echo "(c) no round-cutoff or inline-fallback comment on this round's surface"; return 0; }
   while IFS=$'\t' read -r id at marker; do
-    # The marker is named whole: not followed by a digit. Markers are
-    # `round-cutoff-<reviewer>-r<n>`, so one round's is a prefix of another's
-    # whenever the numbers are — r1 of r10 — and a bare substring let a reply
-    # naming r10 answer r1 (#194 round 7; #188 carries r7 and r9, so a tenth
-    # round on any PR collides). The digit is the whole of that class: every
-    # marker opens with `round-cutoff-`, so none is a suffix of another, and
-    # the reviewer set is fixed, so a longer marker differs from a shorter
-    # only by digits appended — the guard the location test below already
-    # uses. A word boundary was refused: jq's `\b` is Unicode-aware, so a
-    # Korean particle attached to the marker without a space would not
-    # satisfy it.
+    # A marker must not be followed by another ASCII marker character:
+    # r1 is not r10, and a legacy fallback is not its round-scoped successor.
+    # Keep Korean particles attached without a space compatible; jq's
+    # Unicode-aware word boundary would incorrectly refuse those responses.
     if ! printf '%s' "$comments" | jq -e --arg t "$at" --arg m "$marker" "$rx"'
        [ .[]
          | select(.type != "Bot")
          | select(cutoff_marker == "")
          | select((.created_at | type) == "string" and .created_at > $t)
-         | select((.body // "") | test(($m | rx) + "(?![0-9])"))
+         | select((.body // "") | test("(?<![0-9A-Za-z_-])" + ($m | rx) + "(?![0-9A-Za-z_-])"))
        ] | length > 0' > /dev/null; then
       echo "(c) BLOCK: $marker (comment $id, $at) carries findings that have no thread id, and no later non-Bot comment names it — zero unresolved threads is not zero findings"
       rc=1; continue
     fi
-    # Each item's location against the `>` lines of every later non-Bot
-    # comment, matched whole: not preceded by a path character, not
-    # followed by a digit. Prints the item count and the locations no reply
-    # quoted.
+    # Unique locations retain the measured rewritten-quote contract above.
+    # Colliding locations need exact item lines, not one quote for all of them.
     items=$(printf '%s' "$comments" | jq -r --arg t "$at" --arg i "$id" "$rx"'
-       ([ .[] | select((.id | tostring) == $i) ] | first | (.body // "") | gsub("\r"; "") | split("\n")
-          | map(capture("^- \\*\\*(?<loc>[^*]+)\\*\\* -- ") | .loc)) as $locs
-       | ([ .[]
+       ([ .[] | select((.id | tostring) == $i) ] | first | (.body // "") | gsub("\r"; "") | split("\n")) as $lines
+       # jq capture emits no value for a nonmatching line: map drops
+       # headers and separators without raising an error.
+       | ($lines | map(capture("^- \\*\\*(?<loc>.+?:[0-9]+)\\*\\* -- (?<text>\\S+ \\*\\*.*)$"))) as $findings
+       # Item bodies contain unescaped multiline prose and suggestions, so
+       # an ordinary bold bullet is not evidence of an extra finding.
+       # Only the icon and opening severity delimiter are invariant: raw
+       # severity/reviewer fields can contain delimiters or newlines.
+       # Prose carrying that producer-shaped opening prefix remains ambiguous
+       # without a producer encoding change.
+       | ($lines[1] // "") as $envelope
+       # Pending PR #191 at 49e7c610 adds optional count/head metadata;
+       # main does not emit it yet. Only count consistency is checked here:
+       # the head is not authentication or SHA proof. The caller supplies
+       # the review window independently.
+       | (if ($envelope | startswith("<!-- fold-count:")) then
+            ($envelope | [capture("^<!-- fold-count: (?<n>[0-9]+)(?: head: [0-9a-f]{40})? -->$")]
+              | .[0] // {})
+          else null end) as $metadata
+       | if $metadata == {} then "!\tmalformed fold-count envelope"
+         elif ($findings | length) == 0 then "!\tempty or unparseable folded finding list"
+         elif $metadata != null and ($metadata.n | tonumber) != ($findings | length) then
+           "!\tdeclared fold-count does not match rendered findings"
+         else
+         ([ .[]
             | select(.type != "Bot")
             | select(cutoff_marker == "")
             | select((.created_at | type) == "string" and .created_at > $t)
             | (.body // "") | gsub("\r"; "") | split("\n")[]
             | select(startswith(">"))
-          ] | join("\n")) as $quoted
-       | [ $locs[] | select(. as $l | $quoted | test("(?<![\\w./-])" + ($l | rx) + "(?![0-9])") | not) ]
-       | "\($locs | length)\t\(join(", "))"') \
+          ]) as $quotes
+       | [ $findings[] | . as $finding
+           | ([ $findings[] | select(.loc == $finding.loc) ] | length) as $same_location
+           | (("**" + $finding.loc + "** -- " + $finding.text) | sub("\\s+$"; "")) as $rendered
+           | select(if $same_location > 1 then
+               ([ $quotes[] | sub("^>+\\s*"; "") | ltrimstr("- ") | sub("\\s+$"; "")
+                  | select(. == $rendered) ] | length)
+               < ([ $findings[] | select((("**" + .loc + "** -- " + .text) | sub("\\s+$"; "")) == $rendered) ] | length)
+             else
+               ($quotes | join("\n") | test("(?<![\\w./-])" + ($finding.loc | rx) + "(?![0-9])") | not)
+             end)
+           | .loc + (if $same_location > 1 then " (whole item line required: \($same_location) items share this location)" else "" end) ]
+       | "\($findings | length)\t\(join(", "))" end') \
       || { echo "(c) BLOCK: could not read the items of $marker (comment $id)"; rc=1; continue; }
     IFS=$'\t' read -r n_items missing <<<"$items"
+    [ "$n_items" != "!" ] || { echo "(c) BLOCK: $marker (comment $id): invalid folded findings: $missing -- no reply or minimization clears this; ask the author or an authorized maintainer to repair source comment $id, preserving real findings, then rerun the gate"; rc=1; continue; }
     [ -z "$missing" ] || { echo "(c) BLOCK: $marker (comment $id, $at): a later non-Bot comment names it, but no later non-Bot comment quotes these item(s) by location: $missing — an item not quoted by location is an item nobody answered"; rc=1; continue; }
     echo "(c) $marker (comment $id, $at): answered by a later quoted response naming it; $n_items item(s), each quoted by location in a later non-Bot comment"
   done <<<"$markers"
@@ -1404,7 +1465,7 @@ since=$(printf '%s' "$runs" | cutoff_window_start "$REVIEW_WF" "$first_verdict")
 # every cutoff comment the PR has ever carried as this round's.
 [ -n "$since" ] || { echo "ERROR: no window start for the cutoff surface although (a) passed — no '$REVIEW_WF' run on $HEAD_SHA, first verdict '$first_verdict'"; exit 1; }
 printf '%s' "$comments" | cutoff_findings "$since" \
-  || { echo "BLOCK (c): a round-cutoff comment's findings on $HEAD_SHA have no disposition — back to Stage 2"; exit 1; }
+  || { echo "BLOCK (c): a cutoff or inline-fallback comment's findings on $HEAD_SHA have no disposition — back to Stage 2"; exit 1; }
 echo "(a)(b)(d) clean — read (c), then start the merge block with:"
 echo "  HEAD_SHA=$HEAD_SHA"
 ```
