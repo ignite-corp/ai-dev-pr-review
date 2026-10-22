@@ -39,7 +39,9 @@ _UMASK = os.umask(0)
 os.umask(_UMASK)
 
 
-def replace_file_text(path: str | os.PathLike[str], text: str) -> None:
+def replace_file_text(
+    path: str | os.PathLike[str], text: str, mode: int = 0o666 & ~_UMASK
+) -> None:
     """Write ``text`` to ``path`` without following a symlink at ``path``.
 
     The reviewer workspace is model-writable (the codex CLI runs with
@@ -53,7 +55,8 @@ def replace_file_text(path: str | os.PathLike[str], text: str) -> None:
     directory is followed, so callers pass a name in a trusted directory
     (the CI verdict names sit at the workspace root). This is
     the host-side mirror of promote_legacy_verdict.sh's temp-file + mv, so
-    the two writers share one rule (AT-2941).
+    the two writers share one rule (AT-2941). ``mode`` defaults to what
+    the replaced ``open(path, "w")`` writers produced (0o666 & ~umask).
     """
     target = Path(path)
     fd, tmp = tempfile.mkstemp(
@@ -62,9 +65,7 @@ def replace_file_text(path: str | os.PathLike[str], text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
-        # mkstemp creates 0600; restore the umask-derived mode the replaced
-        # writers produced (0o666 & ~umask).
-        os.chmod(tmp, 0o666 & ~_UMASK)
+        os.chmod(tmp, mode)
         os.replace(tmp, target)
     except BaseException:
         try:

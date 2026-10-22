@@ -263,5 +263,4 @@ is not done here.
 | Inline comments are posted after all reviewers finish | Each reviewer's comments can then dedup against the previous one's. In Actions the three race and none sees the others. |
 | A reviewer's exit code reaches the aggregate | Actions loses it to `continue-on-error`, so a credential failure is reported as success (AT-1837). |
 | Legacy verdict names are promoted **before** the fallbacks | The workflow promotes after, so an error verdict masks the real one (AT-2424). |
-| The Codex prompt goes over stdin | The workflow passes it as one argv element, which meets `MAX_ARG_STRLEN`. The workflow side is AT-2411. |
 | No App token, no auto-approve | You cannot approve your own PR. |

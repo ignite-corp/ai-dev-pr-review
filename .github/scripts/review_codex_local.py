@@ -20,9 +20,9 @@ no allowlist, so this module warns that the CLI is getting the caller's
 whole environment instead.
 
 THE PROMPT GOES OVER STDIN, and that is a measurement rather than a
-preference. The Actions path passes it as one argv element, where Linux caps
-a single element at MAX_ARG_STRLEN (131072 bytes) independently of the much
-larger ARG_MAX; the discarded version inherited that shape, could not check
+preference. The Actions path used to pass it as one argv element, where Linux
+caps a single element at MAX_ARG_STRLEN (131072 bytes) independently of the
+much larger ARG_MAX; the discarded version inherited that shape, could not check
 whether the CLI would take stdin because codex was not installed on the
 machine, and so added a size check and an exit code for a limit it could
 only report. Measured on codex-cli 0.154.0:
@@ -39,9 +39,8 @@ only report. Measured on codex-cli 0.154.0:
 
 So the ceiling is not worked around, it is not reached: the size check, its
 exit code, and the prompt's exposure in the process table all go away rather
-than being carried across. base-ai-review-single.yml still has the argv
-shape and the ceiling with it; that is AT-2411 and deliberately not touched
-here.
+than being carried across. base-ai-review-single.yml passes the prompt
+the same way since AT-2411, on the pinned codex-cli 0.147.0.
 
 Reads context.md and pr.diff from the current directory and writes
 review-codex.json.
@@ -74,7 +73,7 @@ from local_reviewer_support import (
     warn_unless_driver_spawned,
     write_verdict,
 )
-from review_status import stamp_model_status
+from review_status import replace_file_text, stamp_model_status
 from reviewer_prompts import existing_threads_block
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -119,6 +118,20 @@ def build_prompt(thread_count: str, existing_comments: str) -> str:
     if existing_comments:
         prompt += existing_threads_block(thread_count, existing_comments)
     return prompt + TRUSTED_PROMPT.read_text(encoding="utf-8")
+
+
+def write_owner_only(path: str, text: str) -> None:
+    """Write `text` to `path` with mode 0o600, set before any byte lands.
+
+    The prompt carries PR review-thread excerpts; it travels on stdin to
+    stay out of the process table, and its file on disk is kept as private
+    as that. The run log may echo it, so it gets the same treatment. Both
+    paths are in the PR checkout, which may commit them as symlinks -- and
+    the log is written after the model had the workspace writable -- so
+    each is replaced rather than opened (AT-2941); the temp file is 0o600
+    from creation, so no byte is ever readable by others.
+    """
+    replace_file_text(path, text, mode=0o600)
 
 
 def log_tail(log: str) -> str:
@@ -291,10 +304,10 @@ def review() -> None:
         os.environ.get("THREAD_COUNT", "0"),
         os.environ.get("EXISTING_COMMENTS", "").strip(),
     )
-    Path(COMBINED_PROMPT).write_text(prompt, encoding="utf-8")
+    write_owner_only(COMBINED_PROMPT, prompt)
 
     exit_code, log = run_cli(prompt, config.get("CODEX_MODEL"))
-    Path(RUN_LOG).write_text(log, encoding="utf-8")
+    write_owner_only(RUN_LOG, log)
     # Ahead of the direct-write check rather than after the fallbacks, where
     # the workflow puts it: there, a legacy-named verdict is promoted only
     # if nothing has written review-codex.json first, so an error verdict
