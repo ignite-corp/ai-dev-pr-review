@@ -102,7 +102,6 @@ def test_runtime_target_coordinates(tmp_path, name, job, step, cross):
         "PR_LABELS_JSON": "[]",
         "PR_MERGED": "false",
         "MERGE_COMMIT_SHA": "",
-        "PR_COMMITS": "1",
         "LABELS": "",
         "SYSTEM_PROMPT_PATH": ".prompts/system.md",
         "CHECKLIST_PATH": ".prompts/checklist.md",

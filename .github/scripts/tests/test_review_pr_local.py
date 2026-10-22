@@ -1025,7 +1025,6 @@ def _refs(
         pr_author="a",
         pr_merged="false",
         merge_commit_sha="",
-        pr_commits="1",
         labels="",
         additions=additions,
         deletions=deletions,

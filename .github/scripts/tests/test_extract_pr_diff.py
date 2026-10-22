@@ -1,4 +1,4 @@
-"""Tests for extract_pr_diff.sh, the prepare step's diff strategy (AT-2201).
+"""Tests for extract_pr_diff.sh, the prepare step's diff strategy (AT-2201, AT-2271).
 
 The script is run as the shell it is, inside a real git repository built for
 each test, so the diffs are observed rather than asserted about. A bare
@@ -10,9 +10,10 @@ Three things are pinned down.
 
 1. The open-PR path is byte-identical to `git diff origin/BASE...HEAD` and
    never calls `gh`.
-2. A merged PR is diffed from what landed -- the merge commit against its
-   first parent -- with `gh pr diff` as the fallback when the merge commit is
-   unknown, unreachable, or (a rebase merge) does not carry the whole PR.
+2. A merged PR is diffed against the base it landed on, ending at the head
+   the reviewers check out -- `git diff MERGE^1...HEAD` -- whether it was
+   merged, squashed or rebased, with `gh pr diff` as the fallback when the
+   merge commit is unknown, unreachable, or shares no history with the head.
 3. An empty pr.diff fails the step and names the strategy that produced it.
 """
 
@@ -34,9 +35,6 @@ WORKFLOW = SCRIPT_DIR.parents[0] / "workflows" / "base-ai-review-prepare.yml"
 
 PR_NUMBER = "35"
 REPOSITORY = "ignite-corp/ai-dev-pr-review"
-# The fixture PR has two commits unless a test builds it with one; this is
-# the `commits` count the API reports and the refs step passes on.
-PR_COMMITS = "2"
 GH_PR_DIFF_FIXTURE = textwrap.dedent(
     """\
     diff --git a/served-by-gh.txt b/served-by-gh.txt
@@ -128,6 +126,39 @@ class Repos:
         _git(self.github, "push", "-q", "origin", "main")
         return sha
 
+    def advance_main_on_readme(self, content: str) -> str:
+        """A commit on main that touches the file the PR also changes."""
+        _git(self.github, "checkout", "-q", "main")
+        sha = _commit(self.github, "main edits README", {"README.md": content})
+        _git(self.github, "push", "-q", "origin", "main")
+        return sha
+
+    def merge_resolving_conflict(self, resolution: str) -> str:
+        """A merge commit whose README is neither side: a hand-resolved conflict."""
+        _git(self.github, "checkout", "-q", "main")
+        conflicted = subprocess.run(
+            [
+                "git",
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                "Merge pull request #35",
+                "feature",
+            ],
+            cwd=self.github,
+            env=_GIT_ENV,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert conflicted.returncode != 0, "fixture expected a conflicting merge"
+        self.github.joinpath("README.md").write_text(resolution, encoding="utf-8")
+        _git(self.github, "add", "README.md")
+        _git(self.github, "commit", "-q", "--no-edit")
+        _git(self.github, "push", "-q", "origin", "main")
+        return _git(self.github, "rev-parse", "HEAD")
+
     def sync_work(self) -> None:
         """Bring the runner clone up to date, as a fetch-depth 0 checkout of main is."""
         _git(self.work, "fetch", "-q", "origin")
@@ -207,7 +238,6 @@ def _run_script(
     *,
     merged: bool,
     merge_commit_sha: str = "",
-    pr_commits: str | None = PR_COMMITS,
     gh_diff: str = GH_PR_DIFF_FIXTURE,
 ) -> Run:
     fixture = tmp_path / "gh-pr-diff.txt"
@@ -227,8 +257,6 @@ def _run_script(
         "PR_MERGED": "true" if merged else "false",
         "MERGE_COMMIT_SHA": merge_commit_sha,
     }
-    if pr_commits is not None:
-        env["PR_COMMITS"] = pr_commits
     result = subprocess.run(
         ["bash", str(SCRIPT)],
         cwd=repos.work,
@@ -262,6 +290,48 @@ def _first_parent_diff(repos: Repos, sha: str) -> str:
     return _git(repos.work, "diff", f"{sha}^1", sha)
 
 
+def _landed_on_diff(repos: Repos, sha: str) -> str:
+    """The PR head against the base it landed on: what the script must produce."""
+    return _git(repos.work, "diff", f"{sha}^1...{repos.head_sha}")
+
+
+def _tree_mismatches(work: Path, diff: str) -> list[str]:
+    """Lines of the diff's post-image that the checked-out tree does not hold.
+
+    Every `+` and context line of a hunk names a line number on the new side;
+    a reviewer opening that file in the working tree must find that text
+    there. An empty list means the diff is about the tree under review.
+
+    `+++ ` and `--- ` are headers only between `diff --git` and the first
+    `@@`: inside a hunk they are an added or removed line whose own text
+    starts with `++ ` or `-- `.
+    """
+    mismatches: list[str] = []
+    path = ""
+    tree: list[str] = []
+    line_no = 0
+    in_hunk = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            in_hunk = False
+        elif not in_hunk and line.startswith("+++ "):
+            path = line.removeprefix("+++ b/") if line.startswith("+++ b/") else ""
+            target = work / path
+            tree = []
+            if path and target.exists():
+                tree = target.read_text(encoding="utf-8").splitlines()
+        elif line.startswith("@@"):
+            in_hunk = True
+            new_side = line.split(" ")[2]
+            line_no = int(new_side[1:].split(",")[0])
+        elif in_hunk and path and line.startswith(("+", " ")):
+            text = line[1:]
+            if line_no > len(tree) or tree[line_no - 1] != text:
+                mismatches.append(f"{path}:{line_no}: {text!r}")
+            line_no += 1
+    return mismatches
+
+
 class TestOpenPr:
     """The path every pull_request event takes must not change at all."""
 
@@ -291,7 +361,7 @@ class TestOpenPr:
 
 
 class TestMergedPrWithMergeCommit:
-    """A merged PR is diffed from its merge commit against the first parent."""
+    """A merged PR is diffed from the base it landed on to its head."""
 
     def test_three_dot_diff_is_empty_once_merged(
         self, repos: Repos, tmp_path: Path
@@ -310,52 +380,81 @@ class TestMergedPrWithMergeCommit:
         repos.sync_work()
         run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=merge_sha)
         assert run.returncode == 0, run.stderr
-        assert run.diff.strip() == _first_parent_diff(repos, merge_sha)
+        assert run.diff.strip() == _landed_on_diff(repos, merge_sha)
         assert "+++ b/new.py" in run.diff
-        # First parent, not the base at branch time: main's own commit is
-        # already in the first parent and must not be reported as PR content.
+        # The base it landed on, not the base at branch time: main's own
+        # commit is already there and must not be reported as PR content.
         assert "other.txt" not in run.diff
         assert run.gh_calls == []
 
-    def test_single_commit_pr_squashed_yields_the_pr_diff(self, tmp_path: Path) -> None:
-        # One commit squashed is that commit; nothing can have been left behind.
-        repos = _make_repos(tmp_path, single_commit=True)
+    @pytest.mark.parametrize("single_commit", [True, False])
+    def test_squash_yields_the_whole_pr(
+        self, tmp_path: Path, single_commit: bool
+    ) -> None:
+        repos = _make_repos(tmp_path, single_commit=single_commit)
         squash_sha = repos.merge_with_squash()
         repos.sync_work()
-        run = _run_script(
-            repos, tmp_path, merged=True, merge_commit_sha=squash_sha, pr_commits="1"
-        )
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=squash_sha)
         assert run.returncode == 0, run.stderr
-        assert run.diff.strip() == _first_parent_diff(repos, squash_sha)
+        assert "::warning::" not in run.stdout
+        assert run.diff.strip() == _landed_on_diff(repos, squash_sha)
         assert "+++ b/new.py" in run.diff
+        assert "+new.py" in run.diff
         assert run.gh_calls == []
 
-    def test_single_commit_pr_rebased_yields_the_pr_diff(self, tmp_path: Path) -> None:
-        repos = _make_repos(tmp_path, single_commit=True)
+    @pytest.mark.parametrize("single_commit", [True, False])
+    def test_rebase_yields_the_whole_pr(
+        self, tmp_path: Path, single_commit: bool
+    ) -> None:
+        # merge_commit_sha names the LAST replayed commit. Its own first-parent
+        # diff is only the PR's last commit; the base it landed on holds the
+        # earlier ones as rebased copies, not as ancestors of the head, so the
+        # merge-base with the head is still where the PR branched.
+        repos = _make_repos(tmp_path, single_commit=single_commit)
         repos.advance_main()
         last_sha = repos.merge_with_rebase()
         repos.sync_work()
-        run = _run_script(
-            repos, tmp_path, merged=True, merge_commit_sha=last_sha, pr_commits="1"
-        )
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=last_sha)
         assert run.returncode == 0, run.stderr
-        assert run.diff.strip() == _first_parent_diff(repos, last_sha)
+        assert "::warning::" not in run.stdout
+        assert run.diff.strip() == _landed_on_diff(repos, last_sha)
         assert "+++ b/new.py" in run.diff
+        assert "+new.py" in run.diff
         assert "other.txt" not in run.diff
         assert run.gh_calls == []
 
-    def test_merge_commit_needs_no_commit_count(
+    def test_rebase_first_parent_diff_would_miss_earlier_commits(
         self, repos: Repos, tmp_path: Path
     ) -> None:
-        # Two parents settle it structurally; PR_COMMITS is not consulted.
+        # Why a landed commit's own diff cannot stand for a rebased PR: the
+        # first commit (new.py) is not in it. The script's diff has it.
+        repos.advance_main()
+        last_sha = repos.merge_with_rebase()
+        repos.sync_work()
+        assert "+++ b/new.py" not in _first_parent_diff(repos, last_sha)
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=last_sha)
+        assert "+++ b/new.py" in run.diff
+
+    def test_head_that_took_the_base_in_before_the_merge(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        # "Update branch": MERGE^1 is then an ancestor of the head, and the
+        # diff starts there -- the base's own edit is context, never a `+`.
+        repos.advance_main_on_readme("intro\nhello\n")
+        _git(repos.github, "checkout", "-q", "feature")
+        _git(repos.github, "merge", "-q", "--no-ff", "-m", "Update branch", "main")
+        repos.head_sha = _git(repos.github, "rev-parse", "HEAD")
+        _git(repos.github, "push", "-q", "origin", "feature")
         merge_sha = repos.merge_with_merge_commit()
         repos.sync_work()
-        run = _run_script(
-            repos, tmp_path, merged=True, merge_commit_sha=merge_sha, pr_commits=None
-        )
+        _git(repos.work, "fetch", "-q", "origin", repos.head_sha)
+        _git(repos.work, "checkout", "-q", "--detach", repos.head_sha)
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=merge_sha)
         assert run.returncode == 0, run.stderr
-        assert "::warning::" not in run.stdout
-        assert run.diff.strip() == _first_parent_diff(repos, merge_sha)
+        assert run.diff.strip() == _landed_on_diff(repos, merge_sha)
+        assert "+intro" not in run.diff
+        assert "+new.py" in run.diff
+        assert _tree_mismatches(repos.work, run.diff) == []
         assert run.gh_calls == []
 
     def test_merge_commit_absent_locally_is_fetched(
@@ -375,7 +474,78 @@ class TestMergedPrWithMergeCommit:
         merge_sha = repos.merge_with_merge_commit()
         repos.sync_work()
         run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=merge_sha)
-        assert f"git diff {merge_sha}^1 {merge_sha}" in run.stdout
+        assert f"git diff {merge_sha}^1...{repos.head_sha}" in run.stdout
+
+
+class TestTreeMismatchesOracle:
+    """The oracle below must not pass vacuously on a line that looks like a header."""
+
+    def test_added_line_starting_with_plus_plus_is_still_checked(
+        self, tmp_path: Path
+    ) -> None:
+        tmp_path.joinpath("f.txt").write_text("a\n++ in tree\n", encoding="utf-8")
+        diff = textwrap.dedent(
+            """\
+            diff --git a/f.txt b/f.txt
+            --- a/f.txt
+            +++ b/f.txt
+            @@ -1 +1,3 @@
+             a
+            +++ not in tree
+            +-- not in tree either
+            """
+        )
+        assert _tree_mismatches(tmp_path, diff) == [
+            "f.txt:2: '++ not in tree'",
+            "f.txt:3: '-- not in tree either'",
+        ]
+
+
+class TestMergedPrDiffIsAboutTheCheckedOutHead:
+    """Every reviewer reads the tree at HEAD_SHA, so the diff must be about it (AT-2271).
+
+    The AT-2038 assert pins the working tree to HEAD_SHA; a merged PR's diff
+    used to come from the merge commit instead. Wherever the landed tree
+    differs from the head's -- a hand-resolved conflict, or a base that moved
+    in the same file -- the reviewers read diff lines the tree they open does
+    not hold, and nothing failed.
+    """
+
+    def test_conflict_resolution_is_not_reviewed_as_pr_content(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        repos.advance_main_on_readme("hello\nmain\n")
+        merge_sha = repos.merge_resolving_conflict(
+            "hello\nnew.py\nmain\nresolved by hand\n"
+        )
+        repos.sync_work()
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=merge_sha)
+        assert run.returncode == 0, run.stderr
+        assert "resolved by hand" not in run.diff
+        assert _tree_mismatches(repos.work, run.diff) == []
+        assert "+++ b/new.py" in run.diff
+        assert run.gh_calls == []
+
+    @pytest.mark.parametrize("landing", ["merge", "squash", "rebase"])
+    def test_base_edit_to_the_same_file_does_not_shift_the_diff(
+        self, repos: Repos, tmp_path: Path, landing: str
+    ) -> None:
+        # Merges cleanly, yet the landed README has a line the head lacks, so
+        # every line number in a diff taken from the landed commit is off by one.
+        repos.advance_main_on_readme("intro\nhello\n")
+        landed = {
+            "merge": repos.merge_with_merge_commit,
+            "squash": repos.merge_with_squash,
+            "rebase": repos.merge_with_rebase,
+        }[landing]()
+        repos.sync_work()
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=landed)
+        assert run.returncode == 0, run.stderr
+        assert _tree_mismatches(repos.work, run.diff) == []
+        assert "intro" not in run.diff
+        assert "+new.py" in run.diff
+        assert "+++ b/new.py" in run.diff
+        assert run.gh_calls == []
 
 
 class TestMergedPrFallsBackToGhPrDiff:
@@ -399,49 +569,64 @@ class TestMergedPrFallsBackToGhPrDiff:
         assert run.gh_calls == [f"pr diff {PR_NUMBER} --repo {REPOSITORY}"]
         assert "unreachable" in run.stdout
 
-    def test_rebase_merge_last_commit_does_not_carry_the_whole_pr(
-        self, repos: Repos, tmp_path: Path
-    ) -> None:
-        # merge_commit_sha names the last replayed commit; its first-parent
-        # diff is one of the PR's two commits. The script cannot see that
-        # from the commit alone -- which is why a single-parent landing of a
-        # multi-commit PR is never trusted.
-        repos.advance_main()
+    def test_fast_forward_landing(self, repos: Repos, tmp_path: Path) -> None:
+        # Nothing moved on main, so the landing replays nothing: MERGE^1 is
+        # the PR's own first commit, an ancestor of the head, and a three-dot
+        # diff from it would drop new.py.
         last_sha = repos.merge_with_rebase()
+        assert last_sha == repos.head_sha
         repos.sync_work()
-        assert "+++ b/new.py" not in _first_parent_diff(repos, last_sha)
         run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=last_sha)
         assert run.returncode == 0, run.stderr
         assert run.diff == GH_PR_DIFF_FIXTURE
         assert run.gh_calls == [f"pr diff {PR_NUMBER} --repo {REPOSITORY}"]
-        assert "a squash cannot be told from a rebase" in run.stdout
+        assert "cannot be told locally" in run.stdout
 
-    def test_multi_commit_pr_squashed_is_indistinguishable_from_a_rebase(
+    def test_head_already_in_the_landed_commits_first_parent(
         self, repos: Repos, tmp_path: Path
     ) -> None:
-        # The squash commit does carry the whole PR here, but a rebase of the
-        # same PR would leave an identical-looking single-parent commit at
-        # merge_commit_sha, so the canonical diff is used for both.
-        squash_sha = repos.merge_with_squash()
+        # The head reached the base before the commit GitHub names as the
+        # merge: MERGE^1 already contains HEAD, so the local diff is empty.
+        repos.merge_with_merge_commit()
+        later = _commit(repos.github, "later main change", {"other.txt": "other\n"})
+        _git(repos.github, "push", "-q", "origin", "main")
         repos.sync_work()
-        assert "+++ b/new.py" in _first_parent_diff(repos, squash_sha)
-        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=squash_sha)
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=later)
         assert run.returncode == 0, run.stderr
         assert run.diff == GH_PR_DIFF_FIXTURE
         assert run.gh_calls == [f"pr diff {PR_NUMBER} --repo {REPOSITORY}"]
+        assert f"is empty for PR #{PR_NUMBER}" in run.stdout
 
-    def test_unknown_commit_count_on_a_single_parent_landing(
+    def test_head_not_in_this_clone_is_not_reported_as_unrelated(
         self, repos: Repos, tmp_path: Path
     ) -> None:
-        squash_sha = repos.merge_with_squash()
+        # merge-base exits 128, not 1: the warning says it could not be
+        # computed rather than claiming the histories are unrelated.
+        merge_sha = repos.merge_with_merge_commit()
         repos.sync_work()
-        run = _run_script(
-            repos, tmp_path, merged=True, merge_commit_sha=squash_sha, pr_commits=None
-        )
+        repos.head_sha = "f" * 40
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=merge_sha)
         assert run.returncode == 0, run.stderr
         assert run.diff == GH_PR_DIFF_FIXTURE
         assert run.gh_calls == [f"pr diff {PR_NUMBER} --repo {REPOSITORY}"]
-        assert "an unknown number of commits" in run.stdout
+        assert "could not be computed (git exited 128)" in run.stdout
+        assert "share no history" not in run.stdout
+
+    def test_merge_commit_sharing_no_history_with_the_head(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        # A merge commit whose first parent has no common ancestor with the
+        # head in this clone: there is no base to diff the head against.
+        _git(repos.github, "checkout", "-q", "--orphan", "unrelated")
+        _commit(repos.github, "unrelated root", {"README.md": "unrelated\n"})
+        unrelated = _commit(repos.github, "unrelated tip", {"README.md": "tip\n"})
+        _git(repos.github, "push", "-q", "origin", "unrelated")
+        repos.sync_work()
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=unrelated)
+        assert run.returncode == 0, run.stderr
+        assert run.diff == GH_PR_DIFF_FIXTURE
+        assert run.gh_calls == [f"pr diff {PR_NUMBER} --repo {REPOSITORY}"]
+        assert "share no history" in run.stdout
 
 
 class TestEmptyDiffFailsLoudly:
@@ -534,7 +719,6 @@ class TestWorkflowWiring:
         env = _step("Extract diff and context")["env"]
         assert env["PR_MERGED"] == "${{ steps.refs.outputs.pr_merged }}"
         assert env["MERGE_COMMIT_SHA"] == "${{ steps.refs.outputs.merge_commit_sha }}"
-        assert env["PR_COMMITS"] == "${{ steps.refs.outputs.pr_commits }}"
         assert env["BASE_REF"] == "${{ steps.refs.outputs.base_ref }}"
         assert env["HEAD_SHA"] == "${{ steps.refs.outputs.head_sha }}"
         # Target-repo threading (AT-2520): the caller's token and name are the
@@ -554,4 +738,3 @@ class TestWorkflowWiring:
         run = _step("Resolve PR refs")["run"]
         assert "pr_merged=${PR_MERGED}" in run
         assert "merge_commit_sha=${MERGE_COMMIT_SHA}" in run
-        assert "pr_commits=${PR_COMMITS}" in run

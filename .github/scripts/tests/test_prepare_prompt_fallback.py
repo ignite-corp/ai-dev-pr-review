@@ -130,7 +130,6 @@ def _run(
         "steps.refs.outputs.head_ref": "task/x",
         "steps.refs.outputs.pr_merged": "false",
         "steps.refs.outputs.merge_commit_sha": "",
-        "steps.refs.outputs.pr_commits": "1",
         "steps.refs.outputs.labels": "",
         "inputs.code-review-system-prompt-path": SYSTEM,
         "inputs.code-review-checklist-path": CHECKLIST,

@@ -527,7 +527,6 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
           MERGE_COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-          PR_COMMITS: ${{ github.event.pull_request.commits }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ inputs.target_repo || github.repository }}
           # The event payload describes the CALLER's PR. When the review is
@@ -549,7 +548,6 @@ jobs:
             PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.user.login // ""')
             PR_MERGED=$(echo "$PR_JSON" | jq -r '.merged // false')
             MERGE_COMMIT_SHA=$(echo "$PR_JSON" | jq -r '.merge_commit_sha // ""')
-            PR_COMMITS=$(echo "$PR_JSON" | jq -r '.commits // ""')
             LABEL_NAMES_JSON=$(echo "$PR_JSON" | jq -c '[(.labels // [])[].name]')
           else
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
@@ -595,7 +593,6 @@ jobs:
             echo "pr_author=${PR_AUTHOR}"
             echo "pr_merged=${PR_MERGED}"
             echo "merge_commit_sha=${MERGE_COMMIT_SHA}"
-            echo "pr_commits=${PR_COMMITS}"
             echo "labels=${LABELS}"
           } >> "$GITHUB_OUTPUT"
 
@@ -649,9 +646,13 @@ jobs:
 
       # The diff itself is delegated to extract_pr_diff.sh: an open PR keeps
       # the `git diff origin/BASE...HEAD` it always had, a merged PR (a
-      # dispatched re-review after the merge) is diffed from its merge commit
-      # because the three-dot form is empty once the base contains the head,
-      # and an empty diff fails the step rather than reviewing nothing (AT-2201).
+      # dispatched re-review after the merge) is diffed three-dot from the
+      # merge commit's first parent, which is on the base it landed on,
+      # because the three-dot form against the base branch is empty once the
+      # base contains the head, and an empty diff fails the step rather than
+      # reviewing nothing (AT-2201).
+      # Either way the diff ends at the head the step above put the tree on,
+      # never at the landed tree (AT-2271).
       - name: Extract diff and context
         if: steps.size-check.outputs.skip == 'false'
         env:
@@ -664,7 +665,6 @@ jobs:
           HEAD_REF: ${{ steps.refs.outputs.head_ref }}
           PR_MERGED: ${{ steps.refs.outputs.pr_merged }}
           MERGE_COMMIT_SHA: ${{ steps.refs.outputs.merge_commit_sha }}
-          PR_COMMITS: ${{ steps.refs.outputs.pr_commits }}
           LABELS: ${{ steps.refs.outputs.labels }}
           SYSTEM_PROMPT_PATH: ${{ inputs.code-review-system-prompt-path }}
           CHECKLIST_PATH: ${{ inputs.code-review-checklist-path }}
