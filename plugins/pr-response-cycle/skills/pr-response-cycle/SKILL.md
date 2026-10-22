@@ -520,21 +520,43 @@ git push --force-with-lease origin <branch>
 ```
 Always `--force-with-lease`, never `--force`. Lease guards against silently overwriting concurrent updates.
 
-**Step 8 — a verdict on the exact head SHA** — the run read below is the gate's only home for the review workflow's run; the merge state table below and the anti-pattern list both point here. A run is one of the two verdict kinds the Standard merge gate accepts: kind (i) is this run, completed/success, **and** the aggregate it posted — an issue comment or a review, by the consumer's configuration (the shape table below) — reporting every configured reviewer — the gate block reads that roster, because a green job is not a full round (#140, below); kind (ii) is a local-review verdict comment naming the SHA, read in the gate block itself, because a run that produced no verdict is not a review and a local review is then required (*Review routing*, global AGENTS.md).
+**Step 8 — a verdict on the exact head SHA** — read both review surfaces: workflow runs in the target and remote App check runs posted into it. Kind (i) selects the newest identity-matched round first, requires it to be completed, then requires its aggregate to approve with every configured reviewer; kind (ii) is a local-review verdict naming this SHA when no usable remote verdict exists. The aggregate's Result, roster and dispositions decide, not the check conclusion alone.
 
 The question is not *"is anything running?"* but **"has a review round completed against the commit I am about to merge?"** The difference is when each can be answered wrongly. A branch-scoped `gh run list --branch <branch> --status in_progress` returns the same empty list whether the branch is genuinely idle or the push's run has simply not registered yet — and a run registers seconds after the push. An empty answer inside that window reads as *quiet* when it means *not visible yet*, and the gate opens on a head nothing has looked at. A question that names the SHA has no such window: a commit with no run has no run, whenever you ask it.
 
 ```bash
 HEAD_SHA=$(gh pr view N --repo OWNER/REPO --json headRefOid --jq .headRefOid)
-gh run list --repo OWNER/REPO --commit "$HEAD_SHA" \
-  --json databaseId,workflowName,status,conclusion
+gh api --paginate "repos/OWNER/REPO/actions/workflows?per_page=100" \
+  --jq '.workflows[] | {id, name} | @json'
+gh api --paginate "repos/OWNER/REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+  --jq '.workflow_runs[] | {id, workflow_id, status, conclusion, created_at, updated_at, html_url} | @json'
+gh api --paginate "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
+  --jq '.check_runs[] | {name, status, conclusion, started_at, completed_at, app: .app.slug, details_url} | @json'
 ```
 
-**Know the review workflow's name before you read the output.** The gate is not "some run completed", it is "the *review* round completed": a repository's lint, build, or deploy workflow can be green on a head no reviewer has looked at, and a result list full of those is indistinguishable from a review round unless you are matching a name. Get it from `gh workflow list --repo OWNER/REPO`, or from the repository's own `AGENTS.md` / `.github/workflows/`, and read it from the repository you are merging into, not from an example: in a consumer repository wired per `ignite-corp/ai-dev-pr-review`'s README — the minimal thin trigger, `.github/workflows/ai-review.yml` — it is `AI Code Review`; in `ignite-corp/ai-dev-pr-review` itself it is `AI Code Review (self)` (`.github/workflows/self-review.yml`), and that repository has no `ai-review.yml`. The gate block checks the name you fill in before anything reads it — `review_workflow_known`, against this head's run list and the repository's workflow list — so a name copied from the wrong repository stops the gate rather than quietly shortening (c)'s cutoff window. Read the reviewer count from the same place, for the gate's `EXPECTED_REVIEWERS`: it is the number of reviewers the orchestrator the workflow `uses:` configures — `ignite-corp/ai-dev-pr-review`'s `base-ai-review-orchestrator.yml@v1` from a consumer, the same file by local path from `self-review.yml` — one per reviewer key, claude, codex and gemini, the same three the workflow's own preflight job names by key, and not one per job: that file declares two jobs per reviewer and runs one of them (the note on (d) under *Standard merge* below, measured on #172), so counting jobs fills `6` and `headline_roster` then refuses every full `3/3` headline on its denominator — so `3`. The headline's denominator cannot stand in for it: `2/2` is a full roster of two, and the gate has no other way to know three were configured. Where a repository has no review workflow at all, that is a fact to state, not a gate to pass — say so and let the human decide.
+**Know the review name and distinct reviewer count before reading output.** Read `REVIEW_WF` from the target's actual review configuration: `AI Code Review (self)` for this repository, or the configured remote check name for a runner target. A remote-only target need not carry a local review workflow. The gate verifies the name against target workflows and identity-matched check runs. Read `EXPECTED_REVIEWERS` from the producing orchestrator, including the runner's selected orchestrator: Claude, Codex and Gemini are three reviewers, not six parallel/sequential jobs. The aggregate's own denominator is not configuration evidence.
 
-`--commit` is what makes this a question about a commit. Do not substitute `--branch`, do not add `--status`, and do not sweep `--limit N` without `--commit` and filter for the SHA afterwards — an unscoped sweep silently answers "none" once the SHA falls off the end of the page. With `--commit` the list is already one SHA's, so a `--limit` there only bounds how many of that SHA's runs are read, which is how the merge-gate block below uses it. `--status in_progress` is the narrower trap: it matches neither a run that has not registered yet **nor one sitting in `queued`**, so it reports quiet on a head whose round is already scheduled. Measured on PR #93 while this section was being written — the branch-scoped in-progress query returned empty at `11:32:56Z`, and the SHA-named query returned a run on that same head at `11:33:00Z`, four seconds later.
+These reads are SHA-scoped and paginated to exhaustion. Do not substitute a branch, sweep a capped list, or filter by status before selecting the newest round. A workflow run's `name` is its run-name, so the gate joins `workflow_id` against the workflow registry. Remote check candidates match both `REVIEW_WF` and `CHECK_APPS`, excluding ordinary Actions job checks and other Apps. Latest start wins across surfaces before status/conclusion checks; a queued round cannot hide behind an older completion. Completed success or failure proceeds to the aggregate's Result, roster and dispositions: the runner can conclude failure after posting an unreviewed-major verdict. Other completed conclusions supply no usable verdict. The cutoff window independently includes the earliest identity-matched start regardless of status/conclusion, and the first local verdict.
 
-Where `gh run list --commit` is unavailable, `gh api repos/OWNER/REPO/commits/$HEAD_SHA/check-runs` names the SHA in the URL path and is scoped to the same commit — but it is **job-level, not workflow-level**: its `name` is the job's name (`review / aggregate / Aggregate & Verdict`), not the workflow's. Apply the same name discrimination the table below asks for, against the job name the review workflow's job carries, and do not read a `name` there as a `workflowName`.
+The check-run endpoint also carries ordinary job-level checks under the `github-actions` App. Those are not remote review rounds, even if a job copies the review name. Only the configured review name from an allowed reporting App is a remote-round candidate; a workflow run remains identified through its workflow ID/name join.
+
+For a remote-only target with no check yet, set `REMOTE_REVIEW_SOURCE` to an
+operator-selected trusted producer `owner/repo@<full 40-character SHA>:path`,
+never a file from the target PR head. The gate reads that immutable file
+through the authenticated contents API. The supported contract is exactly one
+unindented `CHECK_NAME = "<name>"` assignment whose value is a JSON string;
+dynamic Python, single-quoted literals and ambiguous assignments are not
+evaluated or accepted. The decoded nonempty single-line name must match the
+independently filled `REVIEW_WF`. Bad references, unreadable sources and name
+mismatches block. With no reference, the existing name guard is unchanged.
+This supplies only name evidence, not a review or a synthetic timestamp: no
+matching round still requires a real local-review verdict. `CHECK_APPS`
+continues to determine which check runs enter the history. Read that history
+with `filter=all`, since GitHub's default `latest` can hide an older round.
+
+The trusted producer must post its aggregate before completing the target
+check: `completed_at` closes the aggregate's window. Do not add an arbitrary
+grace period to compensate for an unverified producer ordering.
 
 Every branch of the result is a decision, and one of them is a block:
 
@@ -543,10 +565,10 @@ Every branch of the result is a decision, and one of them is a block:
 | `[]` | **No review has run on what you are about to merge.** This is not "quiet" | **BLOCK.** Wait and re-ask. If it stays empty for minutes, the workflow did not trigger on this push — find out why. Do not merge on a run that is not there. Where the workflow cannot run at all — Actions blocked on the account, workflow disabled — *Review routing* requires a local review, and its verdict comment on this SHA is what the gate's kind (ii) reads |
 | entries present, but **none** has the review workflow's `workflowName` | other CI ran on this head; the review did not | **BLOCK — identical to `[]`.** A green lint or build run is not a review. Read the names, not the count |
 | the review workflow's entry has `status` other than `completed` | the round is in flight on this SHA | **WAIT**, re-asking until it is `completed` |
-| the review workflow's entry is `completed` with `conclusion: success` | a round ran on this head and the job ended green — which is not yet "every reviewer reported": a reviewer cut at the step cap leaves the job `success` (AT-2511) | **the only row that can open the gate** — continue to the merge state table; the Standard merge gate then reads this run's aggregate, on whichever surface the shape table below says it lands, and counts the run as a verdict only when its roster is full |
-| the review workflow's entry is `completed` with `conclusion` `failure` / `cancelled` / `timed_out` **and the run posted a verdict** | a round ran and did not pass | a failing check: read it, fix the cause |
+| the selected round is `completed` with `conclusion: success` | a round ran; green does not establish a complete roster (AT-2511) | Read its aggregate's Result, roster and dispositions before accepting kind (i) |
+| the selected round is `completed` with `conclusion: failure` and posted a verdict | the runner may withhold approval while still publishing a result | Read the aggregate exactly as above; without a readable approving full-roster aggregate, kind (i) cannot hold |
 | the review workflow's entry is `completed` with `conclusion: failure` but **posted no verdict** — the review job never started (0 steps, runner unassigned, GitHub's *"The job was not started because recent account payments have failed"* annotation), or every reviewer was skipped (`Review skipped -- PR too large`) | **no verdict — not a rejection.** The check is red because a required check that never reports stays pending forever, not because the change was judged | **BLOCK on kind (i), and not a negative verdict**: *Review routing* requires a local review, whose comment on this SHA is the gate's kind (ii). Do not read the red check as the reviewer's answer, and do not count it as running for (d) — its status is `completed`. The two observed shapes are under the gate block below |
-| the review workflow's entry is `completed` with **any other** `conclusion` — `skipped`, `neutral`, `action_required`, `stale` | the round produced no usable result. A conditional `if:` that evaluated false reports `skipped`, and a skipped review is an absent review | **BLOCK.** Find out why it did not run before merging. Read this row as the default: `success` is the only value that opens the gate, and every other completed conclusion lands here |
+| the review workflow's entry is `completed` with **any other** `conclusion` — `skipped`, `neutral`, `action_required`, `stale` | the round produced no usable result. A conditional `if:` that evaluated false reports `skipped`, and a skipped review is an absent review | **BLOCK.** Find out why it did not run before merging. Read this row as the default: only `success` or `failure` proceeds to the required approving, full-roster aggregate and disposition checks; every other completed conclusion lands here |
 
 The aggregate the success row sends the gate to read lands on one of two surfaces under one of two identities, chosen by the consumer's configuration of `base-ai-review-aggregate.yml` — the `ALLOW_AUTO_APPROVE` repository variable and the `REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY` App credentials. Three shapes, measured 2026-10-02 on each consumer's newest merged PR (#174):
 
@@ -608,7 +630,7 @@ A refusal here is not a merge block: it says this round is not the one that ends
 
 #### Standard merge
 
-The merge call runs only when, **on the same head SHA, read immediately before the call**: (a) at least one verdict exists on that SHA — a completed/success run of the review workflow whose aggregate — a comment or a review, step 8's shape table — reports every configured reviewer, kind (i), or a local-review verdict comment opening with the repository's verdict header for that SHA whose newest instance approves, kind (ii); (b) that head's threads are all resolved; (c) every item each verdict raised has a disposition; and (d) no check on that SHA is still running. Each is a block on its own; a failed one means no merge — back to Stage 2 for the new items (reply + resolve, or a fixup, which pushes a new head, starts a new round, and brings you back to this gate). This block is the gate's only home; paste it whole. (a), (b) and (d) decide for themselves and exit non-zero, loud, on anything but a pass — the step 9 shape, because a query that does not block is not a gate. (c) is a read of the verdicts (a) named, so the merge call is a separate block after it — except the major items a verdict lists in the aggregate's item shape, the aggregate's unreviewed majors and a local verdict's items in that same shape, which the block checks itself on every verdict (a) named and exits non-zero on; what (c) can no longer do is read an empty list as a pass, because (a) refuses to reach it without a verdict.
+The merge call runs only when, **on the same head SHA, read immediately before the call**: (a) at least one verdict exists on that SHA — a usable completed workflow/check round whose approving aggregate — a comment or a review, step 8's shape table — reports every configured reviewer, kind (i), or a local-review verdict comment opening with the repository's verdict header for that SHA whose newest instance approves, kind (ii); (b) that head's threads are all resolved; (c) every item each verdict raised has a disposition; and (d) no check on that SHA is still running. Each is a block on its own; a failed one means no merge — back to Stage 2 for the new items (reply + resolve, or a fixup, which pushes a new head, starts a new round, and brings you back to this gate). This block is the gate's only home; paste it whole. (a), (b) and (d) decide for themselves and exit non-zero, loud, on anything but a pass — the step 9 shape, because a query that does not block is not a gate. (c) is a read of the verdicts (a) named, so the merge call is a separate block after it — except the major items a verdict lists in the aggregate's item shape, the aggregate's unreviewed majors and a local verdict's items in that same shape, which the block checks itself on every verdict (a) named and exits non-zero on; what (c) can no longer do is read an empty list as a pass, because (a) refuses to reach it without a verdict.
 
 **Where (c) reads a round's findings: on the verdict comment's body, on the aggregate's body, and on every first-line `round-cutoff-*` comment in the current-head review window and every first-line `inline-fallback-*` comment the PR carries, regardless of round — never on the thread count.** (b) returning zero unresolved threads is a statement about threads, and not about findings: from the convergence cutoff onward a round folds its remaining items into a cutoff comment, and those items carry no thread id at all, so a PR that has finished its reply pass reads 0 unresolved while carrying findings nobody has dispositioned. Observed on four PRs over 2026-10-06..08; the clearest had 11 threads and 0 unresolved, and then a round produced three findings, none of them a thread. When several folded items share a location, quote each item's whole rendered first line separately. A folded item is dispositioned instead by a quoted-response comment, Stage 4's issue-comment pattern, which names the cutoff comment it answers. The worked example to read rather than a description of one: `ignite-corp/ai-dev-pr-review#188`, comment `6015452260` at 2026-10-06T11:39:40Z — three items quoted with their round and their source (`(claude, R7 cutoff comment)` twice, `(claude, R7 verdict body)` once), two `Fixed:` with file:line, one `By design:`, and the cutoff comment it names now minimized `OUTDATED`. `cutoff_findings` in the block below is that read, and it blocks.
 
@@ -633,8 +655,69 @@ REVIEW_WF='<review workflow name>'
 EXPECTED_REVIEWERS='<n>'
 AGG_MARKER='<!-- multi-llm-review -->'
 AGG_AUTHORS='github-actions[bot] ignite-ai-review-approver[bot]'
+CHECK_APPS='ignite-ai-review-approver'
+# Optional trusted producer owner/repo@full40SHA:path, never a PR-head file.
+# Its single literal CHECK_NAME supplies name evidence when no check exists.
+# The producer must post its aggregate before completing the target check;
+# completed_at closes the aggregate window, with no speculative grace period.
+REMOTE_REVIEW_SOURCE=''
 VERDICT_RE='^##\s*LENS (?:판정|verdict)\s*—\s*\*\*(?<word>[^*]+)\*\*\s*·\s*head\s*`?<HEAD_SHA>`?\s*$'
 APPROVE_WORDS='^(?:승인|(?i:approved?))$'
+
+# A remote review reports an App check run instead of a workflow run here.
+# Select the newest identity-matched start before judging its status/result.
+# Six unit-separated fields preserve missing values; IFS whitespace would
+# collapse empty fields and shift later values into the wrong slots.
+discover_round() {
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  jq -rs --arg wf "${REVIEW_WF:-}" --arg apps "${CHECK_APPS:-}" \
+    '($apps | split(" ")) as $as
+     | ( [.[0][] | select(.workflowName == $wf)
+         | {surface: "run", status: (.status // ""), conclusion: (.conclusion // ""), start: (.createdAt // ""), end: (.updatedAt // ""), url: (.url // "")}]
+     + [.[1][] | select(.name == $wf and ((.app as $x | $as | index($x)) != null))
+         | {surface: "check-run", status: (.status // ""), conclusion: (.conclusion // ""), start: (.started_at // ""), end: (.completed_at // ""), url: (.details_url // "")}] )
+     | sort_by([(.start == ""), .start]) | last // empty
+     | [.surface, .status, .conclusion, .start, .end, .url] | join("\u001f")'
+}
+
+round_usable() {
+  local status=$1 concl=$2 surface=$3 start=${4-} url=${5-}
+  [ "$status" = completed ] \
+    || { echo "(a) kind (i): the newest round on this head is a $surface still '${status:-<none>}' ($url) — step 8's WAIT row: re-ask until it completes. An older completed round on this head is not this head's verdict"; return 1; }
+  [ -n "$start" ] \
+    || { echo "(a) kind (i) refused: the newest round on this head is a $surface with no start edge, so it cannot be placed against the other rounds on this head or bound to an aggregate — and an older round that can be placed is not this head's round. Per Review routing a local review is required now"; return 1; }
+  case $concl in
+    success) return 0 ;;
+    failure)
+      echo "(a) the round's conclusion is 'failure' — read, not trusted: it is the verdict's and not the round's, and the aggregate decides (step 8)"
+      return 0 ;;
+    *)
+      echo "(a) kind (i) refused: '${REVIEW_WF:-}' on this head ended '${concl:-<none>}' as a $surface — step 8's any-other-conclusion row: the round produced no usable result, so nothing inside its window is this head's verdict, however approving it reads. Per Review routing a local review is required now, and (a) blocks below unless one stands"
+      return 1 ;;
+  esac
+}
+
+# Read only an operator-selected immutable producer file, never execute it.
+remote_review_name() {
+  local reference=$1 repository revision path raw name
+  if ! [[ $reference =~ ^([A-Za-z0-9-]+/[A-Za-z0-9._-]+)@([0-9a-f]{40}):([A-Za-z0-9._/-]+)$ ]]; then
+    echo "ERROR: remote review source must be owner/repo@full40SHA:path"; return 1
+  fi
+  repository="${BASH_REMATCH[1]}"; revision="${BASH_REMATCH[2]}"; path="${BASH_REMATCH[3]}"
+  if [[ $repository == */. || $repository == */.. || $path == /* || $path == */ || $path == *//* || "/$path/" == */./* || "/$path/" == */../* ]]; then
+    echo "ERROR: remote review source contains an invalid repository or path"; return 1
+  fi
+  raw=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$repository/contents/$path?ref=$revision") \
+    || { echo "ERROR: could not read the trusted remote review source"; return 1; }
+  name=$(printf '%s' "$raw" | jq -Rrs '
+    [split("\n")[] | select(test("^CHECK_NAME[ \\t]*="))]
+    | if length != 1 then error("need exactly one CHECK_NAME assignment")
+      else .[0] | capture("^CHECK_NAME[ \\t]*=[ \\t]*(?<literal>.*?)[ \\t]*$").literal | fromjson
+      | if type == "string" and test("\\S") and (explode | all(. >= 32 and . != 127))
+        then . else error("CHECK_NAME must be a nonempty single-line string") end end') \
+    || { echo "ERROR: trusted source must declare one literal CHECK_NAME JSON string"; return 1; }
+  printf '%s\n' "$name"
+}
 
 # Kind (i)'s roster. The aggregate's headline is the only place on the PR
 # where the configured reviewers are counted (AT-2511): a reviewer cut at the
@@ -651,6 +734,7 @@ APPROVE_WORDS='^(?:승인|(?i:approved?))$'
 # .github/scripts/gate_headline_drill.sh extracts this function from this
 # file by name and runs the measured headlines through it — edit it here, and
 # the drill follows.
+
 headline_roster() {
   local h=$1 rv_n rv_m llm_n llm_m
   [[ ${EXPECTED_REVIEWERS:-} =~ ^[1-9][0-9]*$ ]] \
@@ -1185,56 +1269,54 @@ cutoff_findings() {
   return $rc
 }
 
-# (a) at least one verdict on this SHA. Kind (i): a completed/success run of
-#     the review workflow — step 8's only row that can open the gate — AND
+# (a) at least one verdict on this SHA. Kind (i): the newest identity-matched
+#     round, completed with a usable conclusion (step 8), AND
 #     the aggregate that run posted — a comment or a review, step 8's shape
 #     table — with every configured reviewer on its headline. Kind (ii): the NEWEST local-review verdict comment on
 #     this SHA, and it must approve — an older approval under a newer
 #     non-approval is a block. Zero of either is a block: no verdict is not
 #     "nothing to answer".
-runs=$(gh run list --repo OWNER/REPO --commit "$HEAD_SHA" --limit 100 \
-  --json databaseId,workflowName,status,conclusion,createdAt,updatedAt) \
-  || { echo "ERROR: could not list runs on $HEAD_SHA"; exit 1; }
-# A list that fills its limit may have lost the oldest runs, and (c)'s
-# cutoff window starts at the oldest review-workflow run — so a full list
-# stops here rather than start the window late.
-n_runs=$(printf '%s' "$runs" | jq length) \
-  || { echo "ERROR: could not count the runs on $HEAD_SHA"; exit 1; }
-[ "$n_runs" -lt 100 ] \
-  || { echo "ERROR: $n_runs runs on $HEAD_SHA fill the list's limit of 100 — the oldest may be missing, and cutoff_window_start reads the earliest from this list; raise --limit and re-run"; exit 1; }
-# The name, before its first reader: the repository's workflow list is the
-# one step 8 has the operator read REVIEW_WF from, and review_workflow_known
-# checks what was filled in against it and against this head's runs.
-wf_names=$(gh api --paginate repos/OWNER/REPO/actions/workflows --jq '.workflows[].name') \
-  || { echo "ERROR: could not list the repository's workflows — an unreadable list is not 'no such workflow'"; exit 1; }
+workflow_names_raw=$(gh api --paginate "repos/OWNER/REPO/actions/workflows?per_page=100" \
+  --jq '.workflows[] | {id, name} | @json') \
+  || { echo "ERROR: could not list the repository's workflows — without them a run cannot be matched to REVIEW_WF"; exit 1; }
+wf_runs=$(gh api --paginate "repos/OWNER/REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+  --jq '.workflow_runs[] | {id, workflow_id, status, conclusion, created_at, updated_at, html_url} | @json') \
+  || { echo "ERROR: could not list the runs on $HEAD_SHA"; exit 1; }
+workflow_runs=$(jq -n --argjson w "$(printf '%s\n' "$workflow_names_raw" | jq -s .)" \
+             --argjson r "$(printf '%s\n' "$wf_runs" | jq -s .)" \
+  '($w | map({(.id|tostring): .name}) | add // {}) as $m
+   | [ $r[] | {databaseId: .id, workflowName: ($m[(.workflow_id|tostring)] // ""), status, conclusion,
+               createdAt: .created_at, updatedAt: .updated_at, url: .html_url} ]') \
+  || { echo "ERROR: could not join the runs to their workflow names on $HEAD_SHA"; exit 1; }
+# surface 2 — a check run a review dispatched elsewhere reported into this repository
+raw_k=$(gh api --paginate "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
+  --jq '.check_runs[] | {name, status, conclusion, started_at, completed_at, app: .app.slug, details_url} | @json') \
+  || { echo "ERROR: could not list the check runs on $HEAD_SHA"; exit 1; }
+checks=$(printf '%s\n' "$raw_k" | jq -s .) \
+  || { echo "ERROR: could not read the check-run list"; exit 1; }
+runs=$(printf '%s\n%s\n' "$workflow_runs" "$checks" | jq -cs --arg wf "$REVIEW_WF" --arg apps "$CHECK_APPS" '
+  ($apps | split(" ")) as $as
+  | .[0] + [.[1][] | select(.name == $wf and ((.app as $x | $as | index($x)) != null))
+      | {workflowName: .name, createdAt: .started_at, status, conclusion}] ') \
+  || { echo "ERROR: could not normalize the review surfaces for the cutoff window"; exit 1; }
+wf_names=$(printf '%s\n' "$workflow_names_raw" | jq -rs 'map(.name) | join("\n")') \
+  || { echo "ERROR: could not read the repository workflow names"; exit 1; }
+if [ -n "$REMOTE_REVIEW_SOURCE" ]; then
+  remote_name=$(remote_review_name "$REMOTE_REVIEW_SOURCE") \
+    || { printf '%s\n' "$remote_name"; exit 1; }
+  [ "$remote_name" = "$REVIEW_WF" ] \
+    || { echo "ERROR: REVIEW_WF does not match the trusted producer CHECK_NAME"; exit 1; }
+  wf_names=$(printf '%s\n%s\n' "$wf_names" "$remote_name")
+fi
 printf '%s' "$runs" | review_workflow_known "$REVIEW_WF" "$wf_names" || exit 1
-run_window=$(printf '%s' "$runs" | jq -r --arg wf "$REVIEW_WF" \
-  '[.[] | select(.workflowName==$wf and .status=="completed" and .conclusion=="success")]
-   | sort_by(.createdAt) | last | if . == null then empty else "\(.createdAt) \(.updatedAt // "")" end') \
-  || { echo "ERROR: could not read the review workflow's run window from the run list on $HEAD_SHA — an unreadable run list is not 'no completed run'"; exit 1; }
-# Every read below that a condition decides on carries that tail: a jq or
-# gh that fails exits non-zero with nothing on stdout, and nothing on stdout
-# is also what a legitimately empty result looks like — no completed run, no
-# aggregate, no threads, nothing pending — so without the tail a failure is
-# read as the empty result and the condition passes — three such reads in
-# the verdict path at #194 round 5, two more in the run-list path at round
-# 7, each fixed by the instance until round 7 asked for the class. The tail
-# separates the two: an empty result exits 0 and is read; a failure exits
-# non-zero and stops here.
-# Two variables for two meanings. run_start is the newest completed/success
-# run's createdAt, and with run_end it binds kind (i)'s comment-surface
-# aggregate in select_aggregate, and is kind (i)'s round start for (c)'s
-# print — nothing else reads it. kind_i says
-# whether kind (i) holds: every refusal below clears it, and only refusals
-# touch it. Until round 5 of #194 one variable carried both, and the roster
-# refusal that cleared the flag also erased the timestamp (c)'s cutoff
-# window then read; round 8 found that window still read off this
-# success-filtered list — see cutoff_window_start, which reads it off the
-# unfiltered one, and the window computation in (c) for what each cost.
-read -r run_start run_end <<<"$run_window"
+run_window=$(printf '%s\n%s\n' "$workflow_runs" "$checks" | discover_round) \
+  || { echo "ERROR: could not read the review round"; exit 1; }
+IFS=$'\x1f' read -r round_surface round_status round_concl run_start run_end round_url <<<"$run_window"
 kind_i=""
-if [ -n "$run_start" ]; then
-  if w=$(window_bounds "$run_start" "$run_end"); then kind_i=yes; else echo "$w"; fi
+if [ -n "$round_surface" ]; then
+  if round_usable "$round_status" "$round_concl" "$round_surface" "$run_start" "$round_url"; then
+    if w=$(window_bounds "$run_start" "$run_end"); then kind_i=yes; else echo "$w"; fi
+  fi
 fi
 c_total=$(gh api repos/OWNER/REPO/issues/N --jq .comments) \
   || { echo "ERROR: could not read the comment count"; exit 1; }
@@ -1302,7 +1384,7 @@ if [ -n "$kind_i" ]; then
   agg=$(printf '%s\n%s\n' "$comments" "$reviews" | select_aggregate "$HEAD_SHA" "$run_start" "$run_end") \
     || { echo "ERROR: could not read the aggregate candidates on $HEAD_SHA — an unreadable list is not 'no aggregate'"; exit 1; }
   if [ -z "$agg" ]; then
-    echo "(a) kind (i) refused: '$REVIEW_WF' completed/success on $HEAD_SHA (created $run_start, updated $run_end) posted no aggregate the gate can read: no comment by one of $AGG_AUTHORS (type Bot) carrying '$AGG_MARKER' inside that window, and no review by one of them carrying it on $HEAD_SHA in state APPROVED or CHANGES_REQUESTED — a green job with no aggregate is not a verdict (AT-2511); marker comments and reviews by anyone else were ignored"
+    echo "(a) kind (i) refused: '$REVIEW_WF' completed/$round_concl as $round_surface on $HEAD_SHA (created $run_start, updated $run_end) posted no aggregate the gate can read: no comment by one of $AGG_AUTHORS (type Bot) carrying '$AGG_MARKER' inside that window, and no review by one of them carrying it on $HEAD_SHA in state APPROVED or CHANGES_REQUESTED — a green job with no aggregate is not a verdict (AT-2511); marker comments and reviews by anyone else were ignored"
     kind_i=""
   else
     headline=$(printf '%s' "$agg" | aggregate_headline) \
@@ -1318,10 +1400,10 @@ if [ -n "$kind_i" ]; then
   fi
 fi
 if [ -z "$kind_i" ] && [ "$newest_ok" != "true" ]; then
-  echo "BLOCK (a): no verdict on $HEAD_SHA — no completed/success '$REVIEW_WF' run whose aggregate reports every configured reviewer (read the kind (i) lines above and step 8's table against the runs below) and none of $c_total comments opens with the verdict header for this SHA. Per Review routing a local review is required now, delivered as such a comment:"
+  echo "BLOCK (a): no verdict on $HEAD_SHA — no usable '$REVIEW_WF' workflow/check round whose aggregate reports every configured reviewer (read the kind (i) lines above and step 8's table against the runs below) and none of $c_total comments opens with the verdict header for this SHA. Per Review routing a local review is required now, delivered as such a comment:"
   printf '%s\n' "$runs"; exit 1
 fi
-[ -z "$kind_i" ] || echo "(a) verdict kind (i): '$REVIEW_WF' completed/success on $HEAD_SHA, run created $run_start, every configured reviewer on its aggregate"
+[ -z "$kind_i" ] || echo "(a) verdict kind (i): '$REVIEW_WF' completed/$round_concl as $round_surface on $HEAD_SHA, run created $run_start, every configured reviewer on its aggregate"
 [ "$newest_ok" != "true" ] || echo "(a) verdict kind (ii): the newest local-review verdict on $HEAD_SHA approves"
 # The first verdict's timestamp, read once: kind (ii)'s round starts there
 # for (c)'s print, and so does the cutoff window when it is the earlier
@@ -1406,7 +1488,7 @@ short=$(printf '%s' "$snap_json" | jq -r \
 #     only REVIEW_WF — since a run and the check runs its jobs register are
 #     not one record (step 8's "not visible yet" window). Either surface
 #     naming anything not completed refuses.
-running=$(gh api --paginate repos/OWNER/REPO/commits/"$HEAD_SHA"/check-runs \
+running=$(gh api --paginate "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
   --jq '.check_runs[] | select(.status!="completed") | "\(.name):\(.status)"') \
   || { echo "ERROR: could not list check-runs on $HEAD_SHA"; exit 1; }
 pending=$(printf '%s' "$runs" \
@@ -1430,10 +1512,10 @@ still=$(printf '%s\n%s\n' "$running" "$pending" | sed '/^$/d') \
 #     with nothing to answer passes; an item without a disposition is a block.
 verdict_dispositions "$thread_data" "$sources" "$comments" || exit 1
 # (c) on the cutoff surface, for whichever kinds this head has. The window
-# starts at the earliest of every review-workflow run's createdAt on this
+# starts at the earliest of workflow runs and allowed check runs on this
 # head and the first verdict's timestamp — cutoff_window_start, above — so
 # a cutoff comment from any round on this head is inside it. Not run_start:
-# that is the newest completed/success run's createdAt, selected for kind
+# that is the newest identity-matched round's start, selected for kind
 # (i)'s aggregate, and a start read off a selected value misses the cutoff
 # comment whenever the selection and the comment's run differ. Three
 # instances, one class (#194 rounds 5 and 8, codex); each ends the same way:
