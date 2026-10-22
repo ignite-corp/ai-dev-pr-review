@@ -64,6 +64,13 @@ outputs:
   execution_file:
     description: Path to the claude-code-action execution log
     value: ${{ steps.claude-review.outputs.execution_file }}
+  inner_outcome:
+    description: >-
+      Outcome of the claude-code-action step itself. The step is
+      continue-on-error, so the caller's own step outcome stays success when
+      the action fails; this is the only place that failure is visible
+      (AT-2276).
+    value: ${{ steps.claude-review.outcome }}
 runs:
   using: composite
   steps:
@@ -75,6 +82,88 @@ runs:
         set -euo pipefail
         SCHEMA=$(python3 "$ACTION_PATH/../../scripts/extract_claude_review.py" --schema)
         echo "schema=$SCHEMA" >> "$GITHUB_OUTPUT"
+    # Records, before the action runs, whether its non-human-actor guard
+    # will refuse this actor, and when the action step began. When the
+    # action then leaves no execution log, the caller's error net reads
+    # both to say why (AT-2276): a rejection and a step timeout otherwise
+    # look identical there -- inner step failed, caller's step success, no
+    # log (measured on run 38819148513). It decides nothing and never fails
+    # the review; an API error records "unresolved".
+    #
+    # Mirrors checkHumanActor in the pinned action's
+    # src/github/validation/actor.ts: the actor is github.context.actor
+    # (GITHUB_ACTOR); its account type comes from the Users API; a "User"
+    # passes without consulting allowed_bots; any other type, or a 404 (an
+    # App with no backing user), passes only if isAllowedBot admits it --
+    # list "*" admits all, an empty list none, and each entry (trimmed) and
+    # the actor are lowercased and stripped of one trailing "[bot]" before
+    # an exact comparison.
+    - id: actor-check
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        ACTOR: ${{ github.actor }}
+        ALLOWED_BOTS: ${{ inputs.allowed_bots }}
+        API_URL: ${{ github.api_url }}
+      run: |
+        set -uo pipefail
+        MARKER="${RUNNER_TEMP}/claude-review-actor-check"
+        trim() {
+          local v="$1"
+          v="${v#"${v%%[![:space:]]*}"}"
+          printf '%s' "${v%"${v##*[![:space:]]}"}"
+        }
+        norm() {
+          local v="${1,,}"
+          printf '%s' "${v%"[bot]"}"
+        }
+        allowed() {
+          local list entry who
+          list=$(trim "$ALLOWED_BOTS")
+          [ "$list" = "*" ] && return 0
+          [ -z "$list" ] && return 1
+          who=$(norm "$ACTOR")
+          # -d '' reads the whole value: a newline is not a separator to
+          # isAllowedBot, only whitespace its per-entry trim removes.
+          IFS=',' read -rd '' -a entries <<<"$list" || true
+          for entry in "${entries[@]}"; do
+            entry=$(norm "$(trim "$entry")")
+            [ -n "$entry" ] && [ "$entry" = "$who" ] && return 0
+          done
+          return 1
+        }
+        # Every command ahead of the marker write is guarded: under the
+        # runner's -e an unguarded failure here would lose started=, and a
+        # real timeout would then be reported as action_error. The token
+        # goes to curl as a --config file on stdin, not on its argv.
+        CODE=""
+        BODY=$(mktemp) || BODY=""
+        ENCODED=$(jq -rn --arg a "$ACTOR" '$a | @uri') || ENCODED=""
+        if [ -n "$BODY" ] && [ -n "$ENCODED" ]; then
+          CODE=$(curl -sS --max-time 10 -o "$BODY" -w '%{http_code}' \
+            -H "Accept: application/vnd.github+json" --config - \
+            "${API_URL:-https://api.github.com}/users/${ENCODED}" \
+            <<<"header = \"Authorization: Bearer ${GH_TOKEN}\"") || CODE=""
+        fi
+        case "$CODE" in
+          200) TYPE=$(jq -r '.type // empty' "$BODY" 2>/dev/null) || TYPE="" ;;
+          404) TYPE="unresolvable" ;;
+          *) TYPE="" ;;
+        esac
+        [ -z "$BODY" ] || rm -f "$BODY"
+        if [ -z "$TYPE" ]; then
+          RESULT="unresolved"
+        elif [ "$TYPE" = "User" ] || allowed; then
+          RESULT="admitted"
+        else
+          RESULT="rejected"
+          echo "::warning::actor ${ACTOR} (type: ${TYPE}) is not in allowed_bots; claude-code-action will refuse to run"
+        fi
+        # Taken last, so the API call's latency is not counted against the
+        # step cap; the action step starts right after this one.
+        STARTED=$(date +%s) || STARTED=""
+        printf 'result=%s\nstarted=%s\n' "$RESULT" "$STARTED" > "$MARKER"
     - id: claude-review
       # Literal true (not an interpolated input) so the composite action
       # completes even when claude exits abnormally, keeping the
