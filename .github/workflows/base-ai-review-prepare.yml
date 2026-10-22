@@ -35,7 +35,7 @@ on:
         description: "Whether to skip review: the PR is too large, or every changed file is policy-excluded. The reviewer jobs gate on this; size_skipped and policy_skipped say which"
         value: ${{ jobs.prepare.outputs.skip }}
       size_skipped:
-        description: "'true' when the review was skipped because the PR exceeded PR_SIZE_LIMIT"
+        description: "'true' when the review was skipped because the PR exceeded a size limit (size_exceeded names which)"
         value: ${{ jobs.prepare.outputs.size_skipped }}
       policy_skipped:
         description: "'true' when the review was skipped because every changed file matched .github/lens-ignore (AT-2206)"
@@ -47,11 +47,23 @@ on:
         description: "The removed paths, one per line (a rename reads `old -> new`); empty when nothing was"
         value: ${{ jobs.prepare.outputs.excluded_paths }}
       size_total:
-        description: "Total changed lines measured for the size gate"
+        description: "Combined changed lines when no per-axis limit is set; otherwise the value of each exceeded axis, space-separated in size_exceeded's order (empty when none was)"
         value: ${{ jobs.prepare.outputs.size_total }}
       size_limit:
-        description: "PR_SIZE_LIMIT the total was compared against"
+        description: "PR_SIZE_LIMIT when no per-axis limit is set; otherwise the limit of each exceeded axis, space-separated in size_exceeded's order (empty when none was)"
         value: ${{ jobs.prepare.outputs.size_limit }}
+      size_additions:
+        description: "Added lines as GitHub counts them for the PR, before lens-ignore (AT-3052)"
+        value: ${{ jobs.prepare.outputs.size_additions }}
+      size_deletions:
+        description: "Deleted lines as GitHub counts them for the PR, before lens-ignore (AT-3052)"
+        value: ${{ jobs.prepare.outputs.size_deletions }}
+      size_exceeded:
+        description: "The var name of each size limit the PR exceeded, space-separated (PR_SIZE_LIMIT, PR_SIZE_LIMIT_ADDITIONS, PR_SIZE_LIMIT_DELETIONS); empty when none was (AT-3052)"
+        value: ${{ jobs.prepare.outputs.size_exceeded }}
+      size_axes:
+        description: "The axis of each entry in size_exceeded, in the same order: changed, added or deleted. Needed because an axis with no var of its own is reported as PR_SIZE_LIMIT (AT-3052)"
+        value: ${{ jobs.prepare.outputs.size_axes }}
       head_sha:
         description: "The PR head commit the diff was computed against. Callers check out THIS, not github.ref"
         value: ${{ jobs.prepare.outputs.head_sha }}
@@ -85,6 +97,10 @@ jobs:
       size_total: ${{ steps.size-check.outputs.total }}
       head_sha: ${{ steps.refs.outputs.head_sha }}
       size_limit: ${{ steps.size-check.outputs.limit }}
+      size_additions: ${{ steps.size-check.outputs.additions }}
+      size_deletions: ${{ steps.size-check.outputs.deletions }}
+      size_exceeded: ${{ steps.size-check.outputs.exceeded }}
+      size_axes: ${{ steps.size-check.outputs.axes }}
       pr_author: ${{ steps.refs.outputs.pr_author }}
     steps:
       # Cross-repository review (AT-2520). `target_repo` names the repository
@@ -346,6 +362,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_token.outputs.token || github.token }}
           PR_SIZE_LIMIT: ${{ vars.PR_SIZE_LIMIT || '3000' }}
+          # Per-axis limits (AT-3052), unset by default. Setting either one
+          # drops the combined check; an axis whose own var is unset is
+          # checked against PR_SIZE_LIMIT instead.
+          PR_SIZE_LIMIT_ADDITIONS: ${{ vars.PR_SIZE_LIMIT_ADDITIONS || '' }}
+          PR_SIZE_LIMIT_DELETIONS: ${{ vars.PR_SIZE_LIMIT_DELETIONS || '' }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           # Through env, never interpolated into the script: target_repo is
           # caller-supplied text, and the regex guard above is a different
@@ -357,6 +378,13 @@ jobs:
             echo "::error::Invalid PR_SIZE_LIMIT: $PR_SIZE_LIMIT (must be integer)"
             exit 1
           fi
+          for NAME in PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT_DELETIONS; do
+            VALUE="${!NAME:-}"
+            if [ -n "$VALUE" ] && ! [[ "$VALUE" =~ ^[0-9]+$ ]]; then
+              echo "::error::Invalid $NAME: $VALUE (must be integer)"
+              exit 1
+            fi
+          done
 
           PR_DATA=$(gh pr view "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" --json additions,deletions)
@@ -364,14 +392,46 @@ jobs:
           DELETIONS=$(echo "$PR_DATA" | jq '.deletions')
           TOTAL=$((ADDITIONS + DELETIONS))
 
-          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
-          echo "limit=$PR_SIZE_LIMIT" >> "$GITHUB_OUTPUT"
+          echo "additions=$ADDITIONS" >> "$GITHUB_OUTPUT"
+          echo "deletions=$DELETIONS" >> "$GITHUB_OUTPUT"
 
-          if [ "$TOTAL" -gt "$PR_SIZE_LIMIT" ]; then
+          # One entry per exceeded check, at the same position in each list:
+          # exceeded/axes/total/limit are space-separated and the aggregate
+          # renders one message part per position.
+          EXCEEDED=(); AXES=(); VALUES=(); LIMITS=(); PARTS=()
+          breach() { # $1 value, $2 axis word, $3 var name, $4 limit
+            if [ "$1" -gt "$4" ]; then
+              EXCEEDED+=("$3"); AXES+=("$2"); VALUES+=("$1"); LIMITS+=("$4")
+              PARTS+=("$1 $2 lines exceeds $3 $4")
+            fi
+          }
+          if [ -z "${PR_SIZE_LIMIT_ADDITIONS:-}" ] && [ -z "${PR_SIZE_LIMIT_DELETIONS:-}" ]; then
+            # Combined gate, unchanged since before AT-3052: these outputs
+            # and the comment below are byte-identical to what it emitted.
+            breach "$TOTAL" changed PR_SIZE_LIMIT "$PR_SIZE_LIMIT"
+            echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+            echo "limit=$PR_SIZE_LIMIT" >> "$GITHUB_OUTPUT"
+            SUMMARY="${TOTAL} lines changed, limit ${PR_SIZE_LIMIT}"
+          else
+            ADD_VAR=PR_SIZE_LIMIT_ADDITIONS
+            [ -n "${PR_SIZE_LIMIT_ADDITIONS:-}" ] || ADD_VAR=PR_SIZE_LIMIT
+            DEL_VAR=PR_SIZE_LIMIT_DELETIONS
+            [ -n "${PR_SIZE_LIMIT_DELETIONS:-}" ] || DEL_VAR=PR_SIZE_LIMIT
+            breach "$ADDITIONS" added "$ADD_VAR" "${!ADD_VAR}"
+            breach "$DELETIONS" deleted "$DEL_VAR" "${!DEL_VAR}"
+            echo "total=${VALUES[*]}" >> "$GITHUB_OUTPUT"
+            echo "limit=${LIMITS[*]}" >> "$GITHUB_OUTPUT"
+            printf -v SUMMARY '%s; ' "${PARTS[@]}"
+            SUMMARY="${SUMMARY%; }"
+          fi
+          echo "exceeded=${EXCEEDED[*]}" >> "$GITHUB_OUTPUT"
+          echo "axes=${AXES[*]}" >> "$GITHUB_OUTPUT"
+
+          if [ "${#EXCEEDED[@]}" -gt 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" \
               --repo "$GITHUB_REPOSITORY" \
-              --body "[!] PR too large (${TOTAL} lines changed, limit ${PR_SIZE_LIMIT}). Skipping AI review -- the aggregate verdict below explains how to proceed."
+              --body "[!] PR too large (${SUMMARY}). Skipping AI review -- the aggregate verdict below explains how to proceed."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi

@@ -61,8 +61,15 @@ from typing import Any
 
 from filter_pr_diff import DEFAULT_RULE_PATH
 from github_pr_support import (
+    ADDITIONS_SIZE_AXIS,
+    ADDITIONS_SIZE_VAR,
+    COMBINED_SIZE_AXIS,
+    COMBINED_SIZE_VAR,
+    DELETIONS_SIZE_AXIS,
+    DELETIONS_SIZE_VAR,
     REVIEW_MARKER,
     REVIEWER_NAMES,
+    describe_size_breach,
     display_path,
     format_labels,
 )
@@ -292,7 +299,75 @@ class Refs:
     merge_commit_sha: str
     pr_commits: str
     labels: str
-    changed_lines: int
+    # GitHub's own counts for the PR, before lens-ignore -- what the
+    # workflow's `Check PR size` step reads.
+    additions: int
+    deletions: int
+
+
+@dataclass(frozen=True)
+class SizeLimits:
+    """PR_SIZE_LIMIT and the two per-axis limits; None is unset (AT-3052)."""
+
+    combined: int
+    additions: int | None = None
+    deletions: int | None = None
+
+
+@dataclass(frozen=True)
+class SizeBreach:
+    """One limit the PR exceeded: `{value} {axis} lines exceeds {var} {limit}`."""
+
+    value: int
+    axis: str
+    var: str
+    limit: int
+
+    def describe(self) -> str:
+        return describe_size_breach(self.value, self.axis, self.var, self.limit)
+
+
+def size_limits(config: LocalConfig) -> SizeLimits:
+    # All three held to the workflow's `^[0-9]+$`: a bare int() accepts
+    # `-1`, which would make every PR exceed the limit and skip review.
+    return SizeLimits(
+        combined=config.get_unsigned_int(COMBINED_SIZE_VAR),
+        additions=config.get_optional_int(ADDITIONS_SIZE_VAR),
+        deletions=config.get_optional_int(DELETIONS_SIZE_VAR),
+    )
+
+
+def size_breaches(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach]]:
+    """(split, exceeded limits), mirroring the workflow's `Check PR size`.
+
+    With neither per-axis limit set the combined gate runs as it always
+    has. With either set the combined check is dropped and each axis is
+    held to its own limit, or to PR_SIZE_LIMIT when its own is unset.
+    """
+    if limits.additions is None and limits.deletions is None:
+        total = refs.additions + refs.deletions
+        checks = [SizeBreach(total, COMBINED_SIZE_AXIS, COMBINED_SIZE_VAR, limits.combined)]
+        split = False
+    else:
+        checks = [
+            _axis_check(
+                refs.additions, ADDITIONS_SIZE_AXIS, ADDITIONS_SIZE_VAR, limits.additions, limits
+            ),
+            _axis_check(
+                refs.deletions, DELETIONS_SIZE_AXIS, DELETIONS_SIZE_VAR, limits.deletions, limits
+            ),
+        ]
+        split = True
+    return split, [check for check in checks if check.value > check.limit]
+
+
+def _axis_check(
+    value: int, axis: str, var: str, own: int | None, limits: SizeLimits
+) -> SizeBreach:
+    """One axis held to its own limit, or to PR_SIZE_LIMIT when that is unset."""
+    if own is None:
+        return SizeBreach(value, axis, COMBINED_SIZE_VAR, limits.combined)
+    return SizeBreach(value, axis, var, own)
 
 
 def initial_policy() -> dict[str, str]:
@@ -311,7 +386,15 @@ def initial_size() -> dict[str, str]:
     These ARE the aggregate's own fallbacks, so a run whose size gate never
     spoke renders "unknown" rather than a made-up number.
     """
-    return {"SIZE_SKIPPED": "false", "SIZE_TOTAL": "", "SIZE_LIMIT": ""}
+    return {
+        "SIZE_SKIPPED": "false",
+        "SIZE_TOTAL": "",
+        "SIZE_LIMIT": "",
+        "SIZE_ADDITIONS": "",
+        "SIZE_DELETIONS": "",
+        "SIZE_EXCEEDED": "",
+        "SIZE_AXES": "",
+    }
 
 
 def run(
@@ -411,8 +494,8 @@ def resolve_refs(repo: str, pr_number: str) -> Refs:
         merge_commit_sha=(payload.get("merge_commit_sha") or "") if merged else "",
         pr_commits=str(payload.get("commits") or ""),
         labels=format_labels([label["name"] for label in payload.get("labels") or []]),
-        changed_lines=int(payload.get("additions") or 0)
-        + int(payload.get("deletions") or 0),
+        additions=int(payload.get("additions") or 0),
+        deletions=int(payload.get("deletions") or 0),
     )
 
 
@@ -1923,16 +2006,26 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
 
 
 def size_gate(
-    repo: str, pr_number: str, refs: Refs, limit: int
+    repo: str, pr_number: str, refs: Refs, limits: SizeLimits
 ) -> tuple[bool, dict[str, str]]:
-    """Comment and report the skip when the PR is over PR_SIZE_LIMIT.
+    """Comment and report the skip when the PR is over a size limit.
 
-    The strings are the aggregate's contract; the caller branches on the
-    bool rather than parsing them back.
+    The strings are the aggregate's contract, the same values the
+    workflow's `Check PR size` step emits; the caller branches on the bool
+    rather than parsing them back.
     """
-    skipped = refs.changed_lines > limit
+    split, breaches = size_breaches(refs, limits)
+    skipped = bool(breaches)
+    if split:
+        summary = "; ".join(breach.describe() for breach in breaches)
+        size_total = " ".join(str(breach.value) for breach in breaches)
+        size_limit = " ".join(str(breach.limit) for breach in breaches)
+    else:
+        size_total = str(refs.additions + refs.deletions)
+        size_limit = str(limits.combined)
+        summary = f"{size_total} lines changed, limit {size_limit}"
     if skipped:
-        print(f"PR too large: {refs.changed_lines} > {limit}; skipping review")
+        print(f"PR too large: {summary}; skipping review")
         gh_comment(
             repo,
             pr_number,
@@ -1949,18 +2042,25 @@ def size_gate(
                     # changing the aggregate changes every consumer's
                     # Actions runs (record 2-G).
                     REVIEW_MARKER,
-                    f"<!-- lens:skipped reason=size-limit"
-                    f" lines={refs.changed_lines} limit={limit} -->",
-                    f"[!] PR too large ({refs.changed_lines} lines changed,"
-                    f" limit {limit}). Skipping AI review -- the aggregate"
-                    " verdict below explains how to proceed.",
+                    # var= names the limit each entry was held to (AT-3052);
+                    # several are comma-joined, aligned with lines/limit.
+                    "<!-- lens:skipped reason=size-limit"
+                    f" lines={','.join(str(b.value) for b in breaches)}"
+                    f" limit={','.join(str(b.limit) for b in breaches)}"
+                    f" var={','.join(b.var for b in breaches)} -->",
+                    f"[!] PR too large ({summary}). Skipping AI review --"
+                    " the aggregate verdict below explains how to proceed.",
                 ]
             ),
         )
     return skipped, {
         "SIZE_SKIPPED": "true" if skipped else "false",
-        "SIZE_TOTAL": str(refs.changed_lines),
-        "SIZE_LIMIT": str(limit),
+        "SIZE_TOTAL": size_total,
+        "SIZE_LIMIT": size_limit,
+        "SIZE_ADDITIONS": str(refs.additions),
+        "SIZE_DELETIONS": str(refs.deletions),
+        "SIZE_EXCEEDED": " ".join(breach.var for breach in breaches),
+        "SIZE_AXES": " ".join(breach.axis for breach in breaches),
     }
 
 
@@ -2065,7 +2165,7 @@ def pre_review(
     refs = resolve_refs(args.repo, args.pr_number)
     verify_prompt_paths(args.repo, refs, (args.system_prompt_path, args.checklist_path))
     size_skipped, size = size_gate(
-        args.repo, args.pr_number, refs, config.get_int("PR_SIZE_LIMIT")
+        args.repo, args.pr_number, refs, size_limits(config)
     )
     return bot_login, refs, size_skipped, size
 

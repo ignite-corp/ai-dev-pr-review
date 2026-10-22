@@ -285,9 +285,13 @@ jobs:
 
 코드 변경 없이 동작을 조정합니다. 레포 또는 조직의 `Settings -> Secrets and variables -> Actions -> Variables`에서 설정하세요.
 
+값은 워크플로를 실행하는 레포에서 읽힙니다. 러너 경로([automatic dispatch](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch))에서는 그 레포가 `ignite-corp/ai-dev-pr-review-runner`이므로, 값은 러너 레포와 그 `ignite-corp` 조직 변수에서 오고 대상 레포에서는 오지 않습니다: 대상 레포는 자기 `PR_SIZE_LIMIT`을 설정할 수 없습니다.
+
 | 변수 | 기본값 | 영향 |
 |---|---|---|
-| `PR_SIZE_LIMIT` | `3000` | 추가+삭제 라인이 이 값을 초과하면 리뷰 건너뜀. PR에 코멘트하고 `skip=true` 반환. |
+| `PR_SIZE_LIMIT` | `3000` | 추가+삭제 라인이 이 값을 초과하면 리뷰 건너뜀. PR에 코멘트하고 `skip=true` 반환. `PR_SIZE_LIMIT_ADDITIONS`나 `PR_SIZE_LIMIT_DELETIONS`가 설정되면 이 합산 검사는 빠지고, `PR_SIZE_LIMIT`은 자기 변수가 설정되지 않은 축의 한도로만 쓰입니다. |
+| `PR_SIZE_LIMIT_ADDITIONS` | _(미설정)_ | 추가 라인에 대한 축별 크기 한도(AT-3052). 이 변수나 `PR_SIZE_LIMIT_DELETIONS`를 설정하면 합산 검사가 축별 검사로 바뀝니다: 추가 라인은 이 변수와, 삭제 라인은 `PR_SIZE_LIMIT_DELETIONS`와 비교하고, 자기 변수가 설정되지 않은 축은 `PR_SIZE_LIMIT`으로 대신합니다. 모든 검사를 통과해야 리뷰합니다. 건너뜀 코멘트와 판정은 초과한 변수 이름을 밝힙니다(예: `4200 added lines exceeds PR_SIZE_LIMIT_ADDITIONS 3000`, 여럿이면 `; `로 이어 붙임). 정수가 아니면 `prepare`가 실패합니다. |
+| `PR_SIZE_LIMIT_DELETIONS` | _(미설정)_ | 삭제 라인에 대한 축별 크기 한도. `PR_SIZE_LIMIT_ADDITIONS` 참고. 값을 높게 두면 추가 라인 한도를 올리지 않고도 삭제 위주의 PR을 리뷰할 수 있습니다. 정수가 아니면 `prepare`가 실패합니다. |
 | `REVIEW_MODE` | `parallel` | `parallel`(기본)은 세 리뷰어를 동시 실행. `sequential`은 Claude -> Codex -> Gemini 순서로 실행하고 `early_exit` 시 중단. |
 | `CRITICAL_THRESHOLD` | `1` | 사람 PR: `request_changes`를 유발하는 critical 이슈 수. |
 | `DEPENDABOT_CRITICAL_THRESHOLD` | `2` | Dependabot PR 전용: 동일 게이트, 상향. |
@@ -337,7 +341,7 @@ dist/**
 
 규칙 파일은 PR head(`prepare`가 이미 체크아웃하는 트리)에서 읽으므로, 같은 PR에서 추가된 민감한 파일을 같은 PR에서 덮을 수 있습니다. 대가는 PR이 규칙도 수정할 수 있다는 것이고, 완화책은 고정돼 있습니다 -- `.github/lens-ignore` 자체는 절대 제외될 수 없습니다. 이 파일에 매칭되는 규칙은 그 경로에 한해 경고와 함께 무시되므로, 정책의 모든 변경은 항상 리뷰되는 diff 안에 있고, 판정 코멘트는 정책이 제거한 것을 나열합니다.
 
-크기 게이트는 그대로입니다. `PR_SIZE_LIMIT`은 GitHub가 집계한 PR의 추가+삭제 라인을 비교하며, 제외된 파일도 여기에 포함됩니다. 한도를 넘은 PR은 정책이 실행되기 전에 크기 때문에 건너뛰어지고, 판정은 어느 게이트에 걸렸는지 말해 줍니다(`size_skipped`와 `policy_skipped`는 `prepare`의 별개 출력이고, `skip`은 그 둘의 조합입니다).
+크기 게이트는 그대로입니다. `PR_SIZE_LIMIT`은 GitHub가 집계한 PR의 추가+삭제 라인을 비교하며(`PR_SIZE_LIMIT_ADDITIONS` / `PR_SIZE_LIMIT_DELETIONS`는 추가와 삭제를 따로 비교), 제외된 파일도 여기에 포함됩니다. 한도를 넘은 PR은 정책이 실행되기 전에 크기 때문에 건너뛰어지고, 판정은 어느 게이트에 걸렸는지 말해 줍니다(`size_skipped`와 `policy_skipped`는 `prepare`의 별개 출력이고, `skip`은 그 둘의 조합입니다).
 
 ### 변경된 파일이 전부 제외될 때
 

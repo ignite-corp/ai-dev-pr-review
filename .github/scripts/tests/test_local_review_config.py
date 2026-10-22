@@ -119,6 +119,43 @@ def test_get_int_rejects_a_non_integer(monkeypatch):
         _config().get_int("PR_SIZE_LIMIT")
 
 
+@pytest.mark.parametrize("name", ["PR_SIZE_LIMIT_ADDITIONS", "PR_SIZE_LIMIT_DELETIONS"])
+def test_split_size_limits_default_to_unset(monkeypatch, name):
+    """`vars.X || ''` scrapes as an empty default, which reads as unset.
+
+    Deliberately not in CONSUMED: there an empty default is the defect
+    test_defaults_are_not_empty guards against; here it is the design.
+    """
+    monkeypatch.delenv(name, raising=False)
+    assert workflow_defaults()[name] == ""
+    assert _config().get_optional_int(name) is None
+
+
+def test_get_optional_int_reads_a_set_value(monkeypatch):
+    monkeypatch.setenv("PR_SIZE_LIMIT_DELETIONS", " 10000\n")
+    assert _config().get_optional_int("PR_SIZE_LIMIT_DELETIONS") == 10000
+
+
+@pytest.mark.parametrize("value", ["-1", "+5", "", "many"])
+def test_get_unsigned_int_holds_to_the_workflow_regex(monkeypatch, value):
+    """The workflow fails `-1` for PR_SIZE_LIMIT; bare int() would accept it."""
+    monkeypatch.setenv("PR_SIZE_LIMIT", value)
+    with pytest.raises(ConfigError, match="PR_SIZE_LIMIT"):
+        _config().get_unsigned_int("PR_SIZE_LIMIT")
+
+
+def test_get_unsigned_int_reads_a_set_value(monkeypatch):
+    monkeypatch.setenv("PR_SIZE_LIMIT", "3000")
+    assert _config().get_unsigned_int("PR_SIZE_LIMIT") == 3000
+
+
+@pytest.mark.parametrize("value", ["many", "-1", "3k"])
+def test_get_optional_int_rejects_a_non_integer(monkeypatch, value):
+    monkeypatch.setenv("PR_SIZE_LIMIT_ADDITIONS", value)
+    with pytest.raises(ConfigError, match="PR_SIZE_LIMIT_ADDITIONS"):
+        _config().get_optional_int("PR_SIZE_LIMIT_ADDITIONS")
+
+
 def test_config_file_parsing(tmp_path):
     path = tmp_path / "local-review.env"
     path.write_text(

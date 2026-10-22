@@ -42,6 +42,7 @@ from aggregate_reviews import (
     post_verdict,
     FAILED_DETAIL_PREFIX,
     REVIEWER_NAMES,
+    SizeBreach,
     _STALE_COMMENTS_QUERY,
     _STALE_REVIEWS_QUERY,
 )
@@ -3506,7 +3507,173 @@ class TestSizeSkipVerdict:
 
     def test_summary_is_ascii(self) -> None:
         """Public-repo invariant, asserted at the point the string is built."""
-        format_size_skip_summary("4200", "3000").encode("ascii")
+        format_size_skip_summary(
+            [SizeBreach("4200", "added", "PR_SIZE_LIMIT_ADDITIONS", "3000")]
+        ).encode("ascii")
+
+
+class TestSizeSkipPerAxis:
+    """Per-axis size limits (AT-3052).
+
+    With no split var prepare reports the combined axis, and everything the
+    aggregate renders must read exactly as it did before; with one, the
+    headline, remedies and verdict line name the var each axis was held to.
+    """
+
+    _COMBINED_BODY = "\n".join(
+        [
+            REVIEW_MARKER,
+            "## [bot] Multi-LLM Review Summary",
+            "",
+            "**Result: [X] Review skipped -- PR too large** -- 4200 changed"
+            " lines exceeds the limit of 3000",
+            "",
+            "---",
+            "",
+            "No reviewer ran, so this check reports a failure rather than a"
+            " verdict. That is deliberate: a required check that is never"
+            " reported stays Pending forever with nothing to act on.",
+            "",
+            "To proceed, either:",
+            "",
+            "1. **Split this PR** so each part is at or under 3000 changed lines.",
+            "2. **Raise the limit for this repository** by setting the"
+            " `PR_SIZE_LIMIT` repository variable above 4200"
+            " (Settings -> Secrets and variables -> Actions -> Variables),"
+            " then re-run this workflow.",
+            "",
+            "Raising the limit makes the reviewers read a larger diff, which"
+            " costs more and reviews less closely -- splitting is preferred"
+            " where it is possible.",
+        ]
+    )
+
+    @staticmethod
+    def _run(
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        **env: str,
+    ) -> tuple[str, str]:
+        """Run main() on the size-skip path; return (posted body, stdout)."""
+        monkeypatch.setenv("SIZE_SKIPPED", "true")
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        for key in ("SIZE_EXCEEDED", "SIZE_AXES", "SIZE_ADDITIONS", "SIZE_DELETIONS"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with (
+            patch("aggregate_reviews.post_verdict") as mock_post,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        assert mock_post.call_args[0][1] == "request_changes"
+        return mock_post.call_args[0][0], capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "prepare_env",
+        [
+            {},  # a prepare older than AT-3052 sends no exceeded/axes
+            {"SIZE_EXCEEDED": "PR_SIZE_LIMIT", "SIZE_AXES": "changed"},
+        ],
+        ids=["pre-AT-3052", "combined"],
+    )
+    def test_only_pr_size_limit_renders_byte_identically(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        prepare_env: dict[str, str],
+    ) -> None:
+        body, out = self._run(
+            monkeypatch,
+            capsys,
+            SIZE_TOTAL="4200",
+            SIZE_LIMIT="3000",
+            SIZE_ADDITIONS="4000",
+            SIZE_DELETIONS="200",
+            **prepare_env,
+        )
+        assert body == self._COMBINED_BODY
+        assert (
+            "Final verdict: request_changes -- review skipped, 4200 changed"
+            " lines exceeds PR_SIZE_LIMIT 3000"
+        ) in out
+
+    def test_additions_over_their_limit_name_that_var(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body, out = self._run(
+            monkeypatch,
+            capsys,
+            SIZE_EXCEEDED="PR_SIZE_LIMIT_ADDITIONS",
+            SIZE_AXES="added",
+            SIZE_TOTAL="2500",
+            SIZE_LIMIT="2000",
+        )
+        assert (
+            "**Result: [X] Review skipped -- PR too large** -- 2500 added lines"
+            " exceeds PR_SIZE_LIMIT_ADDITIONS 2000"
+        ) in body
+        assert "at or under 2000 added lines" in body
+        assert "`PR_SIZE_LIMIT_ADDITIONS` repository variable above 2500" in body
+        assert "`PR_SIZE_LIMIT` " not in body
+        assert (
+            "Final verdict: request_changes -- review skipped, 2500 added"
+            " lines exceeds PR_SIZE_LIMIT_ADDITIONS 2000"
+        ) in out
+
+    def test_an_axis_without_its_own_var_names_pr_size_limit(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body, out = self._run(
+            monkeypatch,
+            capsys,
+            SIZE_EXCEEDED="PR_SIZE_LIMIT",
+            SIZE_AXES="deleted",
+            SIZE_TOTAL="3500",
+            SIZE_LIMIT="3000",
+        )
+        assert "-- 3500 deleted lines exceeds PR_SIZE_LIMIT 3000" in body
+        assert "`PR_SIZE_LIMIT` repository variable above 3500" in body
+        assert "review skipped, 3500 deleted lines exceeds PR_SIZE_LIMIT 3000" in out
+
+    def test_both_axes_exceeded_join_their_parts(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body, out = self._run(
+            monkeypatch,
+            capsys,
+            SIZE_EXCEEDED="PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT_DELETIONS",
+            SIZE_AXES="added deleted",
+            SIZE_TOTAL="1500 2000",
+            SIZE_LIMIT="1000 1200",
+        )
+        joined = (
+            "1500 added lines exceeds PR_SIZE_LIMIT_ADDITIONS 1000;"
+            " 2000 deleted lines exceeds PR_SIZE_LIMIT_DELETIONS 1200"
+        )
+        assert f"**Result: [X] Review skipped -- PR too large** -- {joined}" in body
+        assert "at or under 1000 added lines and 1200 deleted lines" in body
+        assert (
+            "the `PR_SIZE_LIMIT_ADDITIONS` repository variable above 1500 and"
+            " the `PR_SIZE_LIMIT_DELETIONS` repository variable above 2000"
+        ) in body
+        assert f"Final verdict: request_changes -- review skipped, {joined}" in out
+
+    def test_short_lists_degrade_to_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A measurement missing for an entry still blocks, and says so."""
+        body, _ = self._run(
+            monkeypatch,
+            capsys,
+            SIZE_EXCEEDED="PR_SIZE_LIMIT_ADDITIONS PR_SIZE_LIMIT_DELETIONS",
+            SIZE_AXES="added deleted",
+            SIZE_TOTAL="1500",
+            SIZE_LIMIT="1000",
+        )
+        assert "unknown deleted lines exceeds PR_SIZE_LIMIT_DELETIONS unknown" in body
 
 
 _POLICY_SKIP_MARKER = "<!-- lens:skipped reason=policy-excluded-only files=2 -->"
@@ -3815,8 +3982,18 @@ class TestAggregateJobIsNotSizeGated:
 
     def test_aggregate_receives_the_size_inputs(self) -> None:
         supplied = dict(self._jobs()["aggregate"].get("with", {}))
-        for key in ("size_skipped", "size_total", "size_limit"):
+        for key in (
+            "size_skipped",
+            "size_total",
+            "size_limit",
+            "size_additions",
+            "size_deletions",
+            "size_exceeded",
+            "size_axes",
+        ):
             assert key in supplied, key
+            # Threaded from prepare's output of the same name (AT-3052).
+            assert supplied[key] == f"${{{{ needs.prepare.outputs.{key} }}}}", key
         # The size flag itself, not the combined `skip` that a policy skip
         # also sets -- otherwise a policy skip renders as PR too large.
         assert supplied["size_skipped"] == "${{ needs.prepare.outputs.size_skipped }}"
