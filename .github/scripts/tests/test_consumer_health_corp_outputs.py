@@ -12,10 +12,12 @@ file (removed in AT-3036), which the corp job did not share because it has no
 This test runs the job's consumer loop (from ``any_flag=0`` through the final
 exit) under bash with ``gh`` replaced by a stub that answers the GraphQL
 verdict query with a canned payload or fails, and asserts on the log lines
-and exit code the run is judged by. The consumer under test is the base repo
-itself, whose entry skips the workflow-file and pin lookups, so the stub only
-needs to answer the verdict query, the run listing and the Dependabot PR
-listing.
+and exit code the run is judged by. By default the consumer under test is the
+base repo itself, whose entry skips the workflow-file and pin lookups; the
+stub also serves ``repos/<slug>/contents/<path>`` from a fixture tree (the
+prompts, the runner's review workflow, a consumer's review workflow), and
+``run_health_tail(consumers=...)`` runs a non-base entry, as
+TestPromptGuidanceCheck does (AT-2844).
 """
 
 from __future__ import annotations
@@ -115,29 +117,103 @@ def _health_step_tail(workflow: Path) -> str:
     return run[start:]
 
 
+# Prompt fixtures the stubbed ``gh api .../contents/...`` serves. A request
+# carrying ``?ref=`` (the positive control, read at the run's own commit) is
+# served from REF_ROOT, any other from HEAD_ROOT, so a test can break the
+# base entry's prompt without breaking the control that reads the same path.
+REF_ROOT = "ref"
+HEAD_ROOT = "head"
+EXAMPLE_PROMPT_DIR = "examples/prompts"
+RUNNER_PROMPT_DIR = "default-prompts"
+PROMPT_FILES = ("code-review-system.md", "code-review-checklist.md")
+RUNNER_WORKFLOW = ".github/workflows/review.yml"
+LATEST_RELEASE = "v1.15.1"
+# A fixture value meaning "the fetch fails with something other than 404".
+FETCH_FAILS = object()
+RUN_SHA = "0" * 40
+
+
+def _runner_workflow(ref: str) -> str:
+    return (
+        "jobs:\n  review:\n"
+        "    uses: ignite-corp/ai-dev-pr-review/.github/workflows/"
+        f"base-ai-review-orchestrator.yml@{ref}\n"
+    )
+
+
+def _default_prompt_fixtures() -> dict[str, str]:
+    fixtures: dict[str, str] = {}
+    for name in PROMPT_FILES:
+        text = (REPO_ROOT / EXAMPLE_PROMPT_DIR / name).read_text(encoding="utf-8")
+        fixtures[f"{REF_ROOT}/{EXAMPLE_PROMPT_DIR}/{name}"] = text
+        fixtures[f"{HEAD_ROOT}/{EXAMPLE_PROMPT_DIR}/{name}"] = text
+        fixtures[f"{HEAD_ROOT}/{RUNNER_PROMPT_DIR}/{name}"] = text
+    fixtures[f"{HEAD_ROOT}/{RUNNER_WORKFLOW}"] = _runner_workflow(LATEST_RELEASE)
+    return fixtures
+
+
 def run_health_tail(
-    workflow: Path, tmp_path: Path, *, gh_stdout: str, gh_exit: int = 0
+    workflow: Path,
+    tmp_path: Path,
+    *,
+    gh_stdout: str,
+    gh_exit: int = 0,
+    prompts: dict[str, object] | None = None,
+    consumers: tuple[str, ...] = (BASE_REPO,),
 ) -> tuple[int, str]:
     """Run the health step's consumer loop with a stubbed ``gh``.
 
     Only ``gh api graphql`` (the verdict fetch) returns ``gh_stdout`` with
-    ``gh_exit``; every other ``gh`` call answers an empty JSON list so the
-    run-conclusion and Dependabot checks see nothing to flag.
+    ``gh_exit``. ``gh api repos/<owner>/<repo>/contents/<path>`` answers from
+    the prompt fixtures: by default every prompt is this repo's own
+    examples/prompts, so the reviewer prompt check finds nothing to flag.
+    ``prompts`` overrides fixtures by key (``<root>/<path>``): a string
+    replaces the content, ``None`` makes it a 404, ``FETCH_FAILS`` makes the
+    fetch fail otherwise. Every other ``gh`` call answers an empty JSON list
+    so the run-conclusion and Dependabot checks see nothing to flag.
 
-    Returns (exit code, combined stdout+stderr).
+    Returns (exit code, combined stdout+stderr). The job summary the step
+    writes is left at ``tmp_path / "summary.md"``.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    fixture_dir = tmp_path / "fixtures"
+    fixtures: dict[str, object] = {**_default_prompt_fixtures(), **(prompts or {})}
+    for key, value in fixtures.items():
+        target = fixture_dir / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if value is FETCH_FAILS:
+            target.with_name(target.name + ".fail").touch()
+        elif isinstance(value, str):
+            target.write_text(value, encoding="utf-8")
+    release_tags = tmp_path / "release_tags"
+    release_tags.write_text(
+        "\n".join(
+            json.dumps({"name": tag, "sha": f"{n:040d}"})
+            for n, tag in enumerate(["v1.13.0", "v1.14.0", "v1.15.0", LATEST_RELEASE], 1)
+        ),
+        encoding="utf-8",
+    )
     payload_file = tmp_path / "gh_stdout"
     payload_file.write_text(gh_stdout, encoding="utf-8")
     gh_stub = bin_dir / "gh"
     gh_stub.write_text(
         "\n".join(
             [
-                "#!/bin/sh",
+                "#!/bin/bash",
                 'if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then',
                 f'  cat "{payload_file}"',
                 f"  exit {gh_exit}",
+                "fi",
+                'if [ "$1" = "api" ] && [[ "$2" == repos/*/*/contents/* ]]; then',
+                '  rel="${2#repos/*/*/contents/}"',
+                f'  root="{fixture_dir}/{HEAD_ROOT}"',
+                f'  [[ "$rel" == *"?ref="* ]] && root="{fixture_dir}/{REF_ROOT}"',
+                '  f="${root}/${rel%%\\?*}"',
+                '  if [ -e "${f}.fail" ]; then echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; fi',
+                '  if [ -f "$f" ]; then printf \'{"content":"%s"}\\n\' "$(base64 -w0 < "$f")"; exit 0; fi',
+                '  echo "gh: Not Found (HTTP 404)" >&2',
+                "  exit 1",
                 "fi",
                 "echo '[]'",
                 "exit 0",
@@ -152,18 +228,29 @@ def run_health_tail(
             # The step declares no `shell:`, so Actions runs it as
             # `bash -e {0}`; `set -u` is the step's own first line.
             "set -eu",
-            f"CONSUMERS=({BASE_REPO})",
+            f"CONSUMERS=({' '.join(consumers)})",
             f"BASE_REPO={BASE_REPO}",
             "REQUIRED_SECRETS=()",
             "STALE_BEFORE=2026-06-09T00:00:00Z",
             f"CONSECUTIVE_ERROR_THRESHOLD={STREAK_THRESHOLD}",
             "RECENT_PR_COUNT=10",
             "TIMELINE_ITEM_COUNT=10",
+            f"PROMPT_GUIDANCE={REPO_ROOT / '.github' / 'scripts' / 'prompt_guidance.py'}",
+            "CONSUMER_PROMPT_DIR=.github/prompts",
+            f"BASE_PROMPT_DIR={EXAMPLE_PROMPT_DIR}",
+            "RUNNER_REPO=ignite-corp/ai-dev-pr-review-runner",
+            f"RUNNER_PROMPT_DIR={RUNNER_PROMPT_DIR}",
+            f"RUNNER_WORKFLOW={RUNNER_WORKFLOW}",
+            f"PIN_FRESHNESS={REPO_ROOT / '.github' / 'scripts' / 'pin_freshness.py'}",
+            f"RELEASE_TAGS={release_tags}",
             _health_step_tail(workflow),
         ]
     )
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["GITHUB_REPOSITORY"] = f"ignite-corp/{BASE_REPO}"
+    env["GITHUB_SHA"] = RUN_SHA
+    env["GITHUB_STEP_SUMMARY"] = str(tmp_path / "summary.md")
     result = subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
@@ -255,3 +342,321 @@ class TestCorpHealthOutputs:
         assert "Consumer 1/1: 1 flag(s)" in log
         assert "::error::One or more consumers flagged" in log
         assert "recovery not confirmed" not in log
+
+
+def _healthy_verdicts() -> str:
+    return json.dumps(_graphql_payload([_verdict_body(None)] * 3))
+
+
+_BASE_SYSTEM = f"{HEAD_ROOT}/{EXAMPLE_PROMPT_DIR}/code-review-system.md"
+_CONTROL_SYSTEM = f"{REF_ROOT}/{EXAMPLE_PROMPT_DIR}/code-review-system.md"
+_RUNNER_SYSTEM = f"{HEAD_ROOT}/{RUNNER_PROMPT_DIR}/code-review-system.md"
+_RUNNER_WF = f"{HEAD_ROOT}/{RUNNER_WORKFLOW}"
+# The AT-2801 drift: a pin section that knows one 404 label and not the rest.
+_PARTIAL_PINS = '# System\n\n- `error="repo-not-found"` -- suggestion\n'
+_NO_PIN_SECTION = "# System\n\nReview the diff.\n"
+_PARTIAL_IDS = "pin-section pin-comment-matches-false pin-absent-comment-matches pin-repo-not-visible"
+
+
+@requires_jq
+class TestPromptGuidanceCheck:
+    """Check 6, the runner default prompts and the runner pin (AT-2844).
+
+    The consumer under test is the base repo, whose prompts sit in
+    examples/prompts -- the same path the positive control reads, at the
+    run's own commit, from a separate fixture root.
+    """
+
+    def test_complete_prompts_are_ok_and_summarised_by_index(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH, tmp_path, gh_stdout=_healthy_verdicts()
+        )
+        assert code == 0
+        assert "prompt guidance positive control: complete" in log
+        assert "Consumer 1/1: OK" in log
+        assert "runner pin freshness:" in log
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        # A consumer row names its entry by index only (public summary).
+        assert "| 1/1 | complete |" in summary.splitlines()
+        assert "| ignite-corp/ai-dev-pr-review-runner `default-prompts/` | complete |" in summary
+        assert f"| ignite-corp/ai-dev-pr-review-runner `{RUNNER_WORKFLOW}` pin | pin fresh |" in summary
+
+    def test_a_prompt_with_no_pin_section_is_complete(self, tmp_path: Path) -> None:
+        """MIGRATION.md: a prompt with no SHA Pins section owes nothing."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_BASE_SYSTEM: _NO_PIN_SECTION},
+        )
+        assert code == 0
+        assert "Consumer 1/1: OK" in log
+
+    def test_missing_items_flag_and_fail(self, tmp_path: Path) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_BASE_SYSTEM: _PARTIAL_PINS},
+        )
+        assert code == 1
+        assert f"[FLAG] entry 1/1: reviewer prompt lacks: {_PARTIAL_IDS}" in log
+        assert "Consumer 1/1: 1 flag(s)" in log
+        assert "::error::One or more consumers flagged" in log
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"| 1/1 | FLAG: lacks {_PARTIAL_IDS} |" in summary
+
+    def test_absent_prompt_flags_and_fails(self, tmp_path: Path) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_BASE_SYSTEM: None},
+        )
+        assert code == 1
+        assert "[FLAG] entry 1/1: no reviewer prompt at examples/prompts/code-review-system.md" in log
+
+    def test_an_absent_checklist_names_the_checklist(self, tmp_path: Path) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={f"{HEAD_ROOT}/{EXAMPLE_PROMPT_DIR}/code-review-checklist.md": None},
+        )
+        assert code == 1
+        assert "[FLAG] entry 1/1: no reviewer prompt at examples/prompts/code-review-checklist.md" in log
+
+    def test_an_unreadable_control_skips_check_6_and_runs_the_rest(
+        self, tmp_path: Path
+    ) -> None:
+        """A transient fetch error proves nothing about the matcher path, so
+        it must not take the pin, secret and streak checks down with it."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_CONTROL_SYSTEM: FETCH_FAILS},
+        )
+        assert code == 0
+        assert "::notice::prompt guidance positive control could not be read" in log
+        assert "Consumer 1/1: OK" in log
+        assert "prompt guidance: skipped (positive control not read)" in log
+        assert "::error::" not in log
+
+    def test_fetch_failure_is_not_evaluated_not_ok(self, tmp_path: Path) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_BASE_SYSTEM: FETCH_FAILS},
+        )
+        assert code == 0
+        assert "[WARN] entry 1/1: could not read the reviewer prompt" in log
+        assert "Consumer 1/1: not evaluated" in log
+        assert "Consumer 1/1: OK" not in log
+        assert NOT_EVALUATED_NOTICE in log
+
+    @pytest.mark.parametrize(
+        "control",
+        [_NO_PIN_SECTION, _PARTIAL_PINS, None],
+        ids=["no-pin-section", "partial", "absent"],
+    )
+    def test_a_failed_positive_control_fails_before_any_consumer(
+        self, tmp_path: Path, control: object
+    ) -> None:
+        """A zero needs a positive control: an empty fetch must not read
+        clean, and the all-or-none group must not let the control pass by
+        carrying none of it."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_CONTROL_SYSTEM: control},
+        )
+        assert code == 1
+        assert "::error::prompt guidance positive control failed" in log
+        assert "Consumer 1/1" not in log
+
+    def test_runner_default_prompts_missing_items_flag_and_fail(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_RUNNER_SYSTEM: _PARTIAL_PINS},
+        )
+        assert code == 1
+        assert "Consumer 1/1: OK" in log
+        assert f"[FLAG] runner default prompts lack: {_PARTIAL_IDS}" in log
+        # The runner is not a consumer, and the error says which flagged.
+        assert "::error::Runner default prompts or review pin flagged" in log
+        assert "::error::One or more consumers flagged" not in log
+
+    def test_runner_fetch_failure_is_a_notice_not_a_consumer_error(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_RUNNER_SYSTEM: FETCH_FAILS},
+        )
+        assert code == 0
+        assert "[WARN] could not read the runner default prompts" in log
+        assert "::notice::runner default prompts or review pin could not be fetched" in log
+        assert "recovery not confirmed" not in log
+
+    def test_a_stale_runner_pin_flags_and_fails(self, tmp_path: Path) -> None:
+        """The questions reach a runner target only through the runner's pin."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_RUNNER_WF: _runner_workflow("v1.13.0")},
+        )
+        assert code == 1
+        assert "Consumer 1/1: OK" in log
+        assert "[FLAG] runner .github/workflows/review.yml:" in log
+        assert "::error::Runner default prompts or review pin flagged" in log
+
+    def test_an_unreadable_runner_workflow_is_a_notice(self, tmp_path: Path) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_RUNNER_WF: FETCH_FAILS},
+        )
+        assert code == 0
+        assert "[WARN] could not read the runner's .github/workflows/review.yml" in log
+        assert "::notice::runner default prompts or review pin could not be fetched" in log
+
+    def test_an_absent_runner_workflow_flags(self, tmp_path: Path) -> None:
+        """Check 2 flags a consumer with no review workflow; so does this."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_RUNNER_WF: None},
+        )
+        assert code == 1
+        assert "[FLAG] runner has no .github/workflows/review.yml" in log
+
+    @staticmethod
+    def _consumer_workflow(system: str, checklist: str) -> str:
+        return (
+            _runner_workflow(LATEST_RELEASE)
+            + f"    with:\n      code-review-system-prompt-path: {system}\n"
+            + f"      code-review-checklist-path: {checklist}\n"
+        )
+
+    def test_a_custom_prompt_path_is_read_where_the_consumer_points(
+        self, tmp_path: Path
+    ) -> None:
+        text = (REPO_ROOT / EXAMPLE_PROMPT_DIR / "code-review-system.md").read_text(
+            encoding="utf-8"
+        )
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            consumers=("other-consumer",),
+            prompts={
+                f"{HEAD_ROOT}/.github/workflows/review-ai.yml": self._consumer_workflow(
+                    "docs/review/system.md", "docs/review/checklist.md"
+                ),
+                f"{HEAD_ROOT}/docs/review/system.md": text,
+                f"{HEAD_ROOT}/docs/review/checklist.md": "# Checklist\n",
+            },
+        )
+        assert code == 0, log
+        assert "prompt guidance: complete" in log
+        assert "Consumer 1/1: OK" in log
+
+    @pytest.mark.parametrize(
+        "declared",
+        ["${{ vars.PROMPT }}", "../../orgs/x/actions/secrets", "/etc/passwd", "a?ref=b"],
+        ids=["expression", "dot-dot", "absolute", "query"],
+    )
+    def test_a_path_that_is_not_a_plain_repo_path_is_not_fetched(
+        self, tmp_path: Path, declared: str
+    ) -> None:
+        """The path comes from a consumer's file and goes into a URL the
+        fleet App requests, so only a plain relative path is used. The
+        condition never clears on its own, so it has its own notice rather
+        than the transient 'recovery not confirmed' one."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            consumers=("other-consumer",),
+            prompts={
+                f"{HEAD_ROOT}/.github/workflows/review-ai.yml": self._consumer_workflow(
+                    declared, ".github/prompts/code-review-checklist.md"
+                ),
+            },
+        )
+        assert code == 0, log
+        assert "prompt guidance: not evaluated (declared prompt path is not a plain repository path)" in log
+        assert "::notice::1 consumer(s) declare a prompt path this check does not read" in log
+        assert "recovery not confirmed" not in log
+        assert declared not in log
+
+    @pytest.mark.parametrize(
+        "directory",
+        ["docs/secret-product", ".github/prompts/secret-product"],
+        ids=["elsewhere", "under-the-default-directory"],
+    )
+    def test_an_absent_declared_path_is_not_printed(
+        self, tmp_path: Path, directory: str
+    ) -> None:
+        """A declared path can name a product; the public log keys an entry
+        by index, so only a default path -- the exact default file, not
+        anything under its directory -- is printed."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            consumers=("other-consumer",),
+            prompts={
+                f"{HEAD_ROOT}/.github/workflows/review-ai.yml": self._consumer_workflow(
+                    f"{directory}/system.md", f"{directory}/checklist.md"
+                ),
+            },
+        )
+        assert code == 1
+        assert "[FLAG] entry 1/1: no reviewer prompt at its declared prompt path" in log
+        assert "secret-product" not in log
+        assert "secret-product" not in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+    def test_an_empty_prompt_is_not_read_as_complete(self, tmp_path: Path) -> None:
+        """An empty pair owes no all-or-none group, so reading it as a
+        verdict would be a false clean; prepare fails on it too."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_BASE_SYSTEM: ""},
+        )
+        assert code == 0
+        assert "[WARN] entry 1/1: could not read the reviewer prompt" in log
+        assert "Consumer 1/1: not evaluated" in log
+
+
+def test_every_expression_opener_in_the_workflow_is_closed() -> None:
+    """GitHub parses ``${{`` anywhere in the file, run scripts and shell
+    quoting included, and an unclosed one fails the whole workflow at load
+    -- every job, not only the step. The harness above runs the step's shell
+    directly and cannot see that, so this reads the raw text (#229 round 3:
+    a shell pattern matching a literal expression opener did it). The whole
+    file is read as one string, so an expression wrapped across lines counts
+    as closed."""
+    text = CONSUMER_HEALTH.read_text(encoding="utf-8")
+    index = text.find("${{")
+    while index != -1:
+        close = text.find("}}", index + 3)
+        line = text.count("\n", 0, index) + 1
+        assert close != -1, f"consumer-health.yml:{line}: '${{{{' never closed"
+        index = text.find("${{", close + 2)

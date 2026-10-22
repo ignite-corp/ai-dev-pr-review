@@ -502,6 +502,8 @@ The per-repo system prompt and checklist live in the consumer repo, NOT here. Th
    ```
 4. Commit the prompts to the consumer's BASE branch. The `prepare` workflow always reads from the base branch, never the PR head, to prevent prompt injection — so changes take effect on the next PR after they merge.
 
+**Required guidance (AT-2844).** A consumer's prompts owe one thing, the pin items listed in `.github/scripts/prompt_guidance.py`: the `## GitHub Actions SHA Pins` heading and its labels. A prompt that carries neither the heading nor any of the labels owes none of them; one that carries any of them owes all of them, the labels inside the heading's section when the heading is there. The congruence questions are not copied into consumer prompts: they live in the reviewers' own instructions in this repository, which travel with the pin, so a consumer gets them by keeping its pin fresh. `consumer-health.yml` reads each tracked consumer's pair, the runner's `default-prompts/`, and the runner's review pin daily, and flags a missing item or a stale pin; see [MIGRATION.md](MIGRATION.md#congruence-questions-at-2844).
+
 ### system prompt vs checklist — how to author each
 
 The two files play different roles in the concatenated `context.md`:

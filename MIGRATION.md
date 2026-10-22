@@ -51,6 +51,12 @@ No consumer action is needed. A consumer reviewed by the runner that wants its o
 
 This change lowers the severity the prompt prescribes for a finding class, which the [version policy](README.md#tag-pinning) places in a MINOR (`v1.x.0`): it is consumer-visible behaviour, so **not** a patch, and it only ever relaxes, so it is not one of the breaking changes that would make it a MAJOR. Per the wrapper lockstep in that same section, the pilot wrapper cuts a matching MINOR. Release notes for such a tag must say which prompt rules changed and name this section, so a consumer reviewing a Dependabot pin bump can see that the bump alone is not the whole upgrade.
 
+### Congruence questions (AT-2844)
+
+**No prompt change.** The three congruence questions live in the reviewers' own instructions in this repository (the Claude prompt, `review_prompt.md`, `review_gemini.py`), not in `examples/prompts/`, so they reach a consumer with the pin bump alone and nothing is to be copied into `.github/prompts/`. A consumer whose pin is behind the release that ships them is not asked them; `consumer-health.yml` reads that as pin freshness, with its usual one-MINOR tolerance.
+
+The same daily check reads the consumer's prompts for one thing: a `## GitHub Actions SHA Pins` section that carries some of the pin items listed in `.github/scripts/prompt_guidance.py` but not all of them flags. Those items are the section heading and four labels -- the AT-2801 entry above names only the two 404 labels, so re-copy the whole section from [`examples/prompts/code-review-system.md`](examples/prompts/code-review-system.md), not just its two bullets. A prompt that carries neither the heading nor any of the labels owes none of them; one that carries any of them owes all of them, the labels inside the heading's section when the heading is there.
+
 ---
 
 ## Consumer: ai-dev-cab
