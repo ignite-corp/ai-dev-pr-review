@@ -328,13 +328,17 @@ Where `vars.*` resolve (caller repo and its org, never the base repo) is under
 `code-review-system-prompt-path` / `code-review-checklist-path` (default
 `.github/prompts/code-review-system.md` / `.github/prompts/code-review-checklist.md`
 in the consumer repo) from the base branch, falling back to the PR head copy
-with a warning when the base lacks it. The orchestrator's own defaults are the
+with a warning when the base lacks it -- on a same-repository run only. A
+cross-repository run never reads the PR head (AT-3032); there the fallback is
+the caller's `default_prompts_path`. The orchestrator's own defaults are the
 same two paths and it forwards whatever the caller passes straight through, so
 a consumer that never sets these inputs still needs the files at the default
-paths, not just a consumer that customizes them. When a file exists in
-NEITHER the base branch nor the PR head, the step has nothing to `cat` and
-fails outright — no review runs, and the failure is a plain missing-file error
-rather than one that names the setting.
+paths, not just a consumer that customizes them. When a file exists on NONE
+of the sources the run reads -- the base branch and the PR head on a
+same-repository run, the base branch and the caller default on a
+cross-repository run -- the step fails outright with `Missing review prompt`
+(or `Missing default review prompt` when the caller default lacks it), and no
+review runs.
 
 Onboarding step, per repo, before the first review runs: copy
 `examples/prompts/code-review-system.md` and

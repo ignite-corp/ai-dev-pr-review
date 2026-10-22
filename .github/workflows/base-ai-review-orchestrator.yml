@@ -49,7 +49,7 @@ on:
       # default of its own: the caller that reviews other repositories owns
       # what they are reviewed against.
       default_prompts_path:
-        description: "Directory in the caller repository holding default code-review-system.md / code-review-checklist.md, used only when the target has neither on its base branch nor its PR head, and only when target_repo names another repository (ignored on a same-repository run, whose commit the PR controls). Empty means no default (AT-2520)"
+        description: "Directory in the caller repository holding default code-review-system.md / code-review-checklist.md, used only when the target's base branch lacks it, and only when target_repo names another repository (ignored on a same-repository run, whose commit the PR controls). A cross-repository run never reads prompts from the PR head (AT-3032). Empty means no default (AT-2520)"
         required: false
         type: string
         default: ""

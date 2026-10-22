@@ -53,6 +53,13 @@ env:
         reason: >-
           Open drift, AT-2520; same as 'Fetch PR head (when pr_number
           provided manually)'.
+      CROSS_REPO:
+        reason: >-
+          By design, AT-3032. Base skips the PR-head prompt fallback on a
+          cross-repository run, which runs under the caller's secrets; the
+          wrapper is called by the reviewed repository itself, so every
+          wrapper run is a same-repository run and keeps the onboarding
+          fallback unconditionally.
     Append prior review context:
       BOT_LOGIN:
         reason: >-

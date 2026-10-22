@@ -30,13 +30,22 @@ A consumer whose prompt carries no `## GitHub Actions SHA Pins` section at all n
 
 ### Prompt files must be non-empty regular files (AT-2520)
 
-**Behaviour change, no consumer action unless a prompt is broken.** `prepare` now reads `code-review-system-prompt-path` and `code-review-checklist-path` from git objects, on the base branch and on the PR head alike, and accepts only a non-empty regular file (git mode `100644` / `100755`):
+**Behaviour change, no consumer action unless a prompt is broken.** `prepare` now reads `code-review-system-prompt-path` and `code-review-checklist-path` from git objects, on every source the run reads, and accepts only a non-empty regular file (git mode `100644` / `100755`):
 
 - an **empty or whitespace-only** prompt used to produce a review with an empty prompt section; it now fails `prepare` with `Empty review prompt`;
 - a **symlink** at the prompt path used to be read through (on the base branch, the link target's *path* became the prompt; on the PR head, the linked file's contents did); it now fails `prepare` with `Unreadable review prompt` (git mode `120000`);
 - a **directory** at the prompt path used to put a tree listing into the prompt; it now fails `prepare` the same way (git mode `040000`).
 
-A missing prompt behaves as before: the PR head copy is used with a warning when only the base lacks it, and the step fails when neither side has it. The local driver (`review_pr_local.py`) applies the same rule. To check a consumer before bumping the pin, run `git ls-tree origin/<base> -- .github/prompts/` and confirm both files are listed as `100644 blob` and are not empty.
+This rule does not change what happens to a missing prompt; where a missing prompt is read from is covered by the next entry (AT-3032). The local driver (`review_pr_local.py`) applies the same rule. To check a consumer before bumping the pin, run `git ls-tree origin/<base> -- .github/prompts/` and confirm both files are listed as `100644 blob` and are not empty.
+
+### Cross-repository runs never read prompts from the PR head (AT-3032)
+
+**Behaviour change for cross-repository targets only.** A cross-repository run (`target_repo` names another repository, as the LENS runner does) runs under the caller's secrets, so a PR-head copy of a prompt would let the PR author write the reviewer prompt. On such a run the order is now the base branch, then the caller's `default_prompts_path`; the PR head is never read.
+
+- A cross-repository target whose prompts exist **only on its PR head** (a first-time onboarding PR) now fails `prepare` with `Missing review prompt`, unless the caller passes `default_prompts_path`. The LENS runner does, so its targets are reviewed against the runner's `default-prompts/` until the target's own prompts reach its base branch.
+- Same-repository runs are unchanged: a prompt missing from the base branch is still taken from the PR head with an `Onboarding prompt fallback` warning, and the step fails when neither side has it. The local driver (`review_pr_local.py`) keeps that same-repository order.
+
+No consumer action is needed. A consumer reviewed by the runner that wants its own prompts used merges them to its base branch.
 
 ### Finding the release that changed a rule
 

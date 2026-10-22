@@ -5,9 +5,11 @@ as the shell script it is, against real local git repositories, and the
 context.md it writes is read back.
 
 The order is: the target's base branch (a PR cannot rewrite its own review
-instructions), then the PR head (first-time onboarding, before the files reach
-the base), then -- only when the caller passed `default_prompts_path` -- the
-caller's own copy under that directory. Base ships no default of its own:
+instructions), then -- on a same-repository run only -- the PR head (first-time
+onboarding, before the files reach the base), then -- only on a
+cross-repository run whose caller passed `default_prompts_path` -- the caller's
+own copy under that directory. A cross-repository run never reads the PR head
+(AT-3032). Base ships no default of its own:
 without the input a target with no prompts fails prepare, as it always has.
 
 Only ABSENCE falls through to the default. A prompt that is present but empty,
@@ -110,8 +112,13 @@ DEFAULT_EXPR = (
 
 
 def _run(
-    work: Path, head_sha: str, default_prompts_path: str = "", *, cross: bool = True
+    work: Path, head_sha: str, default_prompts_path: str = "", *, cross: bool
 ) -> subprocess.CompletedProcess[str]:
+    """Run the step; `cross` has no default, so no test reads the head by accident.
+
+    A cross-repository run never reads the PR head (AT-3032), so a head test
+    left on a cross default passes without exercising the head at all.
+    """
     step = _step("Extract diff and context")
     context = {
         "steps.target_token.outputs.token || github.token": "gh-token",
@@ -129,6 +136,7 @@ def _run(
         "inputs.code-review-checklist-path": CHECKLIST,
         "inputs.default_prompts_path": default_prompts_path,
         DEFAULT_EXPR: default_prompts_path if cross else "",
+        "steps.target.outputs.cross": "true" if cross else "false",
     }
     script = _render(step["run"], context)
     env = dict(_GIT_ENV)
@@ -166,7 +174,7 @@ def _sources(stdout: str) -> list[str]:
 class TestTargetWithoutPromptsAndNoDefault:
     def test_fails_as_before_when_the_input_is_unset(self, tmp_path: Path) -> None:
         work, head = _make_repo(tmp_path, base_files={}, head_files={})
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode != 0
         assert "::error" in result.stdout and SYSTEM in result.stdout
         assert "default_prompts_path" in result.stdout
@@ -183,7 +191,7 @@ class TestTargetWithoutPromptsAndNoDefault:
         (pinned / "code-review-checklist.md").write_text(
             "BASE DEFAULT\n", encoding="utf-8"
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode != 0
         assert "BASE DEFAULT" not in _context(work)
 
@@ -193,7 +201,7 @@ class TestCallerDefault:
         work, head = _make_repo(
             tmp_path, base_files={}, head_files={}, caller_files=CALLER_FILES
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "CALLER SYSTEM\n\n\n---\n\nCALLER CHECKLIST\n" in _context(work)
 
@@ -201,7 +209,7 @@ class TestCallerDefault:
         work, head = _make_repo(
             tmp_path, base_files={}, head_files={}, caller_files=CALLER_FILES
         )
-        result = _run(work, head, f"{DEFAULTS_DIR}/")
+        result = _run(work, head, f"{DEFAULTS_DIR}/", cross=True)
         assert result.returncode == 0, result.stdout + result.stderr
         notices = _sources(result.stdout)
         assert len(notices) == 2
@@ -223,7 +231,7 @@ class TestCallerDefault:
             head_files={},
             caller_files=CALLER_FILES,
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode == 0, result.stdout + result.stderr
         context_md = _context(work)
         assert "TARGET SYSTEM\n\n\n---\n\nCALLER CHECKLIST\n" in context_md
@@ -240,7 +248,7 @@ class TestCallerDefault:
             head_files={},
             caller_files=CALLER_FILES,
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "CALLER" not in _context(work)
 
@@ -251,9 +259,16 @@ class TestCallerDefault:
             head_files={},
             caller_files={CALLER_SYSTEM: "CALLER SYSTEM\n"},
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode != 0
         assert "::error" in result.stdout and CALLER_CHECKLIST in result.stdout
+        # The cross-run ${searched} text: the head was never consulted.
+        assert (
+            "::error title=Missing default review prompt::"
+            f"{CHECKLIST} is not on the base branch 'main'"
+            " (a cross-repository run never reads the PR head),"
+            f" and the caller has no {CALLER_CHECKLIST}"
+        ) in result.stdout
 
     @pytest.mark.parametrize("content", ["", "\n  \n"])
     def test_empty_caller_copy_fails(self, tmp_path: Path, content: str) -> None:
@@ -263,7 +278,7 @@ class TestCallerDefault:
             head_files={},
             caller_files={CALLER_SYSTEM: content, CALLER_CHECKLIST: "C\n"},
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode != 0
         assert "::error title=Empty review prompt" in result.stdout
 
@@ -279,7 +294,7 @@ class TestCallerDefault:
             caller_files={CALLER_CHECKLIST: "C\n"},
             caller_links={CALLER_SYSTEM: secret},
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode != 0
         assert "::error" in result.stdout and "120000" in result.stdout
         context_md = _context(work)
@@ -330,12 +345,82 @@ class TestSameRepoRunIgnoresTheInput:
         assert "CALLER SYSTEM" in _context(work)
 
 
+HEAD_FILES = {SYSTEM: "HEAD SYSTEM\n", CHECKLIST: "HEAD CHECKLIST\n"}
+
+
+class TestCrossRepoRunNeverReadsTheHead:
+    """On a cross-repository run the PR head is not a prompt source (AT-3032).
+
+    The run holds the caller's secrets -- the LENS runner's -- and is
+    dispatched for every non-draft PR on an allowlisted target, so a head
+    copy would let the PR author write the reviewer prompt for a run under
+    someone else's credentials. The order there is base branch, then the
+    caller default; a same-repository run keeps the onboarding fallback.
+    """
+
+    def test_caller_default_wins_over_the_head(self, tmp_path: Path) -> None:
+        work, head = _make_repo(
+            tmp_path,
+            base_files={},
+            head_files=HEAD_FILES,
+            caller_files=CALLER_FILES,
+        )
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        context_md = _context(work)
+        assert "CALLER SYSTEM\n\n\n---\n\nCALLER CHECKLIST\n" in context_md
+        assert "HEAD" not in context_md
+        assert "Onboarding prompt fallback" not in result.stdout
+        notices = _sources(result.stdout)
+        assert len(notices) == 2
+        assert all("caller default" in n for n in notices)
+
+    def test_no_default_fails_without_reading_the_head(self, tmp_path: Path) -> None:
+        work, head = _make_repo(tmp_path, base_files={}, head_files=HEAD_FILES)
+        result = _run(work, head, cross=True)
+        assert result.returncode != 0
+        assert "HEAD" not in _context(work)
+        assert "Onboarding prompt fallback" not in result.stdout
+        assert "::error title=Missing review prompt" in result.stdout
+        assert "no default_prompts_path was given" in result.stdout
+        assert "ignored on a same-repository run" not in result.stdout
+        assert "never reads the PR head" in result.stdout
+
+    def test_broken_head_copy_is_not_even_inspected(self, tmp_path: Path) -> None:
+        # A symlink on the head used to fail the step; unread, it cannot.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("PLANTED-SECRET\n", encoding="utf-8")
+        work, head = _make_repo(
+            tmp_path,
+            base_files={},
+            head_files={CHECKLIST: "HEAD CHECKLIST\n"},
+            head_links={SYSTEM: secret},
+            caller_files=CALLER_FILES,
+        )
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "CALLER SYSTEM\n\n\n---\n\nCALLER CHECKLIST\n" in _context(work)
+
+    def test_base_branch_copy_still_wins(self, tmp_path: Path) -> None:
+        work, head = _make_repo(
+            tmp_path,
+            base_files={SYSTEM: "BASE SYSTEM\n", CHECKLIST: "BASE CHECKLIST\n"},
+            head_files=HEAD_FILES,
+            caller_files=CALLER_FILES,
+        )
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "BASE SYSTEM\n\n\n---\n\nBASE CHECKLIST\n" in _context(work)
+
+
 class TestEmptyPromptHint:
     def test_no_fallback_promise_without_a_default(self, tmp_path: Path) -> None:
         work, head = _make_repo(
             tmp_path, base_files={SYSTEM: "", CHECKLIST: "C\n"}, head_files={}
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert "::error title=Empty review prompt" in result.stdout
         assert "falls back" not in result.stdout
 
@@ -348,7 +433,7 @@ class TestEmptyPromptHint:
             head_files={},
             caller_files=CALLER_FILES,
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert "::error title=Empty review prompt" in result.stdout
         assert f"falls back to the caller default {DEFAULTS_DIR}" in result.stdout
 
@@ -363,7 +448,7 @@ class TestEmptyPromptHint:
             head_files={},
             caller_files={CALLER_SYSTEM: "", CALLER_CHECKLIST: "C\n"},
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert "::error title=Empty review prompt" in result.stdout
         assert "delete it" not in result.stdout
         assert "the caller default is the last source" in result.stdout
@@ -376,7 +461,7 @@ class TestTargetPromptsKeepPrecedence:
             base_files={SYSTEM: "BASE SYSTEM\n", CHECKLIST: "BASE CHECKLIST\n"},
             head_files={SYSTEM: "HEAD SYSTEM\n", CHECKLIST: "HEAD CHECKLIST\n"},
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode == 0, result.stderr
         context_md = _context(work)
         assert "BASE SYSTEM\n\n\n---\n\nBASE CHECKLIST\n" in context_md
@@ -390,7 +475,8 @@ class TestTargetPromptsKeepPrecedence:
             base_files={},
             head_files={SYSTEM: "HEAD SYSTEM\n", CHECKLIST: "HEAD CHECKLIST\n"},
         )
-        result = _run(work, head)
+        # Same-repository only: a cross run never reads the head (AT-3032).
+        result = _run(work, head, cross=False)
         assert result.returncode == 0, result.stderr
         assert "HEAD SYSTEM\n\n\n---\n\nHEAD CHECKLIST\n" in _context(work)
         assert result.stdout.count("Onboarding prompt fallback") == 2
@@ -407,7 +493,7 @@ class TestPresentButBrokenFailsClosed:
             head_files={},
             caller_files=CALLER_FILES,
         )
-        result = _run(work, head, DEFAULTS_DIR)
+        result = _run(work, head, DEFAULTS_DIR, cross=True)
         assert result.returncode != 0
         assert "::error" in result.stdout and SYSTEM in result.stdout
         assert "CALLER" not in _context(work)
@@ -416,7 +502,7 @@ class TestPresentButBrokenFailsClosed:
         work, head = _make_repo(
             tmp_path, base_files={}, head_files={SYSTEM: "S\n", CHECKLIST: ""}
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode != 0
         assert "::error" in result.stdout and CHECKLIST in result.stdout
 
@@ -428,7 +514,7 @@ class TestPresentButBrokenFailsClosed:
             base_files={f"{SYSTEM}/nested.md": "x\n", CHECKLIST: "C\n"},
             head_files={},
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode != 0
         assert "::error" in result.stdout and SYSTEM in result.stdout
 
@@ -457,7 +543,7 @@ class TestSymlinkedPromptNeverReadsOutsideTheTree:
             head_files={},
             base_links={SYSTEM: secret},
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode != 0
         assert "::error" in result.stdout and SYSTEM in result.stdout
         context_md = _context(work)
@@ -472,7 +558,7 @@ class TestSymlinkedPromptNeverReadsOutsideTheTree:
             head_files={CHECKLIST: "C\n"},
             head_links={SYSTEM: secret},
         )
-        result = _run(work, head)
+        result = _run(work, head, cross=False)
         assert result.returncode != 0
         assert "::error" in result.stdout and SYSTEM in result.stdout
         assert "PLANTED-SECRET" not in _context(work)
@@ -492,7 +578,7 @@ class TestSymlinkedPromptNeverReadsOutsideTheTree:
             head_files={},
             head_links={".github/prompts": outside},
         )
-        _run(work, head)
+        _run(work, head, cross=False)
         assert "PLANTED-SECRET" not in _context(work)
 
 
@@ -513,6 +599,12 @@ class TestWiring:
     def test_extract_step_receives_the_input_only_on_a_cross_run(self) -> None:
         env = _step("Extract diff and context")["env"]
         assert env["DEFAULT_PROMPTS_PATH"] == "${{ " + DEFAULT_EXPR + " }}"
+
+    def test_extract_step_knows_whether_the_run_is_cross_repo(self) -> None:
+        # The head fallback keys on this; TestCrossRepoRunNeverReadsTheHead
+        # renders the same expression.
+        env = _step("Extract diff and context")["env"]
+        assert env["CROSS_REPO"] == "${{ steps.target.outputs.cross }}"
 
     def test_same_repo_run_says_the_input_was_ignored(self) -> None:
         step = _step("Ignore default prompts on a same-repository run")
