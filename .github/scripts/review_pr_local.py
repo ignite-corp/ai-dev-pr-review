@@ -309,7 +309,6 @@ class Refs:
     pr_author: str
     pr_merged: str
     merge_commit_sha: str
-    pr_commits: str
     labels: str
     # GitHub's own counts for the PR, before lens-ignore -- what the
     # workflow's `Check PR size` step reads.
@@ -536,7 +535,6 @@ def resolve_refs(repo: str, pr_number: str) -> Refs:
         # On an open PR merge_commit_sha names GitHub's test-merge commit,
         # not anything that landed (AT-2201).
         merge_commit_sha=(payload.get("merge_commit_sha") or "") if merged else "",
-        pr_commits=str(payload.get("commits") or ""),
         labels=format_labels([label["name"] for label in payload.get("labels") or []]),
         additions=int(payload.get("additions") or 0),
         deletions=int(payload.get("deletions") or 0),
@@ -1008,7 +1006,6 @@ def extract_diff(work: Path, repo: str, pr_number: str, refs: Refs) -> None:
             "HEAD_SHA": refs.head_sha,
             "PR_MERGED": refs.pr_merged,
             "MERGE_COMMIT_SHA": refs.merge_commit_sha,
-            "PR_COMMITS": refs.pr_commits,
         },
         repo,
         pr_number,
