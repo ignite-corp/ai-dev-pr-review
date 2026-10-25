@@ -452,7 +452,10 @@ class TestPostCutoffSummary:
         # Extracted before subprocess.run is patched below: gate_function
         # runs the drill's own extract() through it.
         function_file = tmp_path / "cutoff_findings.sh"
-        function_file.write_text(gate_function("cutoff_findings"), encoding="utf-8")
+        function_file.write_text(
+            gate_function("finding_key") + "\n" + gate_function("cutoff_findings"),
+            encoding="utf-8",
+        )
         recorded: dict[str, Any] = {}
 
         def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
@@ -730,7 +733,9 @@ class TestFoldedFindingGate:
             [
                 "bash",
                 "-c",
-                gate_function("cutoff_findings")
+                gate_function("finding_key")
+                + "\n"
+                + gate_function("cutoff_findings")
                 + '\ncutoff_findings "2026-10-22T00:00:00Z"',
             ],
             input=json.dumps(comments),
@@ -1003,10 +1008,15 @@ class TestFoldedFindingGate:
         self, folded: tuple[str, str], monkeypatch: Any
     ) -> None:
         extracted = gate_function("cutoff_findings")
+        original_gate_function = gate_function
         # Fail only the items query, after marker discovery and reply matching.
         shim = 'jq() { if [[ " $* " == *" --arg i "* ]]; then return 17; fi; command jq "$@"; }'
         monkeypatch.setattr(
-            sys.modules[__name__], "gate_function", lambda name: extracted + "\n" + shim
+            sys.modules[__name__],
+            "gate_function",
+            lambda name: extracted + "\n" + shim
+            if name == "cutoff_findings"
+            else original_gate_function(name),
         )
         result = self.run_gate(
             folded[0], "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"

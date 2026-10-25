@@ -421,10 +421,16 @@ Deferred to TICKET-XXX: <out-of-scope reason>
 ```
 
 **Colliding folded locations**: if cutoff/fallback items share a location,
-quote each original rendered first line on its own, with no label or other
-prefix inside the quote. If first lines are identical, repeat the quote once
-per finding and explain each separately. Put the disposition on the following
-line. For example:
+quote each whole finding line on its own, with no label or other prefix inside
+the quote. A supported verdict rendering and folded rendering with the same
+severity, location and whole recoverable description line share one key, so
+either quotation can answer both surfaces. The source marker/time binding is
+still required. Repeat a quote once per matching item within a single folded
+source, even when reviewers differ; quoting one item cannot answer two rows.
+Custom or ambiguous raw renderer fields retain the original exact-line route;
+unique locations also retain the legacy rewritten-location route. This does
+not reconstruct arbitrary multiline descriptions. Explain each disposition
+separately on the following line. For example:
 
 ```text
 Dispositions for `inline-fallback-claude`:
@@ -887,6 +893,31 @@ thread_answers() {
   return 1
 }
 
+# One optional equivalence key for the supported verdict/folded renderings:
+# severity, location and the complete recoverable description line. Internal
+# whitespace and description suffixes are significant; trailing whitespace
+# follows the existing folded-quote contract. Discovery stays independent of
+# this strict decoder, so unsupported raw fields retain their legacy routes.
+# --jq exports this same definition for the folded reader, not a second copy.
+finding_key() {
+  # One decoder for both consumers; unsupported raw renderer fields retain
+  # the existing matching routes instead of disappearing from discovery.
+  # shellcheck disable=SC2016  # jq owns the captured field variables.
+  local program='def finding_key:
+    gsub("\r"; "")
+    | sub("^[ \\t]*(?:>[ \\t]*)+"; "")
+    | sub("^[ \\t]+"; "")
+    | sub("^(?:[-*+!?][ \\t]+){0,2}"; "")
+    | sub("[ \\t]+$"; "")
+    | ([capture("^\\*\\*(?<location>.+?:[0-9]+)\\*\\* -- \\S+ \\*\\*(?<severity>critical|major|minor|suggestion)\\*\\* \\([^()\\r\\n]*\\): (?<description>.+)$")] | .[0] // null) as $fold
+    | if $fold != null then [$fold.severity, $fold.location, $fold.description]
+      else ([capture("^\\*\\*(?<severity>critical|major|minor|suggestion)\\*\\*(?: \\x60(?<location>[^\\x60]+)\\x60)? -- (?<description>.+)$")] | .[0] // null) as $verdict
+      | if $verdict != null then [$verdict.severity, ($verdict.location // ""), $verdict.description]
+        else null end end;';
+  if [ "$1" = --jq ]; then printf '%s\n' "$program"; return 0; fi
+  jq -nc --arg line "$1" "$program"' $line | finding_key | select(. != null)'
+}
+
 # (c)'s mechanical half for kind (i). The aggregate lists each major as
 # `- + **major** `<path>[:<line>]` -- <description>` (the path is optional:
 # `file: null` is a legal payload and renders without the path part). An
@@ -894,7 +925,9 @@ thread_answers() {
 # resolved, since (b) already demanded zero unresolved — or when a later
 # comment from someone other than the workflow quotes it with `>`: the quote
 # must carry the item's whole rendered text from `**major**` to the end of
-# its description line, verbatim — one needle for every item, path or not.
+# its description line, verbatim, or a supported folded rendering with the
+# same finding_key. Both share one decoder; a pathless item has an empty
+# location in its key and no folded producer counterpart.
 # Nothing shorter is the item's own: a description prefix is shared by
 # near-identical findings and repeated by other findings' prose, and a
 # backticked `path:line` is a token reviewers routinely write inside OTHER
@@ -912,12 +945,15 @@ thread_answers() {
 # comments one per line. Extracted by name by the drill, like
 # headline_roster.
 major_dispositions() {
-  local body=$1 want=$2 threads=$3 quotes=$4 line key path lineno desc needle n=0 bad=0
+  local body=$1 want=$2 threads=$3 quotes=$4 line key path lineno desc needle n=0 bad=0 key_program qkeys item_key
   # shellcheck disable=SC2016  # the backticks are the aggregate's own
   local item_re='^- \+ \*\*major\*\* `([^`]+)` -- (.*)$'
   local nopath_re='^- \+ \*\*major\*\* -- (.+)$'
   local loc_re='^(.*):([0-9]+)$'
   local quote quote_re='^[[:space:]>+-]*(\*\*major\*\*.*)$'
+  key_program=$(finding_key --jq) || { echo "(c) ERROR: could not read the finding-key decoder"; return 1; }
+  qkeys=$(printf '%s\n' "$quotes" | jq -Rrc "$key_program"' finding_key | select(. != null)') \
+    || { echo "(c) ERROR: could not normalize the quoted finding lines"; return 1; }
   while IFS= read -r line; do
     [[ $line == '- + **major**'* ]] || continue
     n=$((n + 1))
@@ -933,8 +969,12 @@ major_dispositions() {
     # both shapes, so neither re-assembles the separators from captures and
     # the two cannot drift apart.
     needle=${line#- + }
+    item_key=$(finding_key "$line") \
+      || { echo "(c) ERROR: could not normalize the major item: $line"; return 1; }
     if [ -n "$path" ] && thread_answers "$threads" "$path" "$lineno" "$desc"; then
       echo "(c) major answered by a replied thread on $path: $line"
+    elif [ -n "$item_key" ] && printf '%s\n' "$qkeys" | grep -xF -- "$item_key" > /dev/null; then
+      echo "(c) major answered by a later quoted reply with the same finding key: $line"
     elif (
       while IFS= read -r quote; do
         [[ $quote =~ $quote_re ]] && [ "${BASH_REMATCH[1]}" = "$needle" ] && exit 0
@@ -1180,7 +1220,7 @@ review_workflow_known() {
 # answer its own earlier one. Extracted by name by the drill, like the
 # functions above.
 cutoff_findings() {
-  local since=$1 comments markers rc=0 id at marker items n_items missing rx
+  local since=$1 comments markers rc=0 id at marker items n_items missing rx key_program
   # jq's regex-escape for the two literals the reply is bound to below, the
   # marker and each item's location, and the producer's own signature: a
   # first line that is nothing but the marker's HTML comment. One
@@ -1189,6 +1229,8 @@ cutoff_findings() {
   rx='def rx: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\])"; "\\" + .c);
       def cutoff_marker: ((((.body // "") | gsub("\r"; "") | split("\n") | (.[0] // "")
         | [capture("^<!--\\s*(?<m>(?:round-cutoff|inline-fallback)-\\S+?)\\s*-->$") | .m]) | .[0]) // "");'
+  key_program=$(finding_key --jq) || { echo "(c) BLOCK: could not read the finding-key decoder"; return 1; }
+  rx="$key_program $rx"
   comments=$(cat) || { echo "(c) BLOCK: could not read the comments for the cutoff surface"; return 1; }
   markers=$(printf '%s' "$comments" | jq -r --arg s "$since" "$rx"'
      [ .[]
@@ -1215,7 +1257,8 @@ cutoff_findings() {
       rc=1; continue
     fi
     # Unique locations retain the measured rewritten-quote contract above.
-    # Colliding locations need exact item lines, not one quote for all of them.
+    # Colliding locations need exact item lines or equivalent normalized keys,
+    # with matching quote multiplicity within this source, never one for all.
     items=$(printf '%s' "$comments" | jq -r --arg t "$at" --arg i "$id" "$rx"'
        ([ .[] | select((.id | tostring) == $i) ] | first | (.body // "") | gsub("\r"; "") | split("\n")) as $lines
        # jq capture emits no value for a nonmatching line: map drops
@@ -1248,17 +1291,25 @@ cutoff_findings() {
             | (.body // "") | gsub("\r"; "") | split("\n")[]
             | select(startswith(">"))
           ]) as $quotes
-       | [ $findings[] | . as $finding
+       | ($quotes | map(finding_key) | map(select(. != null))) as $quote_keys
+       | ($findings | map(. + {key: (("- **" + .loc + "** -- " + .text) | finding_key)})) as $keyed
+       | [ $keyed[] | . as $finding
            | ([ $findings[] | select(.loc == $finding.loc) ] | length) as $same_location
            | (("**" + $finding.loc + "** -- " + $finding.text) | sub("\\s+$"; "")) as $rendered
-           | select(if $same_location > 1 then
+           | (if $same_location > 1 then
                ([ $quotes[] | sub("^>+\\s*"; "") | ltrimstr("- ") | sub("\\s+$"; "")
                   | select(. == $rendered) ] | length)
                < ([ $findings[] | select((("**" + .loc + "** -- " + .text) | sub("\\s+$"; "")) == $rendered) ] | length)
              else
                ($quotes | join("\n") | test("(?<![\\w./-])" + ($finding.loc | rx) + "(?![0-9])") | not)
-             end)
-           | .loc + (if $same_location > 1 then " (whole item line required: \($same_location) items share this location)" else "" end) ]
+             end) as $legacy_missing
+           | select($legacy_missing and
+               (if $finding.key != null and $finding.key[1] == $finding.loc then
+                  ([ $quote_keys[] | select(. == $finding.key) ] | length)
+                  < ([ $keyed[] | select(.key == $finding.key) ] | length)
+                else true end))
+           | .loc + (if $same_location > 1 then " (whole item line required: \($same_location) items share this location)" else "" end)
+             + " ; quote: - " + $rendered ]
        | "\($findings | length)\t\(join(", "))" end') \
       || { echo "(c) BLOCK: could not read the items of $marker (comment $id)"; rc=1; continue; }
     IFS=$'\t' read -r n_items missing <<<"$items"

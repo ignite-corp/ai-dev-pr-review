@@ -98,7 +98,7 @@
 #      empty first comment: the row keeps an empty line field rather than
 #      aborting the whole read as an unreadable thread list (#194 round 12)
 #
-# All twelve functions are extracted from SKILL.md by name, not copied here:
+# All thirteen core functions are extracted from SKILL.md by name, not copied here:
 # the gate block is pasted whole into shells on any machine, so it has to
 # carry its own copy, and a second copy in the drill would keep passing after
 # the pasted one drifted. Sections 6 to 8 are the controls: a copy of the
@@ -135,6 +135,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 SKILL="$HERE/../../plugins/pr-response-cycle/skills/pr-response-cycle/SKILL.md"
 FUNC_NAME=headline_roster
 MAJORS_FN=major_dispositions
+FINDING_FN=finding_key
 THREAD_FN=thread_answers
 WINDOW_FN=window_bounds
 AGG_FN=select_aggregate
@@ -334,20 +335,22 @@ H_ZERO='**Result: [OK] Approved | 0/0 reviewers** -- 0/0 LLM responses -- no iss
 H_REVIEWERS_SHORT='**Result: [!] Approved | not every reviewer responded (2/3 reviewers)** -- 3/3 LLM responses -- no issues'
 H_LLM_SHORT='**Result: [OK] Approved | 3/3 reviewers** -- 2/3 LLM responses -- no issues'
 
-echo "1. all twelve functions are in SKILL.md, once each, and load"
+echo "1. all thirteen core functions are in SKILL.md, once each, and load"
 FN="$D/fn.sh"
 extract_all() { # $1 file
-    extract "$1" "$FUNC_NAME"; extract "$1" "$MAJORS_FN"; extract "$1" "$THREAD_FN"; extract "$1" "$WINDOW_FN"; extract "$1" "$AGG_FN"; extract "$1" "$HEADLINE_FN"; extract "$1" "$COUNT_FN"; extract "$1" "$CUTOFF_FN"; extract "$1" "$SINCE_FN"; extract "$1" "$CONV_FN"; extract "$1" "$DISP_FN"; extract "$1" "$KNOWN_FN"
+    extract "$1" "$FINDING_FN"; extract "$1" "$FUNC_NAME"; extract "$1" "$MAJORS_FN"; extract "$1" "$THREAD_FN"; extract "$1" "$WINDOW_FN"; extract "$1" "$AGG_FN"; extract "$1" "$HEADLINE_FN"; extract "$1" "$COUNT_FN"; extract "$1" "$CUTOFF_FN"; extract "$1" "$SINCE_FN"; extract "$1" "$CONV_FN"; extract "$1" "$DISP_FN"; extract "$1" "$KNOWN_FN"
 }
 extract_all "$SKILL" > "$FN"
-for f in "$FUNC_NAME" "$MAJORS_FN" "$THREAD_FN" "$WINDOW_FN" "$AGG_FN" "$HEADLINE_FN" "$COUNT_FN" "$CUTOFF_FN" "$SINCE_FN" "$CONV_FN" "$DISP_FN" "$KNOWN_FN"; do
+for f in "$FINDING_FN" "$FUNC_NAME" "$MAJORS_FN" "$THREAD_FN" "$WINDOW_FN" "$AGG_FN" "$HEADLINE_FN" "$COUNT_FN" "$CUTOFF_FN" "$SINCE_FN" "$CONV_FN" "$DISP_FN" "$KNOWN_FN"; do
     chk "SKILL.md defines $f exactly once" "$(grep -c "^$f() {\$" "$SKILL")" 1
 done
 chk "the extraction is non-empty" "$([ -s "$FN" ] && echo yes || echo no)" yes
-chk "the extraction holds twelve closing braces, one per function" "$(grep -c '^}$' "$FN")" 12
+chk "the extraction holds thirteen closing braces, one per function" "$(grep -c '^}$' "$FN")" 13
 # The truncation guard, one assertion per function: each must end at its
 # own `return` or tally line followed by the brace -- the shape a truncation
 # cannot have. Nothing else here can see one (see extract above).
+chk "the key function's last two lines are its jq call and its brace" \
+    "$(extract "$SKILL" "$FINDING_FN" | tail -n 2 | tr '\n' '|' | cut -c1-8)" '  jq -nc'
 chk "the thread function's last two lines are its return and its brace" \
     "$(extract "$SKILL" "$THREAD_FN" | tail -n 2 | tr '\n' '|')" "  return 1|}|"
 chk "the window function's last two lines are its printf and its brace" \
@@ -380,6 +383,8 @@ chk "the name function's last two lines are its did-not-run echo and its brace" 
 chk "sourcing it defines the roster function" "$(. "$FN"; type -t "$FUNC_NAME")" function
 # shellcheck disable=SC1090
 chk "sourcing it defines the majors function" "$(. "$FN"; type -t "$MAJORS_FN")" function
+# shellcheck disable=SC1090
+chk "sourcing it defines the finding key function" "$(. "$FN"; type -t "$FINDING_FN")" function
 # shellcheck disable=SC1090
 chk "sourcing it defines the thread function" "$(. "$FN"; type -t "$THREAD_FN")" function
 # shellcheck disable=SC1090
@@ -1593,8 +1598,8 @@ chk "the control still refuses the placeholder -- the cut removes the lookup and
 
 echo "9. control: the extraction sees nothing where the functions are absent"
 STRIPPED="$D/skill-stripped.md"
-sed "/^${FUNC_NAME}() {\$/,/^}\$/d; /^${MAJORS_FN}() {\$/,/^}\$/d; /^${THREAD_FN}() {\$/,/^}\$/d; /^${WINDOW_FN}() {\$/,/^}\$/d; /^${AGG_FN}() {\$/,/^}\$/d; /^${HEADLINE_FN}() {\$/,/^}\$/d; /^${COUNT_FN}() {\$/,/^}\$/d; /^${CUTOFF_FN}() {\$/,/^}\$/d; /^${SINCE_FN}() {\$/,/^}\$/d; /^${CONV_FN}() {\$/,/^}\$/d; /^${DISP_FN}() {\$/,/^}\$/d; /^${KNOWN_FN}() {\$/,/^}\$/d" "$SKILL" > "$STRIPPED"
-for f in "$FUNC_NAME" "$MAJORS_FN" "$THREAD_FN" "$WINDOW_FN" "$AGG_FN" "$HEADLINE_FN" "$COUNT_FN" "$CUTOFF_FN" "$SINCE_FN" "$CONV_FN" "$DISP_FN" "$KNOWN_FN"; do
+sed "/^${FINDING_FN}() {\$/,/^}\$/d; /^${FUNC_NAME}() {\$/,/^}\$/d; /^${MAJORS_FN}() {\$/,/^}\$/d; /^${THREAD_FN}() {\$/,/^}\$/d; /^${WINDOW_FN}() {\$/,/^}\$/d; /^${AGG_FN}() {\$/,/^}\$/d; /^${HEADLINE_FN}() {\$/,/^}\$/d; /^${COUNT_FN}() {\$/,/^}\$/d; /^${CUTOFF_FN}() {\$/,/^}\$/d; /^${SINCE_FN}() {\$/,/^}\$/d; /^${CONV_FN}() {\$/,/^}\$/d; /^${DISP_FN}() {\$/,/^}\$/d; /^${KNOWN_FN}() {\$/,/^}\$/d" "$SKILL" > "$STRIPPED"
+for f in "$FINDING_FN" "$FUNC_NAME" "$MAJORS_FN" "$THREAD_FN" "$WINDOW_FN" "$AGG_FN" "$HEADLINE_FN" "$COUNT_FN" "$CUTOFF_FN" "$SINCE_FN" "$CONV_FN" "$DISP_FN" "$KNOWN_FN"; do
     chk "the stripped copy no longer defines $f" "$(grep -c "^$f() {\$" "$STRIPPED")" 0
 done
 extract_all "$STRIPPED" > "$D/fn-stripped.sh"
