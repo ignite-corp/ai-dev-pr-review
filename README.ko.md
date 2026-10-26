@@ -93,7 +93,7 @@ gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow \
 name: AI Code Review
 on:
   pull_request:
-    branches: [main]
+    # `branches:` 필터를 두지 마세요: 토픽 브랜치를 base로 하는 PR에서 필수 체크가 실패가 아니라 아예 없는 상태가 됩니다(AT-2412).
   workflow_dispatch:
     inputs:
       pr_number:
@@ -431,7 +431,7 @@ PR이 열린 뒤에 붙은 라벨까지 리뷰가 인식하게 하려는 소비�
 ```yaml
 on:
   pull_request:
-    types: [opened, synchronize, labeled]
+    types: [opened, synchronize, reopened, labeled]
 jobs:
   review:
     if: >-

@@ -48,8 +48,23 @@ name: AI Code Review
 
 on:
   pull_request:
-    branches: [main, develop]
-    types: [opened, synchronize]
+    # No `branches:` filter: "AI Code Review" is a required status check on the
+    # consumer's protected branch (MIGRATION.md precondition 4), and filtering on
+    # the PR's BASE branch leaves that check absent -- not failing -- on a PR
+    # based on a topic branch, which the merge box reads as "no gate" (AT-2412).
+    # The cost: a round now runs on every PR whatever its base, so model spend
+    # and comment volume rise with it. To trim it, list paths in
+    # `.github/lens-ignore`: a PR whose changes are all excluded still reports
+    # the check (success) without running the reviewers. Do not add `paths:` /
+    # `paths-ignore:` here -- a filtered-out PR gets no check at all, the same
+    # defect. Nor gate draft PRs out: the orchestrator takes no draft-status
+    # input, and an `if: ... draft == false` on the `review` job skips the
+    # reusable-workflow call, whose required context is reported by a job
+    # inside it -- a skipped caller never reports it (AT-2092), so the check
+    # is absent again. Use `.github/lens-ignore` instead.
+    # `reopened` is listed for the same absent-check reason: a branch pushed
+    # while the PR is closed gets no run on its new head otherwise.
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -95,7 +110,6 @@ jobs:
 # name: AI Code Review
 # on:
 #   pull_request:
-#     branches: [main]
 #   workflow_dispatch:
 #     inputs:
 #       pr_number:
