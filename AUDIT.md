@@ -41,7 +41,7 @@ Net: 16 files published to the public repo; 5 kept private in caller repos.
 
 ## What was specifically removed / parameterized
 
-1. **`on: pull_request` triggers** -> replaced with `on: workflow_call` so callers control trigger semantics. The orchestrator's `pull_request: branches: [main, develop]` selection now lives in the consumer thin trigger.
+1. **`on: pull_request` triggers** -> replaced with `on: workflow_call` so callers control trigger semantics. The orchestrator's trigger selection now lives in the consumer thin trigger, which deliberately carries no `branches:` filter (AT-2412).
 2. **`secrets: inherit`** in orchestrator's child `uses:` -> replaced with explicit `secrets:` mappings (the inner reusable workflows declare their secret contract; the orchestrator forwards from its own `secrets:` block). This is required for cross-org reuse where `secrets: inherit` is silently empty.
 3. **`workflow_dispatch` input duplication** -> the orchestrator no longer has its own `workflow_dispatch`; the consumer thin trigger declares it and forwards `pr_number` via `with:`.
 4. **Hardcoded prompt paths** (`.github/prompts/code-review-system.md`, `.github/prompts/code-review-checklist.md`) -> replaced with `inputs.code-review-system-prompt-path` and `inputs.code-review-checklist-path`, defaulting to the original locations for back-compat.

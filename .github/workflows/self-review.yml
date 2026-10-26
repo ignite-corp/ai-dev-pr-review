@@ -27,8 +27,14 @@ name: AI Code Review (self)
 
 on:
   pull_request:
-    branches: [main]
-    types: [opened, synchronize]
+    # No `branches:` filter: `guard` is a required status check on main and the
+    # review round is the point of this workflow, so both must happen whatever
+    # the PR's base branch. AT-2413 measured the gap -- #170 and #172 had
+    # topic-branch bases, their check rollup was empty, and a hand-dispatched
+    # round on #170 raised three majors that would otherwise have merged.
+    # `reopened` for the same reason: a branch pushed while the PR is closed
+    # gets no run on its new head otherwise, and the check is absent again.
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr_number:

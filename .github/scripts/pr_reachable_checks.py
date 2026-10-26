@@ -43,11 +43,27 @@ def _event_set(on: object) -> set[str]:
     return set()
 
 
+def job_context(job_id: object, body: object) -> str:
+    """The status-check context one job reports under: its ``name:``, else its id.
+
+    The only home of that rule. ``_names`` keeps both spellings for its own
+    conservative purpose below, so a caller that needs the single context a
+    job really reports -- a required-check name, say -- must ask here.
+    """
+    if isinstance(body, dict):
+        name = body.get("name")
+        if isinstance(name, str):
+            return name.strip()
+    return str(job_id).strip()
+
+
 def _names(doc: dict) -> set[str]:
     """Collect the status-check context names a workflow can produce.
 
-    A job reports under its ``name:`` if set, else its job id. The workflow
-    ``name:`` is included to match single-segment or composed contexts.
+    Each job contributes both its id and the context it reports under, so a
+    required context naming either spelling counts as reachable -- the
+    conservatism the module docstring describes. The workflow ``name:`` is
+    included to match single-segment or composed contexts.
     """
     out: set[str] = set()
     wf_name = doc.get("name")
@@ -57,10 +73,7 @@ def _names(doc: dict) -> set[str]:
     if isinstance(jobs, dict):
         for job_id, body in jobs.items():
             out.add(str(job_id).strip())
-            if isinstance(body, dict):
-                job_name = body.get("name")
-                if isinstance(job_name, str):
-                    out.add(job_name.strip())
+            out.add(job_context(job_id, body))
     return out
 
 

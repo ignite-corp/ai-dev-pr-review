@@ -1,7 +1,14 @@
 name: CI
+# `test` is a required status check on main. `pull_request` carries no
+# `branches:` filter on purpose: a filtered trigger leaves the check absent --
+# not failing -- on a PR based on a topic branch, and an absent required check
+# reads as "no gate" rather than as an error (AT-2412). `push` stays on main so
+# a branch push does not duplicate the PR run; `workflow_dispatch` is a manual
+# recovery path, not the fix.
 on:
   push: { branches: [main] }
-  pull_request: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest

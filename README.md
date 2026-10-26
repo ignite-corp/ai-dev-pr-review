@@ -104,7 +104,7 @@ Drop this into the consumer repo as `.github/workflows/ai-review.yml`:
 name: AI Code Review
 on:
   pull_request:
-    branches: [main]
+    # No `branches:` filter: it leaves the required check absent, not failing, on a PR based on a topic branch (AT-2412).
   workflow_dispatch:
     inputs:
       pr_number:
@@ -443,7 +443,7 @@ A consumer that wants a review to pick up a label added after the PR opened need
 ```yaml
 on:
   pull_request:
-    types: [opened, synchronize, labeled]
+    types: [opened, synchronize, reopened, labeled]
 jobs:
   review:
     if: >-
