@@ -395,27 +395,52 @@ The size gate is unchanged: `PR_SIZE_LIMIT` compares GitHub's own additions+dele
 
 Nothing is left to review, so `prepare` ends with `skip=true` and comments `[i] Only policy-excluded files changed (N file(s) matched .github/lens-ignore). Skipping AI review`, the reviewer jobs do not run, and the aggregate posts a verdict comment headed `Result: [OK] Review skipped -- only policy-excluded files changed` listing the paths. The check reports **success**: the content is not review material by the repo's own rule, and a failure would block merge on a repo with no ruleset to override it. It is a plain comment, never an approval. This is distinct from an empty diff, which fails `prepare` (nothing changed against the base, or a merged PR could not be reconstructed).
 
-Both comments -- the `prepare` note and the aggregate verdict -- carry a stable machine-readable marker on their second line, after the usual `<!-- multi-llm-review -->` one. The note carries both so the aggregate's stale-comment pass folds it on the next run, and so a gate that reads the latest LENS comment never sees a marker-less one in the seconds between the note and the verdict:
+Both comments -- the `prepare` note and the aggregate verdict -- carry a stable machine-readable marker on their second line, after the usual `<!-- multi-llm-review -->` one. The note carries the usual marker too, so the aggregate's stale-comment pass folds it on the next run:
 
 ```
 <!-- lens:skipped reason=policy-excluded-only files=N -->
 ```
 
-**Anchor the gate on the literal `<!-- lens:skipped` prefix, never a bare `lens:skipped` substring.** A loose match also fires on a reviewer's prose that merely mentions the marker by name — measured on a real consumer PR (1 loose match, 0 anchored matches).
+The marker records why the round was skipped. It does not decide the merge: a comment never carries a merge decision, and the ruleset does. As read from `_aggregate` and `post_verdict` at main 64e8f46, and pinned by `test_aggregate_reviews.py`:
 
-A job conclusion cannot be `neutral` (`exit 78` was removed in 2019), and a separate neutral check run would need an App token consumers may lack, so a consumer that must not merge on a skipped review gates on the marker instead: merge when the check concluded `success` **and** the latest LENS comment does not carry it.
+- `review / aggregate / Aggregate & Verdict` concludes `success`, because the policy-skip path exits 0 (`test_policy_skip_exits_zero`). A required-check rule is satisfied.
+- No review is posted, on any `ALLOW_AUTO_APPROVE` setting. The verdict is `comment`, which is posted with `gh pr comment` and never `gh pr review` (`test_policy_skip_posts_through_the_comment_branch`, run with auto-approve on). So with auto-approve on, the reviewer App does not approve, and a ruleset that requires an approving review holds the PR until it has one.
+- With auto-approve off, or with no required approving review, nothing from this pipeline blocks the merge.
 
-```bash
-LATEST=$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
-  --jq '[.[][] | select(.body | contains("<!-- multi-llm-review -->"))] | last | .body')
-if grep -qE '^<!-- lens:skipped reason=policy-excluded-only files=[0-9]+ -->$' <<< "$LATEST"; then
-  echo "review skipped by policy"; exit 1
-fi
-```
+A repository that must not merge a skipped PR unreviewed needs a required approving review in its ruleset. No skipped round has been found on a consumer to measure (2026-10-27), so the list above is read from the code and its tests, not from a run.
 
 Known limitation: the Claude reviewer runs with the PR head checked out and is told by `context.md` not to open, quote, or infer the excluded paths. That is an instruction, not an enforcement; the removal from `pr.diff` is the enforced part.
 
 Consumers pinned to a release older than this feature: if the repo carries `.github/lens-ignore` but the pinned scripts lack `filter_pr_diff.py`, `prepare` fails with an explicit `::error::` rather than sending an unfiltered diff to the reviewers. Move the pin forward, or remove the rule file until you do.
+
+## Verdict posting contract
+
+The aggregate posts its verdict as a PR review or as an issue comment, under more than one identity. Which one depends on the verdict and the configuration, not on the repository. The verdict comment is a report of the round. It is separate from approval, and it is not a merge gate. Comments never carry a merge decision: the ruleset's required check and required approving review do. A comment can be posted by anyone who can comment, and is not bound to a head.
+
+What carries the verdict:
+
+- **With `ALLOW_AUTO_APPROVE` on** (read from `_aggregate` and `post_verdict` at main 64e8f46), the review state on the head the review names (`commit`): an `APPROVED` or a `CHANGES_REQUESTED` review. The table below gives the identity each is posted under. When a round posts no review (a withheld approve, a `comment` verdict, a failed or timed-out review call), a required approving review simply stays unmet.
+- **The required check** (measured on 2026-10-27) `review / aggregate / Aggregate & Verdict` reports whether the round ran, not the verdict. It fails when `prepare` failed, the PR was over the size limit, the head was superseded, too few reviewers responded (except a sequential-mode round with an early exit, which stays green: `sequential_bypass` in `_aggregate`, `aggregate_reviews.py` at main 64e8f46), or the verdict could not be posted (except after a review timeout, whose failed fallback does not fail the check). A `request_changes` verdict ends `success`. Measured: `Changes Requested` with `success` in ai-dev-pr-review run 40412352616 (auto-approve off) and in ai-dev-infra-common runs 38490525097 and 38490210199 (auto-approve on); `Approved` with `success` in ai-dev-pr-review run 40318114362 (auto-approve off) and ai-dev-cab run 37541083301 (auto-approve on); a size skip with `failure` in ai-dev-sherlock run 37428842723.
+- **With `ALLOW_AUTO_APPROVE` off** (read from `_aggregate` and `post_verdict` at main 64e8f46), the verdict is advisory. No review is posted, and `review / aggregate / Aggregate & Verdict` concludes `success` on a `Changes Requested` verdict, so no verdict from this pipeline blocks the merge. A prepare failure, a size skip or a superseded head still fails the required check. A repository that needs `Changes Requested` to block should turn auto-approve on.
+
+Where each verdict is posted, for same-repository runs as of main 64e8f46, 2026-10-27:
+
+| Case | Surface | Identity |
+|---|---|---|
+| `ALLOW_AUTO_APPROVE` off (the default), any verdict | issue comment; an `approve` or `request_changes` headline says `posted as comment (auto-approve off)` | `github-actions[bot]` |
+| on, `approve`, reviewer App token present | review, `APPROVED` | the reviewer App's bot account |
+| on, `approve`, no reviewer App token (mint step skipped or failed) | review attempted under `GITHUB_TOKEN`, with a `::notice::No reviewer App token` line in the run log; GitHub accepts it only where the repository lets Actions approve pull requests, which this README says to leave off, and otherwise it ends as the `review API failed` row | `github-actions[bot]` |
+| on, `request_changes`, including the prepare-failure and size-skip verdicts | review, `CHANGES_REQUESTED` | `github-actions[bot]`; the reviewer App token is used for `approve` only |
+| on, `approve` withheld (a reviewer did not respond, or majors are unreviewed) | issue comment ending `> [!] Auto-approve withheld, posted as comment: <reason>.` | `github-actions[bot]` |
+| `comment` verdict, including the policy-skip verdict | issue comment, no note | `github-actions[bot]` |
+| the review call fails | issue comment ending `> [!] Intended verdict: **<verdict>** (review API failed, posted as comment)`, and a `::warning::` in the run log | `github-actions[bot]` |
+| the review call times out | issue comment ending `> [!] Intended verdict: **<verdict>** (review API timed out, posted as comment)`, and a `::warning::` in the run log | `github-actions[bot]` |
+
+The timeout note and the token-absence notice shipped with AT-2597 (#238). A consumer pinned to a release that predates them still gets a timeout fallback with no note, which reads the same as a `comment` verdict.
+
+Other identities: with `target_repo` set, every post uses the target's App token, so every surface carries that App's bot account. The local driver (`review_pr_local.py`) posts under the operator's own login. Each API spells the same account differently: REST returns `github-actions[bot]`, GraphQL returns `github-actions`.
+
+Every round folds the earlier rounds' verdicts before it posts. Comments are minimized, and `APPROVED` and `CHANGES_REQUESTED` reviews are dismissed and minimized. The exception is an `APPROVED` review of the current head. It is dismissed only when this round posts a review of its own, or withholds an approve over unreviewed majors (with auto-approve on or off). Every other comment post leaves it standing. That includes a `request_changes` or `comment` verdict with auto-approve off, and the failed and timed-out review fallbacks.
 
 ## PR Metadata block
 

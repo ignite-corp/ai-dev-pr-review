@@ -833,7 +833,8 @@ def format_policy_skip_summary(paths: list[str]) -> str:
     """Verdict body for a review skipped because every file was policy-excluded.
 
     Names the rule file and the paths (never their content) so the skip is
-    auditable on the PR, and carries POLICY_SKIP_MARKER for consumer gates.
+    auditable on the PR, and carries POLICY_SKIP_MARKER to record why the
+    round was skipped. A comment never carries a merge decision.
     """
     count = len(paths)
     headline = "**Result: [OK] Review skipped -- only policy-excluded files changed**"
@@ -849,9 +850,10 @@ def format_policy_skip_summary(paths: list[str]) -> str:
     ]
     outcome = (
         "This check reports success by policy: the excluded content is not"
-        " review material, and this is not a review of it. A gate that must"
-        " not merge on a skipped review can key on the"
-        " `<!-- lens:skipped ... -->` marker in this comment."
+        " review material, and this is not a review of it. The"
+        " `<!-- lens:skipped ... -->` marker in this comment records why this"
+        " round was skipped. The merge is decided by the repository's"
+        " ruleset, not by this comment."
     )
     lines = [
         REVIEW_MARKER,
@@ -2389,8 +2391,8 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
         # a repository with no ruleset to override it. A neutral conclusion
         # is not available to a job (`exit 78` was removed in 2019), and a
         # separate neutral check run would need an App token consumers may
-        # lack -- so a gate that must not merge on this keys on the
-        # POLICY_SKIP_MARKER in the comment instead.
+        # lack. A repository that must not merge such a PR unreviewed needs
+        # a required approving review: no review is posted on this path.
         sys.exit(0)
 
     reviews = load_reviews()
