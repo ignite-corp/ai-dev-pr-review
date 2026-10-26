@@ -40,9 +40,9 @@
 #      is per verdict, not per repository: a CHANGES_REQUESTED review by
 #      github-actions[bot] on an App-shaped PR is selected and refused on
 #      its Result word alone, a github-actions[bot] approval on an
-#      App-shaped PR is accepted, and the two comment fallbacks - with the
-#      `Intended verdict` note appended, and the bare timeout one - are
-#      the aggregate present, their headline read by aggregate_headline,
+#      App-shaped PR is accepted, and the two comment fallbacks - each with
+#      an `Intended verdict` note appended, differing only in the reason -
+#      are the aggregate present, their headline read by aggregate_headline,
 #      which keys on no note. reviews_complete blocks a review list shorter
 #      than the PR's count: two non-dismissed candidates on one head pick
 #      the newer, and a list that lost it promotes the older approval
@@ -710,9 +710,9 @@ chk "both lists empty: nothing" "$(agg "$FN" '[]' '[]' "$HEAD_IC" "$E_S" "$E_E")
 # App token, so on an App-shaped PR a CHANGES_REQUESTED review is
 # github-actions[bot]'s; the App mint is continue-on-error, so an approval
 # can land as github-actions[bot]'s review there too; a review-API failure
-# falls back to an issue comment with an `Intended verdict` note appended
-# after the body, and a timeout to the bare body, byte-identical to a
-# comment-only post (AT-2597).
+# and a timeout both fall back to an issue comment with an `Intended
+# verdict` note appended after the body, differing only in the reason
+# (AT-2597). The note-less comment-only control is C_DOT, shape 1 above.
 R_RC_GA=$(rev 9 2026-10-02T10:09:06Z 'github-actions[bot]' Bot CHANGES_REQUESTED "$HEAD_IC" "$MARK"$'\n'"$H_CRITICAL")
 chk "a CHANGES_REQUESTED review by github-actions[bot] on an App-shaped PR is selected: identity accepted" "$(agg "$FN" '[]' "$(lst "$R_IC_PREV" "$R_RC_GA")" "$HEAD_IC" "$E_S" "$E_E")" review:9:CHANGES_REQUESTED
 chk "its headline is then refused by the roster on the Result word" "$(verdict "$FN" "$(headline_of "$FN" "$R_RC_GA")")" block
@@ -724,13 +724,14 @@ chk "a github-actions[bot] APPROVED review on an App-shaped PR (mint failed) is 
 chk "and its headline passes the roster" "$(verdict "$FN" "$(headline_of "$FN" "$R_GA_ON_APP")")" pass
 NOTE='> [!] Intended verdict: **approve** (review API failed, posted as comment)'
 C_NOTED=$(cmt 11 2026-10-02T10:09:06Z 'github-actions[bot]' Bot "$MARK"$'\n'"$H_REVIEW_NO_ISSUES"$'\n\n'"$NOTE")
-C_BARE=$(cmt 12 2026-10-02T10:09:06Z 'github-actions[bot]' Bot "$MARK"$'\n'"$H_REVIEW_NO_ISSUES")
+TIMEOUT_NOTE='> [!] Intended verdict: **approve** (review API timed out, posted as comment)'
+C_TIMEOUT=$(cmt 12 2026-10-02T10:09:06Z 'github-actions[bot]' Bot "$MARK"$'\n'"$H_REVIEW_NO_ISSUES"$'\n\n'"$TIMEOUT_NOTE")
 chk "the review-API-failure fallback comment, note appended, is the aggregate present" "$(agg "$FN" "$(lst "$C_NOTED")" '[]' "$HEAD_IC" 2026-10-02T10:00:00Z 2026-10-02T10:10:00Z)" comment:11:comment
 chk "its headline is read with the note present" "$(headline_of "$FN" "$C_NOTED")" "$H_REVIEW_NO_ISSUES"
 chk "and passes the roster" "$(verdict "$FN" "$(headline_of "$FN" "$C_NOTED")")" pass
-chk "the timeout fallback comment, no note, is the aggregate present" "$(agg "$FN" "$(lst "$C_BARE")" '[]' "$HEAD_IC" 2026-10-02T10:00:00Z 2026-10-02T10:10:00Z)" comment:12:comment
-chk "its headline is read without any note" "$(headline_of "$FN" "$C_BARE")" "$H_REVIEW_NO_ISSUES"
-chk "and passes the roster" "$(verdict "$FN" "$(headline_of "$FN" "$C_BARE")")" pass
+chk "the timeout fallback comment, its note appended, is the aggregate present" "$(agg "$FN" "$(lst "$C_TIMEOUT")" '[]' "$HEAD_IC" 2026-10-02T10:00:00Z 2026-10-02T10:10:00Z)" comment:12:comment
+chk "its headline is read with the timeout note present" "$(headline_of "$FN" "$C_TIMEOUT")" "$H_REVIEW_NO_ISSUES"
+chk "and passes the roster" "$(verdict "$FN" "$(headline_of "$FN" "$C_TIMEOUT")")" pass
 chk "the gate's functions key on no note" "$(grep -c 'Intended verdict\|Auto-approve withheld' "$FN" | sed 's/^/n=/')" "n=0"
 C_NOTE_FIRST=$(cmt 13 2026-10-02T10:09:06Z 'github-actions[bot]' Bot "$NOTE"$'\n'"$MARK"$'\n'"$H_REVIEW_NO_ISSUES")
 chk "a note ahead of the headline leaves the headline readable" "$(headline_of "$FN" "$C_NOTE_FIRST")" "$H_REVIEW_NO_ISSUES"
