@@ -436,9 +436,10 @@ def main() -> None:
         "Apply these rules by status:\n\n"
         '- `status="verified"` -- the SHA matched a tag. Do NOT flag the SHA as '
         'invalid. If `comment-matches="false"`, the `# vX.Y` version comment '
-        "drifts from the resolved tag (given in the `tag` attribute) -- raise as "
-        "`minor` citing the correct tag. If `comment-matches` is absent, the "
-        "PR pin has no `# vX.Y` comment at all -- that is not a finding.\n"
+        'drifts from the resolved tag (given in the `tag="..."` attribute) -- '
+        "raise as `minor` citing the correct tag. If `comment-matches` is "
+        "absent, the PR pin has no `# vX.Y` comment at all -- that is not a "
+        "finding.\n"
         '- `status="unmatched"` -- the tag listing was fetched but the SHA did '
         "not appear in any tag. Raise as `major` (likely stale mirror, "
         "force-pushed tag, or typo).\n"

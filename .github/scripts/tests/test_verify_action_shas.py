@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -337,15 +338,23 @@ def _run_main(
     monkeypatch: pytest.MonkeyPatch,
     repo: str,
     sha: str,
+    seed: str = "",
 ) -> str:
     """Run ``main()`` over a one-pin diff and return the written ``context.md``.
 
     The patched ``subprocess.run`` makes every tag listing 404, which is
     what the 404 guidance tests need; the blurb itself is rendered for any
     pin, so tests that only read the blurb can use it too.
+
+    ``seed`` is what ``context.md`` already holds when ``main()`` runs. It
+    defaults to empty for the tests that read one rendered attribute, and
+    is NOT what a pipeline run looks like: ``main()`` opens the file in
+    append mode and the real one carries PR metadata and prior review
+    threads by then. A test whose subject is how much of the file counts as
+    the blurb has to say so.
     """
     (tmp_path / "pr.diff").write_text(f"+      - uses: {repo}@{sha}  # v1\n")
-    (tmp_path / "context.md").write_text("")
+    (tmp_path / "context.md").write_text(seed)
     monkeypatch.chdir(tmp_path)
     with patch(
         "verify_action_shas.subprocess.run",
@@ -671,6 +680,18 @@ class TestRendered404Guidance:
         _assert_404_rule_is_honest(content, "repo-not-found")
 
 
+# The reviewer system prompt a consumer copies into its own repo. Read by
+# ``TestExamplePromptCovers404Labels`` and by ``_example_prompt_pin_section``,
+# so the path is spelled once -- the way ``_PROMPT_PATH`` below is spelled
+# once for the caller-repo prompt.
+_EXAMPLE_PROMPT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "prompts"
+    / "code-review-system.md"
+)
+
+
 class TestExamplePromptCovers404Labels:
     """The in-tree consumer template must describe both 404 labels.
 
@@ -680,12 +701,7 @@ class TestExamplePromptCovers404Labels:
     consumer that onboarded from it.
     """
 
-    _EXAMPLE_PROMPT = (
-        Path(__file__).resolve().parents[3]
-        / "examples"
-        / "prompts"
-        / "code-review-system.md"
-    )
+    _EXAMPLE_PROMPT = _EXAMPLE_PROMPT_PATH
 
     def test_example_prompt_describes_repo_not_visible(self) -> None:
         text = self._EXAMPLE_PROMPT.read_text(encoding="utf-8")
@@ -704,6 +720,235 @@ class TestExamplePromptCovers404Labels:
         the same function to the copy consumers take."""
         text = self._EXAMPLE_PROMPT.read_text(encoding="utf-8")
         _assert_404_rule_is_honest(text, label)
+
+
+# A label as the reviewer reads it: a backticked ``name="value"`` token.
+# Matched by shape, never by an allow-list of attribute names -- a list that
+# does not reject by default admits a brand-new attribute on one surface
+# without noticing it never reached the other, which is the hole AT-2880
+# opened.
+#
+# The name follows XML's own attribute-name shape, because a narrower class
+# is that same allow-list one level down: ``[A-Za-z][A-Za-z0-9-]*`` matched
+# neither ``error_detail="x"`` nor ``error.detail="x"``, both legal, so
+# documenting one on a single surface left both label sets unchanged.
+# ``[^\W\d]`` opens on a letter or ``_`` (Unicode letters included, as
+# ``\w`` is Unicode here) and never on a digit, which XML forbids; the rest
+# adds digits, ``.``, ``:`` and ``-``. A name opening with ``:`` is legal
+# and matched by neither -- it is reserved for namespace use and no surface
+# here writes one.
+_LABEL_TOKEN = re.compile(r'`([^\W\d][\w.:-]*)="([^"`]*)"`')
+
+_PIN_GUIDANCE_HEADING = "## GitHub Actions SHA Pins"
+
+# The same two anchors on the rendered side: the heading ``main()`` writes
+# and the element that ends its prose.
+_RENDERED_PIN_HEADING = "## Verified Action SHA Pins"
+_RENDERED_PIN_ELEMENTS = "<verified-action-pins>"
+
+
+def _guidance_labels(document: str) -> set[str]:
+    """Return every ``name="value"`` token ``document`` quotes to the reviewer.
+
+    Placeholder values (``tag="..."``) are kept, not filtered. Dropping them
+    from both sides hid the AT-2880 drift class itself at its least visible
+    point: an attribute documented on one surface alone with ``...`` for its
+    value -- the shape guidance prose reaches for first -- left that side's
+    set, the other side never had it, and the two sets compared equal.
+
+    So what is guaranteed is the whole token, name and value together. A
+    surface writing ``severity="..."`` where the other writes nothing, or
+    writes ``severity="major"``, is reported as a one-sided token either
+    way. That couples the two surfaces on how they spell a placeholder,
+    which is the point: they are maintained as one description, and a
+    comparison that forgave the spelling would have to forgive the absence
+    too.
+    """
+    return {f'{name}="{value}"' for name, value in _LABEL_TOKEN.findall(document)}
+
+
+def _rendered_pin_blurb(context_md: str) -> str:
+    """Return the prose of the pin section ``main()`` appended.
+
+    The blurb-side counterpart of ``_example_prompt_pin_section``, scoped
+    for the same reason: that side is narrowed to one heading so a
+    ``severity="..."`` example under another is not compared as a pin
+    label, and a blurb side read from all of ``context.md`` would put the
+    two sides' label sets on unequal scopes.
+
+    Measured, not assumed. ``main()`` opens ``context.md`` in append mode,
+    so a pipeline run reaches it with PR metadata and prior review threads
+    already in the file; seeding one ``severity="critical"`` token in an
+    earlier section put that token into the blurb's label set, and the
+    comparison then turned on what the rest of the pipeline happened to
+    quote. The equality looked symmetric only because every test seeded the
+    file empty.
+
+    ``rindex`` for the heading because ``main()`` appends -- the section
+    under test is the last one -- and both lookups raise rather than fall
+    back, the choice ``_example_prompt_pin_section`` makes: a renamed
+    heading or a renamed element must fail loudly instead of yielding an
+    empty blurb that compares empty-to-empty and passes. The slice stops at
+    the ``<verified-action-pins>`` element, so the pin rows are excluded
+    here the way ``_blurb_text`` excludes them, and for the same reason.
+    """
+    start = context_md.rindex(_RENDERED_PIN_HEADING) + len(_RENDERED_PIN_HEADING)
+    end = context_md.index(_RENDERED_PIN_ELEMENTS, start)
+    return context_md[start:end]
+
+
+def _example_prompt_pin_section() -> str:
+    """Return the consumer template's pin-guidance section, heading excluded.
+
+    Scoped to the one section because the rest of the template governs other
+    things: a ``severity="..."`` example written under another heading is not
+    a pin label and must not be compared as one.
+
+    ``str.index`` on purpose -- a renamed or deleted heading raises here
+    instead of yielding an empty section, which would make the label sets
+    below compare empty-to-empty and pass.
+    """
+    text = _EXAMPLE_PROMPT_PATH.read_text(encoding="utf-8")
+    start = text.index(_PIN_GUIDANCE_HEADING) + len(_PIN_GUIDANCE_HEADING)
+    end = text.find("\n## ", start)
+    return text[start:] if end < 0 else text[start:end]
+
+
+class TestGuidanceSurfacesShareOneLabelSet:
+    """The blurb ``main()`` writes and the consumer template must name the
+    same labels -- not merely each carry the labels somebody listed.
+
+    AT-2880: every check above holds ONE surface to ONE token it should
+    contain. Each side therefore stays green while the other falls behind,
+    because nothing reads both and compares. Add ``error="rate-limited"`` to
+    the renderer and the reviewer template never learns the word, and no
+    test here notices; drop a label from the template and the blurb keeps
+    promising guidance the reviewer no longer has.
+
+    So this is set equality, in both directions, and the message names the
+    side a token is missing from. A list of expected labels would be the
+    same defect one level up: it would have to be edited by the person
+    adding the label, which is exactly the person who just forgot.
+
+    Held against ``examples/prompts/code-review-system.md``, the template a
+    consumer copies, and NOT against ``_PROMPT_PATH``: that path is the
+    consumer's own ``.github/prompts/code-review-system.md``, which this
+    repo has never carried, so a check reading it would be skipped here and
+    unreached in a consumer -- dead on both counts, the way AT-2801's
+    ``repo-not-visible`` guard in ``TestPromptGuidance`` was. The template is
+    the furthest downstream copy any test in this repo can actually read.
+
+    Consequently this class carries no ``skipif`` and must never acquire
+    one. AT-2849 is the record of what the ``_PROMPT_PATH`` gate cost: a
+    test that claimed this very comparison sat behind it and had never
+    executed, and a skipped test reports as neither pass nor fail, so the
+    gap read as coverage for as long as nobody looked. If the template is
+    gone, ``read_text`` raises and this errors out loudly.
+    """
+
+    def test_blurb_and_example_prompt_name_the_same_labels(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
+        content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
+        blurb_labels = _guidance_labels(_rendered_pin_blurb(content))
+
+        # Positive control on the extractor itself: were it to match
+        # nothing, the comparison below would be `set() == set()` and would
+        # pass over any two documents at all. These two tokens are the ones
+        # AT-2880 names as having to agree.
+        assert {'comment-matches="false"', 'error="repo-not-found"'} <= blurb_labels, (
+            "the label extractor did not find both tokens AT-2880 names in "
+            f"the rendered blurb; it found {sorted(blurb_labels)}"
+        )
+
+        prompt_labels = _guidance_labels(_example_prompt_pin_section())
+        assert blurb_labels == prompt_labels, (
+            "the blurb main() renders and examples/prompts/"
+            "code-review-system.md must name the same labels -- "
+            f"only in the blurb: {sorted(blurb_labels - prompt_labels)}; "
+            f"only in the prompt: {sorted(prompt_labels - blurb_labels)}"
+        )
+
+    def test_placeholder_valued_attribute_on_one_surface_is_not_hidden(self) -> None:
+        """An attribute written ``name="..."`` on one surface alone differs.
+
+        The AT-2880 drift class in its least visible form. While the
+        extractor dropped every ``...`` value, a brand-new attribute
+        documented with a placeholder -- the shape guidance prose reaches
+        for first -- left the one side's set, the other side never had it,
+        and the comparison above passed over two documents that disagree.
+        Held on the extractor rather than on the two real documents,
+        because the defect is that the token never reaches a set at all.
+        """
+        one_sided = _guidance_labels('- `severity="..."` carries the finding.')
+        assert one_sided == {'severity="..."'}, (
+            "a placeholder-valued attribute must reach the label set; it "
+            f"yielded {sorted(one_sided)}"
+        )
+        assert one_sided != _guidance_labels("- the other surface says nothing."), (
+            "a surface documenting an attribute the other never mentions "
+            "must not compare equal to it"
+        )
+
+    @pytest.mark.parametrize("name", ["error_detail", "error.detail", "error:detail"])
+    def test_legal_attribute_names_outside_letters_and_hyphens_are_seen(
+        self, name: str
+    ) -> None:
+        """``_``, ``.`` and ``:`` are legal in an XML attribute name.
+
+        A name class of letters, digits and hyphens is an allow-list one
+        level down: a name carrying any other legal character matched
+        NEITHER surface, so adding it to one alone left both label sets
+        unchanged and the equality above green -- the same silence the
+        shape match exists to prevent.
+        """
+        one_sided = _guidance_labels(f'- `{name}="x"` explains the failure.')
+        assert one_sided == {f'{name}="x"'}, (
+            f"an attribute named {name!r} must reach the label set; it "
+            f"yielded {sorted(one_sided)}"
+        )
+        assert one_sided != _guidance_labels("- the other surface says nothing."), (
+            f"a surface documenting {name!r} must not compare equal to one "
+            "that never mentions it"
+        )
+
+    def test_earlier_context_md_sections_stay_out_of_the_blurb_side(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The blurb is the section ``main()`` wrote, not the whole file.
+
+        The prompt side is narrowed to one heading on purpose, so a blurb
+        side read from all of ``context.md`` compares two unequal scopes:
+        every ``name="value"`` token quoted anywhere earlier in the file
+        enters the pin label set as though the blurb had named it, and the
+        equality then turns on what the rest of the pipeline wrote. The
+        other tests here seed ``context.md`` empty, which is the single
+        case where that cannot show.
+        """
+        monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
+        content = _run_main(
+            tmp_path,
+            monkeypatch,
+            _IN_ORG_PRIVATE,
+            _IN_ORG_PRIVATE_SHA,
+            seed=(
+                "## PR Metadata\n\nauthor: dependabot[bot] -- R2 pre-release "
+                'is a `severity="critical"` veto.\n'
+            ),
+        )
+        blurb_labels = _guidance_labels(_rendered_pin_blurb(content))
+        assert 'severity="critical"' not in blurb_labels, (
+            "a token from a section main() did not write must not enter "
+            f"the blurb's label set; it holds {sorted(blurb_labels)}"
+        )
+        prompt_labels = _guidance_labels(_example_prompt_pin_section())
+        assert blurb_labels == prompt_labels, (
+            "with both sides scoped to their own pin section the labels "
+            "must agree whatever context.md already carried -- "
+            f"only in the blurb: {sorted(blurb_labels - prompt_labels)}; "
+            f"only in the prompt: {sorted(prompt_labels - blurb_labels)}"
+        )
 
 
 class TestMigrationDocReachesOnboardedConsumers:
@@ -767,7 +1012,9 @@ class TestInlineBlurbLabels:
     Nothing here compares the blurb with the caller-repo prompt doc, and
     -- measured, not assumed -- no test in this repo does: the three tests
     left in ``TestPromptGuidance`` each assert a token is present in
-    ``_PROMPT_PATH`` alone and never read what ``main()`` emits.
+    ``_PROMPT_PATH`` alone and never read what ``main()`` emits. The blurb
+    IS compared against the consumer template, which a test here can read,
+    by ``TestGuidanceSurfacesShareOneLabelSet`` above (AT-2880).
     """
 
     def test_inline_blurb_names_comment_matches_false(
