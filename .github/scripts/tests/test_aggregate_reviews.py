@@ -3985,7 +3985,7 @@ class TestPolicySkipVerdict:
     reviewer reads the diff (AT-2206). When nothing is left the reviewer jobs
     are skipped as they are for size, but the outcome differs: the content is
     not review material by the consumer's own rule, so the check passes, and
-    the comment carries a marker a stricter consumer gate can key on.
+    the comment carries a marker that records why the round was skipped.
     """
 
     @staticmethod
@@ -4144,6 +4144,15 @@ class TestPolicySkipVerdict:
 
     def test_summary_is_ascii(self) -> None:
         format_policy_skip_summary(["secrets/key.pem"]).encode("ascii")
+
+    def test_policy_skip_body_records_the_skip_and_gives_no_gate_advice(
+        self,
+    ) -> None:
+        """A comment never carries a merge decision; the ruleset does (AT-2597)."""
+        body = format_policy_skip_summary(["secrets/key.pem"])
+        assert "records why this round was skipped" in body
+        assert "gate" not in body.lower()
+        assert "key on" not in body
 
     def test_policy_skip_body_cannot_be_broken_by_a_path(self) -> None:
         """prepare sanitizes first; the aggregate renders defensively anyway."""

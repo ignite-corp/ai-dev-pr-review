@@ -250,9 +250,10 @@ percentage of it gets the workflow's `[!] size: ...` warning printed by the
 driver and rendered under the verdict headline; the review still runs.
 `aggregate_reviews.py`'s **own** size-skip verdict does not carry
 that prefix. A consumer gate keyed on "`lens:skipped` present means skipped"
-therefore sees it in one place and not the other. The driver keeps its
-marker; aligning the aggregate would change behaviour for every consumer and
-is not done here.
+would see it in one place and not the other, and no gate should key on it:
+the marker records why the round was skipped, and the merge is decided by
+the repository's ruleset. The driver keeps its marker; aligning the
+aggregate would change behaviour for every consumer and is not done here.
 
 ## Differences from the Actions path, on purpose
 

@@ -383,27 +383,52 @@ dist/**
 
 리뷰할 것이 남지 않으므로 `prepare`는 `skip=true`로 끝나며 `[i] Only policy-excluded files changed (N file(s) matched .github/lens-ignore). Skipping AI review` 코멘트를 남기고, 리뷰어 잡은 실행되지 않으며, 취합은 `Result: [OK] Review skipped -- only policy-excluded files changed` 헤드라인으로 경로를 나열한 판정 코멘트를 게시합니다. 체크는 **success**를 보고합니다. 그 내용은 레포 자신의 규칙에 따라 리뷰 대상이 아니고, 실패로 보고하면 이를 덮어쓸 ruleset이 없는 레포에서 병합이 막히기 때문입니다. 일반 코멘트이며 절대 승인이 아닙니다. 이는 빈 diff와 다릅니다 -- 빈 diff는 `prepare`를 실패시킵니다(base 대비 변경이 없거나, 병합된 PR을 재구성하지 못한 경우).
 
-두 코멘트 모두 -- `prepare` 안내와 취합 판정 -- 둘째 줄에, 평소의 `<!-- multi-llm-review -->` 다음에, 안정적인 기계 판독용 마커를 싣습니다. 안내가 두 마커를 함께 싣는 이유는, 다음 실행에서 취합의 이전 코멘트 정리 단계가 안내를 접을 수 있게 하고, 최신 LENS 코멘트를 읽는 게이트가 안내와 판정 사이의 몇 초 동안 마커 없는 코멘트를 보는 일이 없게 하기 위해서입니다:
+두 코멘트 모두 -- `prepare` 안내와 취합 판정 -- 둘째 줄에, 평소의 `<!-- multi-llm-review -->` 다음에, 안정적인 기계 판독용 마커를 싣습니다. 안내도 평소의 마커를 싣기 때문에, 다음 실행에서 취합의 이전 코멘트 정리 단계가 안내를 접습니다:
 
 ```
 <!-- lens:skipped reason=policy-excluded-only files=N -->
 ```
 
-**게이트는 반드시 `<!-- lens:skipped` 리터럴 접두사에 앵커링하고, `lens:skipped`만으로 느슨하게 매칭하지 마세요.** 느슨한 매칭은 마커를 언급만 하는 리뷰어의 문장에도 반응합니다 — 실제 소비자 PR에서 측정된 사례로, 느슨한 매칭 1건, 앵커링된 매칭 0건이었습니다.
+이 마커는 라운드가 왜 건너뛰어졌는지를 기록합니다. 병합을 결정하지는 않습니다. 코멘트는 병합 결정을 싣지 않으며, 결정은 ruleset이 합니다. main 64e8f46의 `_aggregate`와 `post_verdict`에서 읽었고, `test_aggregate_reviews.py`가 고정합니다:
 
-잡 결론은 `neutral`이 될 수 없고(`exit 78`은 2019년에 제거됨), 별도의 neutral check run은 소비자에게 없을 수도 있는 App 토큰이 필요하므로, 건너뛴 리뷰로 병합되면 안 되는 소비자는 대신 이 마커로 게이트합니다. 체크 결론이 `success`**이고** 최신 LENS 코멘트에 이 마커가 없을 때 병합합니다.
+- `review / aggregate / Aggregate & Verdict`는 `success`로 끝납니다. 정책 스킵 경로가 0으로 종료하기 때문입니다(`test_policy_skip_exits_zero`). 필수 체크 규칙은 충족됩니다.
+- `ALLOW_AUTO_APPROVE` 설정과 관계없이 리뷰는 게시되지 않습니다. 판정은 `comment`이며, `gh pr review`가 아니라 항상 `gh pr comment`로 게시됩니다(`test_policy_skip_posts_through_the_comment_branch`, auto-approve 켜짐 상태로 실행). 따라서 auto-approve가 켜져 있어도 리뷰어 App은 승인하지 않으며, 승인 리뷰를 요구하는 ruleset은 승인이 생길 때까지 PR을 붙잡습니다.
+- auto-approve가 꺼져 있거나 필수 승인 리뷰가 없으면, 이 파이프라인의 어떤 것도 병합을 막지 않습니다.
 
-```bash
-LATEST=$(gh api --paginate --slurp "repos/$REPO/issues/$PR/comments?per_page=100" \
-  --jq '[.[][] | select(.body | contains("<!-- multi-llm-review -->"))] | last | .body')
-if grep -qE '^<!-- lens:skipped reason=policy-excluded-only files=[0-9]+ -->$' <<< "$LATEST"; then
-  echo "review skipped by policy"; exit 1
-fi
-```
+건너뛴 PR이 사람의 리뷰 없이 병합되면 안 되는 레포는 ruleset에 필수 승인 리뷰를 두어야 합니다. 측정할 수 있는 소비자의 스킵 라운드는 아직 발견되지 않았으므로(2026-10-27), 위 목록은 실행이 아니라 코드와 테스트에서 읽은 것입니다.
 
 알려진 한계: Claude 리뷰어는 PR head가 체크아웃된 상태로 실행되며 `context.md`를 통해 제외된 경로를 열거나, 인용하거나, 추론하지 말라는 지시를 받습니다. 이는 지시이지 강제가 아닙니다. 강제되는 부분은 `pr.diff`에서의 제거입니다.
 
 이 기능보다 오래된 릴리스에 핀된 소비자: 레포에 `.github/lens-ignore`가 있는데 핀된 스크립트에 `filter_pr_diff.py`가 없으면, `prepare`는 필터링되지 않은 diff를 리뷰어에게 보내는 대신 명시적인 `::error::`로 실패합니다. 핀을 올리거나, 그때까지 규칙 파일을 제거하세요.
+
+## 판정 게시 계약
+
+취합은 판정을 PR 리뷰 또는 이슈 코멘트로 게시하며, 신원도 하나가 아닙니다. 어느 쪽이 될지는 레포가 아니라 판정과 설정에 따라 정해집니다. 판정 코멘트는 라운드의 보고서입니다. 승인과는 별개이며, 병합 게이트가 아닙니다. 코멘트는 병합 결정을 싣지 않습니다. 결정은 ruleset의 필수 체크와 필수 승인 리뷰가 합니다. 코멘트는 코멘트를 달 수 있는 누구나 게시할 수 있고, head에 묶이지 않습니다.
+
+판정을 실어 나르는 것:
+
+- **`ALLOW_AUTO_APPROVE` 켜짐**(main 64e8f46의 `_aggregate`와 `post_verdict`에서 읽음): 리뷰가 가리키는 head(`commit`) 위의 리뷰 상태. `APPROVED` 또는 `CHANGES_REQUESTED` 리뷰입니다. 각각이 어떤 신원으로 게시되는지는 아래 표에 있습니다. 라운드가 리뷰를 게시하지 않으면(approve 보류, `comment` 판정, 리뷰 호출 실패·타임아웃) 필수 승인 리뷰는 그대로 충족되지 않은 채 남습니다.
+- **필수 체크**(2026-10-27 측정) `review / aggregate / Aggregate & Verdict`는 판정이 아니라 라운드가 실행됐는지를 보고합니다. `prepare`가 실패했거나, PR이 크기 한도를 넘었거나, head가 대체됐거나, 응답한 리뷰어가 너무 적거나(단, 조기 종료가 있는 sequential 모드 라운드는 green으로 남음: main 64e8f46 기준 `aggregate_reviews.py`의 `_aggregate` 안 `sequential_bypass`), 판정을 게시하지 못했을 때 실패합니다(단, 리뷰 타임아웃 뒤의 폴백 실패는 체크를 실패시키지 않습니다). `request_changes` 판정은 `success`로 끝납니다. 측정: `Changes Requested`에 `success` — ai-dev-pr-review 실행 40412352616(auto-approve 꺼짐), ai-dev-infra-common 실행 38490525097, 38490210199(auto-approve 켜짐). `Approved`에 `success` — ai-dev-pr-review 실행 40318114362(auto-approve 꺼짐), ai-dev-cab 실행 37541083301(auto-approve 켜짐). 크기 스킵에 `failure` — ai-dev-sherlock 실행 37428842723.
+- **`ALLOW_AUTO_APPROVE` 꺼짐**(main 64e8f46의 `_aggregate`와 `post_verdict`에서 읽음): 판정은 권고입니다. 리뷰가 게시되지 않고, `review / aggregate / Aggregate & Verdict`는 `Changes Requested` 판정에서도 `success`로 끝나므로, 이 파이프라인의 어떤 판정도 병합을 막지 않습니다. prepare 실패, 크기 스킵, 대체된 head는 여전히 필수 체크를 실패시킵니다. `Changes Requested`로 병합을 막아야 하는 레포는 auto-approve를 켜야 합니다.
+
+판정이 게시되는 곳, 같은 레포 실행 기준, main 64e8f46, 2026-10-27 시점:
+
+| 경우 | 표면 | 신원 |
+|---|---|---|
+| `ALLOW_AUTO_APPROVE` 꺼짐(기본값), 모든 판정 | 이슈 코멘트. `approve`나 `request_changes` 헤드라인에 `posted as comment (auto-approve off)`가 붙음 | `github-actions[bot]` |
+| 켜짐, `approve`, 리뷰어 App 토큰 있음 | 리뷰, `APPROVED` | 리뷰어 App의 봇 계정 |
+| 켜짐, `approve`, 리뷰어 App 토큰 없음(민트 스텝이 건너뛰어졌거나 실패) | `GITHUB_TOKEN`으로 리뷰를 시도하고, 실행 로그에 `::notice::No reviewer App token` 줄을 남김. GitHub는 레포가 Actions의 PR 승인을 허용할 때만 이를 받아들이며(이 README는 그 설정을 꺼 두라고 안내함), 그렇지 않으면 `review API failed` 행으로 끝남 | `github-actions[bot]` |
+| 켜짐, `request_changes`(prepare 실패와 크기 스킵 판정 포함) | 리뷰, `CHANGES_REQUESTED` | `github-actions[bot]`. 리뷰어 App 토큰은 `approve`에만 쓰임 |
+| 켜짐, `approve` 보류(응답하지 않은 리뷰어가 있거나, 리뷰되지 않은 major가 있음) | `> [!] Auto-approve withheld, posted as comment: <reason>.`로 끝나는 이슈 코멘트 | `github-actions[bot]` |
+| `comment` 판정(정책 스킵 판정 포함) | 이슈 코멘트, 주석 없음 | `github-actions[bot]` |
+| 리뷰 호출 실패 | `> [!] Intended verdict: **<verdict>** (review API failed, posted as comment)`로 끝나는 이슈 코멘트, 실행 로그에 `::warning::` | `github-actions[bot]` |
+| 리뷰 호출 타임아웃 | `> [!] Intended verdict: **<verdict>** (review API timed out, posted as comment)`로 끝나는 이슈 코멘트, 실행 로그에 `::warning::` | `github-actions[bot]` |
+
+타임아웃 주석과 토큰 부재 notice는 AT-2597(#238)과 함께 나갔습니다. 그보다 오래된 릴리스에 핀된 소비자는 여전히 주석 없는 타임아웃 폴백을 받으며, 이는 `comment` 판정과 똑같아 보입니다.
+
+다른 신원: `target_repo`가 설정되면 모든 게시가 대상 레포의 App 토큰을 쓰므로, 모든 표면에 그 App의 봇 계정이 찍힙니다. 로컬 드라이버(`review_pr_local.py`)는 운영자 자신의 로그인으로 게시합니다. 같은 계정도 API마다 철자가 다릅니다. REST는 `github-actions[bot]`, GraphQL은 `github-actions`를 돌려줍니다.
+
+매 라운드는 게시 전에 이전 라운드의 판정을 접습니다. 코멘트는 최소화하고, `APPROVED`와 `CHANGES_REQUESTED` 리뷰는 dismiss한 뒤 최소화합니다. 예외는 현재 head에 대한 `APPROVED` 리뷰입니다. 이 리뷰는 이번 라운드가 자신의 리뷰를 게시하거나, 리뷰되지 않은 major 때문에 approve를 보류할 때(auto-approve 켜짐·꺼짐 모두)만 dismiss됩니다. 그 밖의 코멘트 게시는 이 리뷰를 그대로 둡니다. auto-approve가 꺼진 상태의 `request_changes`나 `comment` 판정, 그리고 리뷰 실패·타임아웃 폴백이 여기에 해당합니다.
 
 ## PR 메타데이터 블록
 
