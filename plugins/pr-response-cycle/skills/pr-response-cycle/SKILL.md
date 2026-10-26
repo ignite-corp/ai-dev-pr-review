@@ -565,11 +565,21 @@ The trusted producer must post its aggregate before completing the target
 check: `completed_at` closes the aggregate's window. Do not add an arbitrary
 grace period to compensate for an unverified producer ordering.
 
+**Where a runner dispatches the round, an empty result has a third reading, and it is on neither surface here.** A dispatch that fails before posting a check run leaves nothing in the target at all — no run, no check run, no `details_url` to follow — so "nothing was dispatched", "the dispatch is still running" and "the dispatch died" collapse into one indistinguishable `[]`. Measured 2026-10-21 on `hyuk-hur/dev-dotfiles#194`: run `39523085356` in `ignite-corp/ai-dev-pr-review-runner` failed at `Mint target reporting token` with a 404, before the step that reports into the target, and both surfaces there stayed empty for it. `RUNNER_REPO` is the gate's name for the repository the round is dispatched from, read from the target's own `AGENTS.md` **on the base branch, never from the PR head's copy** (*Review routing* rule 5) — pinned away from the head for the reason `REMOTE_REVIEW_SOURCE` is, since a value naming a repository the PR author controls turns a run they can name and complete into the `died` reading, the one reading that opens kind (ii) — and left empty where the repository reviews itself — empty is the skip, since there is then no elsewhere for a dispatch to have died in. With it filled, `runner_dispatch` lists the runner's own `review.yml` runs, paginated to exhaustion like every other read here, and keeps the ones whose run-name carries `<owner>/<repo>#<pr>` — the runner titles its runs that way, measured `LENS review hyuk-hur/dev-dotfiles#194`. The newest by `created_at` decides, except that a run still in flight outranks a newer completed one: `died` is the only reading that opens a path forward, and a round still running is one the gate must wait for.
+
+**The run-name is the run's `name`, not its `display_title`.** `run-name:` sets both to the same string — measured 2026-10-22 over the runner's last 100 `review.yml` runs, the two identical on every one and neither ever empty — so the choice shows only in the fallbacks, and that is what decides it. Where no `run-name:` is set, `name` is the workflow's name while `display_title` is the head commit's subject line (measured the same day on a workflow that sets none: `AI Code Review` against `fix(#140): require every reviewer in the aggregate headline for kind (i)`). A commit subject can carry `<owner>/<repo>#<pr>`, because sessions write them that way; a workflow name cannot, so `display_title` lets a run that is not a review answer as one. The needle is matched on **both** edges: the character after it must not be a digit, or `#194` answers for `#1940`, and the character before it must not be one an owner name can contain, or `my-hyuk-hur/dev-dotfiles#194` answers for `hyuk-hur/dev-dotfiles#194` — and the runner reviews every consumer, so other owners' runs are on the same list this one is. One edge is not a boundary.
+
+**The candidates are bound to this head by time, because the run-name carries no SHA.** Every round the PR has ever had matches the same needle, so on the number alone the newest match after a push is the *previous* head's round — completed, and with its check run on the old SHA, which the surfaces here no longer return for the new one. That is the exact shape of a dispatch that died, announced in the seconds the no-dispatch reading exists to wait out. The bound is the moment this SHA became the head, and it must not be a number the commit's author can choose: `.commit.committer.date` is the client's clock, git refreshes it on an amend or a rebase, and `GIT_COMMITTER_DATE` sets it to anything. GitHub's own stamp is the force-push timeline event's `createdAt`, read through GraphQL because REST's `head_ref_force_pushed` carries no SHA — measured on `hyuk-hur/dev-dotfiles#197` and `#198`, `sha: null` on every one — while `commit.pushedDate` is null, GitHub having stopped populating it. Where the event exists it *is* the bound, and the committer date is not consulted: the event is the moment this SHA became the head, so it already precedes every run dispatched for this head, and preferring a later committer date would prefer a client-set value over the server's, which is the one thing the bound exists to prevent. Only a run created at or after the bound can be this head's dispatch, and one created exactly at it counts. **The limit is printed, and it decides nothing**: a force-push event exists for a force-push and for nothing else, so a branch's first push and an ordinary one leave the bound resting on the committer date alone. The gate marks that bound unauthoritative and the `died` arm refuses to classify on it — a completed run after an unauthoritative bound is reported as a run the gate cannot attribute to this head, and the operator waits or re-dispatches rather than falling to kind (ii). The committer date can still produce a WAIT or a re-dispatch, both of which block; it is never what calls a run this head's dead dispatch.
+
+**The timeline connection is walked with a cursor, not with a bigger window.** `last:` has a server-enforced ceiling, measured 2026-10-23 on `hyuk-hur/dev-dotfiles#194`: `last:100` and `last:250` are accepted, `last:300` and `last:900` are refused outright with `EXCESSIVE_PAGINATION`, *"Requesting 300 records on the `timelineItems` connection exceeds the `last` limit of 250 records"*. A read that widens its window therefore fails the first time it needs to, and *"250 works, so up to 250 is fine"* is the inference that produces exactly that. The read asks for `last:100` with `before:` set to the previous page's `startCursor` — verified the same day on `#194`, two pages deep with `last:5`, distinct cursors each time — and the number never moves, not because 100 is a limit but because the cursor makes the window size irrelevant, and an irrelevant number should be small and fixed. The page count is capped, because a loop in a block pasted into someone else's shell must terminate on its own; reaching the cap without a match is not an absent event, so the bound falls to the committer date, unauthoritative, with the number of events read and whether older ones remain both printed. Do not read `totalCount` on this connection: it ignores `itemTypes` and returns the whole timeline's size — measured the same day, `#194` reports 110 against the 20 force-push events the filtered connection holds.
+
+**And the run record names no target head at all**, so the bound is the only thing tying a run to this SHA. Measured 2026-10-23 on `ignite-corp/ai-dev-pr-review-runner`: every `review.yml` run carries the runner's own `head_sha` and `head_branch` — identical across runs for different consumers and different PRs — with `head_commit` the runner's commit, `pull_requests` empty, and the target appearing only in the run-name. Matching the run's `head_sha` against `HEAD_SHA` is therefore not available: it would match nothing and report every head as having no dispatch. What is left open is a run created after this head's bound but dispatched for an earlier head — a webhook delivered late (AT-3007), or a re-dispatch naming a stale head; a round dispatched for the previous head in the ordinary way is created before this head's push and lands in the `earlier` count, which is why that count is printed. The residual cost is bounded by where it lands: such a run read as `running` is a WAIT, which blocks, and read as `died` it sends the operator to `gh run view` on that very run, where the PR head it reviewed is on the screen. Earlier matching runs are reported rather than dropped in silence, because a round the gate must not read is still something the operator wants to know is there.
+
 Every branch of the result is a decision, and one of them is a block:
 
 | Result | Meaning | Action |
 |--------|---------|--------|
-| `[]` | **No review has run on what you are about to merge.** This is not "quiet" | **BLOCK.** Wait and re-ask. If it stays empty for minutes, the workflow did not trigger on this push — find out why. Do not merge on a run that is not there. Where the workflow cannot run at all — Actions blocked on the account, workflow disabled — *Review routing* requires a local review, and its verdict comment on this SHA is what the gate's kind (ii) reads |
+| `[]` | **No review has run on what you are about to merge.** This is not "quiet" | **BLOCK**, and with `RUNNER_REPO` filled the block says which of three it is, from the runner-side locator above, each read only over runs created since the head bound step 8 defines: **no dispatch** — re-dispatch it, or wait for the webhook (AT-3007); **a dispatch still running** — WAIT, and do not re-dispatch, which cancels it; **a dispatch that died before posting** — where a server-side push stamp bounds this head, the runner could not produce a verdict, so read `gh run view <id> --repo $RUNNER_REPO --log-failed` and fall to kind (ii); with no such stamp the gate reports the run as one it cannot attribute to this head, and blocks. Without `RUNNER_REPO` it is the undiscriminated block: wait and re-ask, and if it stays empty for minutes the workflow did not trigger on this push — find out why. Do not merge on a run that is not there. Where the workflow cannot run at all — Actions blocked on the account, workflow disabled — *Review routing* requires a local review, and its verdict comment on this SHA is what the gate's kind (ii) reads |
 | entries present, but **none** has the review workflow's `workflowName` | other CI ran on this head; the review did not | **BLOCK — identical to `[]`.** A green lint or build run is not a review. Read the names, not the count |
 | the review workflow's entry has `status` other than `completed` | the round is in flight on this SHA | **WAIT**, re-asking until it is `completed` |
 | the selected round is `completed` with `conclusion: success` | a round ran; green does not establish a complete roster (AT-2511) | Read its aggregate's Result, roster and dispositions before accepting kind (i) |
@@ -663,11 +673,31 @@ EXPECTED_REVIEWERS='<n>'
 AGG_MARKER='<!-- multi-llm-review -->'
 AGG_AUTHORS='github-actions[bot] ignite-ai-review-approver[bot]'
 CHECK_APPS='ignite-ai-review-approver'
+# The repository the round is dispatched from, where a runner reviews this
+# one - the repository's own AGENTS.md says which (Review routing rule 5).
+# Read it from the BASE branch's AGENTS.md, never from the PR head's, for
+# the reason the trusted-producer literal below is also pinned away from
+# the head: the head's copy is the PR author's to write, and a value
+# naming a repository they control turns a run they can name and complete
+# into this gate's `died` reading - the one reading that opens kind (ii)
+# and sends the operator past the review round the gate exists to require.
+# Empty means this repository reviews itself, and runner_dispatch below is
+# never called: there is no elsewhere for a dispatch to have died in.
+RUNNER_REPO=''
 # Optional trusted producer owner/repo@full40SHA:path, never a PR-head file.
 # Its single literal CHECK_NAME supplies name evidence when no check exists.
 # The producer must post its aggregate before completing the target check;
 # completed_at closes the aggregate window, with no speculative grace period.
 REMOTE_REVIEW_SOURCE=''
+# How many pages of force-push events the gate's walk reads before it
+# stops. A loop in a block pasted into someone else's shell must
+# terminate on its own, and reaching this cap without a match is not an
+# absent event: the bound falls to the committer date, unauthoritative,
+# and the message says how many events were read and that older ones
+# remain. The window size the walk asks for is NOT here - it is a
+# literal inside the GraphQL query text, where the cursor makes it
+# irrelevant and single quotes keep it unexpanded; step 8 says why.
+FPUSH_PAGE_CAP=10
 VERDICT_RE='^##\s*LENS (?:판정|verdict)\s*—\s*\*\*(?<word>[^*]+)\*\*\s*·\s*head\s*`?<HEAD_SHA>`?\s*$'
 APPROVE_WORDS='^(?:승인|(?i:approved?))$'
 
@@ -702,6 +732,260 @@ round_usable() {
       echo "(a) kind (i) refused: '${REVIEW_WF:-}' on this head ended '${concl:-<none>}' as a $surface — step 8's any-other-conclusion row: the round produced no usable result, so nothing inside its window is this head's verdict, however approving it reads. Per Review routing a local review is required now, and (a) blocks below unless one stands"
       return 1 ;;
   esac
+}
+
+# Step 8's `[]` row, where both surfaces here are empty, read against the
+# repository the round is dispatched from. A dispatch that failed before
+# posting a check run leaves nothing on this repository at all - no run,
+# no check run, and no details_url to follow - so "nothing was dispatched"
+# and "the dispatch died" are the same reading here, and the `[]` row
+# without this is a block rather than a discrimination. The run is in
+# RUNNER_REPO, under its own `review.yml`, and its run-name carries the
+# target: measured 2026-10-21, `LENS review hyuk-hur/dev-dotfiles#194`,
+# which is why the target is passed in rather than guessed. Paginated to
+# exhaustion for discovery's own reason - the runner reviews every
+# consumer, so this repository's run is far down a list a cap would
+# answer `none` from. The cost is bounded and measured rather than
+# assumed: `review.yml` on the runner held 190 runs on 2026-10-23, two
+# pages, and GitHub's 1000-item pagination ceiling is not in sight. It
+# matters because the `earlier` count is complete only below that
+# ceiling - above it the count would quietly stop being true - so the
+# number and its date are recorded here for whoever reads it next.
+#
+# **The PR number does not identify a head.** The run-name carries no
+# SHA, so every round this PR has ever had matches the same needle, and
+# the newest match after a push is the PREVIOUS head's round - completed,
+# and with its check run on the old SHA, which the surfaces here no
+# longer return. Read on the number alone that is a `died`, so the gate
+# would announce that the runner could not produce a verdict and send the
+# operator to kind (ii) during exactly the seconds the `none` arm exists
+# to wait out. $3 is the bound against that, and this function neither
+# computes it nor judges it: only a run created at or after $3 can be
+# this head's dispatch, the rest are counted and reported but never
+# decisive, and what $3 is made of - and what the caller must refuse to
+# decide when its server half is missing - is step 8's, above. Read it
+# there; it is not restated here, because the copy of it that used to be
+# is what sent a reader of this function alone to the very value the
+# bound exists not to trust.
+#
+# $4 is what discovery found on this head, empty by construction at the
+# gate's one call site: a completed run beside a round that WAS
+# discovered is `posted`, which the gate cannot reach and the drill
+# exercises directly. The conclusion is fetched and deliberately not
+# branched on: a completed run that posted no check run is a dead
+# dispatch whatever it concluded, and the operator reads the reason from
+# the run itself, which is why `died` prints `gh run view` - so the
+# conclusion is not projected out of the API here either, since a field
+# fetched and never read is one a later edit is invited to decide on.
+# Newest by created_at among the candidates above the bound, except
+# that an in-flight one outranks a newer completed one - `died` is the
+# only reading that opens a path forward, so a round still running wins.
+# Prints one unit-separated tuple, by discover_round's rule, the same
+# fields for every kind and each field meaning the same thing in each:
+# `<kind> <id> <status> <url> <n>`, where the kind is `none`, `running`,
+# `died` or `posted`, `n` counts the runs that predate this head, and
+# `none` leaves the three middle fields empty.
+# .github/scripts/gate_headline_drill.sh extracts this function from this
+# file by name, as it does the other gate functions.
+runner_dispatch() {
+  local target=$1 pr=$2 since=$3 found=${4-} raw matched unresolved earlier bad_status newest id status url
+  # An absent bound is not "no bound". With `$since` empty the head
+  # filter admits every run, including one with no created_at, while
+  # the `earlier` count admits none - so the function degrades into
+  # exactly the unbounded shape the drill's head-bound control exists
+  # to prove dangerous: the previous head's completed round reported as
+  # this head's `died`, with nothing counted as having predated the
+  # head. The one call site shape-checks the value first, so this is
+  # unreachable from there; the drill sources this function standalone,
+  # which is the point of being extractable, and an absent bound
+  # reading as no bound is the conflation the function exists to end.
+  [ -n "$since" ] \
+    || { echo "ERROR: runner_dispatch was given no bound for $target#$pr - with none every run matches, which is the unbounded reading this function exists to refuse" >&2; return 1; }
+  # And the same argument reaches a bound that is present but unusable.
+  # Every comparison below is lexicographic, so a bound that is not an
+  # ISO-8601 UTC timestamp does not refuse anything - it sorts: `last
+  # Tuesday` puts every `2026-` stamp below it, so the function answers
+  # `none` with every run in the `earlier` count, which reads as "nothing
+  # was dispatched for this head". The one call site validates the format
+  # before calling, so this is unreachable from there, exactly as the
+  # empty case is; the drill sources this function standalone, which is
+  # what both guards are for.
+  case $since in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z ) : ;;
+    * ) echo "ERROR: runner_dispatch was given '$since' as the bound for $target#$pr, which is not an ISO-8601 UTC timestamp - the comparisons here are lexicographic and cannot be made on it" >&2; return 1 ;;
+  esac
+  # The envelope needs no check of its own, measured rather than
+  # assumed: `gh api --jq '.workflow_runs[] | ...'` over a 200 whose
+  # body lacks that key exits **1** with `cannot iterate over: null`,
+  # with and without `--paginate`, so the read's own guard fires.
+  # The same holds for a non-array value and for an error document
+  # served as 200. The one shape that yields no bytes and exit 0 is
+  # `{"workflow_runs": []}`, which is a real empty answer and is read
+  # as one. The drill pins all four.
+  raw=$(gh api --paginate "repos/$RUNNER_REPO/actions/workflows/review.yml/runs?per_page=100" \
+    --jq '.workflow_runs[] | {id, name, status, created_at, html_url} | @json') \
+    || { echo "ERROR: could not list the runs of $RUNNER_REPO's .github/workflows/review.yml - that filename is fixed in this block, not an operator literal like RUNNER_REPO, so a runner whose review workflow is named otherwise 404s here and the block itself is what has to change" >&2; return 1; }
+  # Every round this PR has had, oldest first. Two clauses of the
+  # match rule have to be here, because a reader holding this block
+  # alone cannot read the filter without them:
+  #
+  #   * The candidate is identified by the run's `name`, never by
+  #     `display_title`.
+  #   * The needle `<owner>/<repo>#<pr>` is bounded on **both** edges,
+  #     so neither a longer number nor a longer owner answers for this
+  #     PR.
+  #
+  # Why those two and not others - what each field falls back to, which
+  # fallback can carry the needle, and the measurements behind both -
+  # is step 8's, above, and is not repeated here. The head bound is
+  # applied below and not in this match, so the runs it excludes can
+  # still be counted.
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  matched=$(printf '%s\n' "$raw" | jq -cs --arg t "$target#$pr" \
+    '[ .[] | select(((.name // "") | split($t)) as $p
+                    | ($p | length) as $n
+                    | $n > 1
+                    and any(range(0; $n - 1);
+                            ($p[.]     | test("[A-Za-z0-9._-]$") | not)
+                        and ($p[. + 1] | test("^[0-9]")          | not))) ]
+     | sort_by(.created_at // "")') \
+    || { echo "ERROR: could not read $RUNNER_REPO's review runs for $target#$pr" >&2; return 1; }
+  # A run too young to have resolved its name is not evidence of
+  # absence. Measured 2026-10-26 on `ignite-corp/ai-dev-pr-review-runner`
+  # run 40296968898, by polling the run list every 3s and re-reading
+  # each new run at +1s, +2s, +5s and +10s: created 09:06:00Z, served
+  # at 09:06:02Z with `name` AND `display_title` both the bare workflow
+  # name, and by 09:06:03Z both carrying the resolved `run-name:`. So
+  # for the first seconds of a run's life the
+  # needle is absent from every field on this endpoint, and no choice of
+  # field avoids it.
+  #
+  # Keyed on the SHAPE and not on this target's needle: a run whose name
+  # carries some other `<owner>/<repo>#<n>` has resolved and is a real
+  # non-match, correctly excluded; a run whose name carries no such
+  # shape at all has not resolved yet, and is not a non-match. The rule
+  # needs no second literal naming the runner's own workflow, and it
+  # covers any unresolved rendering rather than only the bare-name one.
+  #
+  # The refusal is not confined to the `none` reading, though that is
+  # where the harm was found: `died` is the reading that opens a path
+  # forward, and an unresolved run beside a completed one could be this
+  # head's dispatch just started, which would make the answer WAIT. So
+  # any unresolved candidate at or after the bound stops the locator and
+  # asks for a re-read, which blocks either way.
+  #
+  # It IS confined to runs that can still be the young one it describes.
+  # A name resolves seconds after creation and long before a run
+  # finishes, so a `completed` run whose name carries no needle is not
+  # too young - it is a run of a workflow that renders no target into
+  # its name, which is a plain non-match. Refusing on it would be a
+  # standing block that no re-read can clear, under a message telling
+  # the operator to wait for something that has already happened, and
+  # it would do that for every consumer of the runner at once. The harm
+  # this rule exists to stop is unreachable through a completed run:
+  # that run is not a dispatch about to start, so no re-dispatch of
+  # this head can cancel it.
+  #
+  # What it costs to get this wrong, which is why it refuses rather than
+  # guessing: the `none` arm tells the operator to re-dispatch, and the
+  # runner's own `review.yml` carries `concurrency: cancel-in-progress:
+  # true`, so that re-dispatch cancels the round that was already
+  # running. A hand-dispatch followed at once by a gate read is an
+  # ordinary sequence, not a contrived one.
+  #
+  # This refusal is a pause, not a wall: the name resolves on its own
+  # within a few seconds of the run being created, so re-reading ends
+  # it without anyone doing anything. It is the one refusal in this arm
+  # that clears itself. Measured 2026-10-26 over six runs: every read
+  # at 2.2s of age or younger saw the bare name, every read at 3.2s or
+  # older saw the resolved one, and the three caught bare resolved
+  # 2.6s, 3.2s and 3.6s after creation.
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  unresolved=$(printf '%s\n' "$raw" | jq -s --arg s "$since" \
+    '[ .[] | select((.created_at // "") >= $s)
+           | select((.status // "") != "completed")
+           | select(((.name // "") | test("[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+")) | not) ] | length') \
+    || { echo "ERROR: could not check $RUNNER_REPO's runs for $target#$pr for names that have not resolved yet" >&2; return 1; }
+  [ "$unresolved" = 0 ] \
+    || { echo "ERROR: $RUNNER_REPO has $unresolved unfinished run(s) created since this head whose name carries no <owner>/<repo>#<n> at all, which is a run too young to have resolved its run-name rather than a run for another target - re-read in a few seconds and it will have resolved on its own, no re-dispatch needed. Answering now could report no dispatch for a round that has just started, and the re-dispatch that advice invites would cancel it" >&2; return 1; }
+  # Every read is guarded, the local jq passes as well as the one
+  # network call, since only `raw` touches the network at all.
+  # An unguarded jq here falls through with an empty value and returns
+  # 0: an empty `newest` takes the `none` path, which the gate
+  # reports as "nothing was dispatched, re-dispatch it", and an empty
+  # `earlier` turns the caller's `-eq 0` into a non-numeric test. That
+  # is a broken read wearing an absence's clothes, which is the one
+  # conflation this function exists to end; it may not be reintroduced
+  # inside it.
+  #
+  # A run with no created_at cannot be shown to be this head's, so it
+  # counts as earlier: default-deny, the rule discovery's startless
+  # candidate follows.
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  earlier=$(printf '%s' "$matched" | jq --arg s "$since" \
+    '[ .[] | select((.created_at // "") < $s) ] | length') \
+    || { echo "ERROR: could not count $RUNNER_REPO's runs for $target#$pr that predate this head" >&2; return 1; }
+  # A status is refused for being ABSENT, never for being unfamiliar.
+  # The defect was that `select(.status != "completed")` passed a
+  # missing value, so a malformed record became `running` and the
+  # operator waited on nothing. The fix is **not** an allow-list of
+  # valid states: a run can legitimately sit in a lifecycle state this
+  # gate has never seen, and a list of the valid ones turns that into a
+  # hard error on a perfectly normal round.
+  #
+  # The asymmetry is what decides the direction. A value missing from
+  # an allow-list makes a NORMAL state an error; a value missing from a
+  # rejection makes a BROKEN record a WAIT - and WAIT blocks. The
+  # second failure is the safe one, so the code enumerates what is
+  # invalid, which is one thing: nothing there at all.
+  #
+  # Measured 2026-10-23 over 200 runs, 100 of the runner's `review.yml`
+  # and 100 of a consumer's own: 199 `completed`, 1 `in_progress`, no
+  # third value. That is what was seen and not what exists, and nothing
+  # below decides on it.
+  #
+  # The refusal carries the same bound as `newest`, and for the reason
+  # the refusal exists: only a candidate at or after `$since` can be
+  # read as `running`, so only there does a missing status turn into a
+  # wait on nothing. A statusless run below the bound reaches the
+  # `earlier` count and nothing else, and refusing on it would block
+  # this head's gate on a historical run that decides nothing - the
+  # safe direction, but a block the design does not need.
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  bad_status=$(printf '%s' "$matched" | jq -r --arg s "$since" \
+    '[ .[] | select((.created_at // "") >= $s) | select((.status // "") == "") ] | length') \
+    || { echo "ERROR: could not read the statuses of $RUNNER_REPO's runs for $target#$pr" >&2; return 1; }
+  [ "$bad_status" = 0 ] \
+    || { echo "ERROR: $RUNNER_REPO returned $bad_status run(s) for $target#$pr since this head carrying no status at all - a record the gate cannot read is not a round in flight, and it will not be waited on as one" >&2; return 1; }
+  # Among the candidates above the bound, an in-flight one outranks a
+  # newer completed one. Newest-wins alone would report `died` - the
+  # only reading that opens a path forward - while a round is still
+  # running, which concurrency cancellation makes narrow rather than
+  # impossible. And no candidate here posted a check run, or discovery
+  # would have found it, so a run still running is genuinely in flight
+  # and WAIT is the answer. Within each group the newest still decides.
+  # shellcheck disable=SC2016  # the $names are jq's, bound with --arg
+  newest=$(printf '%s' "$matched" | jq -r --arg s "$since" \
+    '[ .[] | select((.created_at // "") >= $s) ] as $since_head
+     | (([ $since_head[] | select(.status != "completed") ] | last)
+        // ($since_head | last)) // empty
+     | [((.id // "") | tostring), (.status // ""), (.html_url // "")] | join("\u001f")') \
+    || { echo "ERROR: could not read $RUNNER_REPO's newest run for $target#$pr since this head" >&2; return 1; }
+  # Every kind emits those fields in that order, so no slot ever
+  # changes meaning: a tuple whose second field was the run id for
+  # one kind and the status for another reads correctly only while the
+  # caller remembers which, and the next edit to the WAIT arm is the one
+  # that forgets. The id and the status are both carried for all of
+  # them, so the WAIT message can name the run as well as its state.
+  [ -n "$newest" ] || { printf 'none\x1f\x1f\x1f\x1f%s\n' "$earlier"; return 0; }
+  IFS=$'\x1f' read -r id status url <<<"$newest"
+  if [ "$status" != completed ]; then
+    printf 'running\x1f%s\x1f%s\x1f%s\x1f%s\n' "$id" "${status:-<none>}" "$url" "$earlier"
+  elif [ -n "$found" ]; then
+    printf 'posted\x1f%s\x1f%s\x1f%s\x1f%s\n' "$id" "$status" "$url" "$earlier"
+  else
+    printf 'died\x1f%s\x1f%s\x1f%s\x1f%s\n' "$id" "$status" "$url" "$earlier"
+  fi
 }
 
 # Read only an operator-selected immutable producer file, never execute it.
@@ -1369,6 +1653,278 @@ if [ -n "$round_surface" ]; then
   if round_usable "$round_status" "$round_concl" "$round_surface" "$run_start" "$round_url"; then
     if w=$(window_bounds "$run_start" "$run_end"); then kind_i=yes; else echo "$w"; fi
   fi
+elif [ -n "$RUNNER_REPO" ]; then
+  # Step 8's `[]` row with a runner in front of it: nothing here says
+  # whether the dispatch never happened, is still running, or died before
+  # it could post. The locator is read only here — a round on either
+  # surface answers the question already — and only with RUNNER_REPO
+  # filled, since a repository that reviews itself has no elsewhere.
+  # A run older than this head belongs to a head that is no longer this
+  # one, and the locator must not read it as this head's dispatch — the
+  # previous head's round completed and posted its check run on the OLD
+  # SHA, so on the PR number alone it reads as a dispatch that died.
+  # The bound is the moment this SHA became the head. Two clauses of
+  # that rule have to be here, because a reader holding this block
+  # alone in a pasted shell cannot read the arm correctly without
+  # them:
+  #
+  #   * The bound is the force-push event's server-side `createdAt`
+  #     for THIS SHA, and the committer date only where there is no
+  #     such event.
+  #   * On the committer date the bound is **unauthoritative** and the
+  #     `died` arm does not classify on it — so WAIT and re-dispatch
+  #     stay open and kind (ii) does not.
+  #
+  # Everything else is step 8's, above, and is not repeated here: why
+  # the committer date cannot be trusted, what else was looked for and
+  # found missing, how the connection is walked, and every measurement
+  # behind all of it. Those are what a reader needs to understand the
+  # design, not to act on this row — and a reader who wants them can
+  # open step 8, where they are written once.
+  # The committer date is read in the `else` below, where it is the
+  # bound, and not here. Reading it unconditionally made a hard block
+  # out of a value the server path never consults: a rate-limited or
+  # malformed committer-date read stopped the gate on a head whose
+  # force-push stamp had been read successfully, which is a block
+  # attributable to a read that decides nothing. Both paths still get a
+  # shape check - the server path's is the force-push `case` inside the
+  # walk, the committer path's is beside its read.
+  #
+  # The read and the filter are two statements on purpose. As one
+  # pipeline inside a command substitution the assignment's status is
+  # the LAST command's — `jq -r`, which prints nothing for an absent
+  # node and exits 0 — so a GraphQL read that failed, for whatever
+  # reason (the gate does not guess; it points at gh's own message),
+  # would arrive here as an empty `head_push_time`, the guard below
+  # would be dead code, the bound would collapse to the committer date,
+  # and the caveat would be printed saying there was no force-push
+  # event when there was one and the read broke. That is the bound
+  # loosening to a value the commit's author can set, which is the hole
+  # this bound exists to close, and it is this repository's recurring
+  # shape: a broken read indistinguishable from an absence.
+  # `set -o pipefail` is not available to fix it — this block is pasted
+  # whole into a shell whose options it does not control, and nothing
+  # in it sets any. So `gh` gets a statement of its own, as
+  # `runner_dispatch`'s `raw` read already does, and its exit status is
+  # the one tested.
+  #
+  # The force-push events, newest first, walked back a page at a time
+  # with `before:` and the previous page's `startCursor` until this
+  # head's is found or the connection is exhausted. Why the window is
+  # a fixed `last:100` rather than a widening one, why `totalCount` is
+  # not read, and the measurements behind both are step 8's, above.
+  #
+  # The page count is capped at FPUSH_PAGE_CAP, declared with the other
+  # literals above so the number has one home; the rationale is there
+  # too. Reaching the cap without a match is not an absent event: the
+  # bound falls to the committer date, unauthoritative, and the message
+  # says how many events were read and that older ones remain. That
+  # fall-back is the safe floor this paging sits in front of, not a
+  # thing it replaces.
+  # The cap is read before the walk, as headline_roster reads
+  # EXPECTED_REVIEWERS before judging a roster, and for the same kind of
+  # reason: `[ 0 -lt "" ]` and `[ 0 -lt x ]` both exit non-zero, so an
+  # unset or non-numeric cap ends the loop on its first test. Measured
+  # 2026-10-26: zero pages read, loop status 0, no diagnostic - the
+  # stamp then reads empty exactly as a PR with no force-push event
+  # does, the bound falls to the committer date, and the gate prints
+  # "among the 0 read" as though it had looked. That is the safe
+  # direction and a silent one, which is the pairing this whole arm
+  # exists to refuse, so the cap is refused by name instead.
+  # Two tests, and the second is arithmetic on purpose. Matching zero as
+  # a literal catches the spelling `0` and nothing else: `00` is
+  # non-empty, is all digits, and is not the string `0`, so it passed -
+  # and `[ 0 -lt 00 ]` is false, so the walk read nothing and the arm
+  # fell to the committer date reporting "among the 0 read", which is
+  # exactly the silent pairing this guard exists to refuse. A glob can
+  # only ever enumerate spellings; `-gt 0` decides the value, so there
+  # is nothing left to enumerate.
+  case ${FPUSH_PAGE_CAP:-} in
+    '' | *[!0-9]* ) echo "ERROR: FPUSH_PAGE_CAP is '${FPUSH_PAGE_CAP:-<unset>}', not a positive page count - the walk below would read nothing and fall to the committer date as though this head had never been force-pushed, which is a reading it must not reach without looking"; exit 1 ;;
+  esac
+  [ "$FPUSH_PAGE_CAP" -gt 0 ] \
+    || { echo "ERROR: FPUSH_PAGE_CAP is '$FPUSH_PAGE_CAP', not a positive page count - the walk below would read nothing and fall to the committer date as though this head had never been force-pushed, which is a reading it must not reach without looking"; exit 1; }
+  fpush_cursor=''
+  fpush_pages=0
+  fpush_seen=0
+  fpush_total_seen=0
+  fpush_more=false
+  head_push_time=''
+  while [ "$fpush_pages" -lt "$FPUSH_PAGE_CAP" ]; do
+    fpush_pages=$((fpush_pages + 1))
+    # `before` is omitted on the first page: a declared-but-unsupplied
+    # GraphQL variable is null, which is what "start at the newest"
+    # means, where an empty string would be an invalid cursor.
+    #
+    # It is passed with `-f`, not `-F`: `-F` applies gh's type coercion,
+    # which sends a value matching ^-?[0-9]+$ as a JSON number, and
+    # `$before` is declared `String`. Real timelineItems cursors are
+    # base64 and effectively never all digits, so this fails closed
+    # rather than silently - but it would exit on "could not read page
+    # N" for a reason the operator cannot act on.
+    #
+    # The same rule decides the other two on the call below: `$o` and
+    # `$r` are declared `String!`, GitHub allows an all-digit owner or
+    # repository name, and an operator substituting one would get the
+    # same unactionable exit. They take `-f`. `-F n=N` stays `-F`,
+    # because `$n:Int!` needs exactly the coercion the others must not
+    # have. The three other GraphQL calls in this block predate this
+    # row and are left as they are.
+    fpush_before=()
+    [ -z "$fpush_cursor" ] || fpush_before=(-f "before=$fpush_cursor")
+    fpush_raw=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!,$before:String) {
+  repository(owner:$o,name:$r) { pullRequest(number:$n) {
+    timelineItems(last:100, before:$before, itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]) {
+      pageInfo { hasPreviousPage startCursor }
+      nodes { ... on HeadRefForcePushedEvent { createdAt afterCommit { oid } } } }
+  } }
+}' -f o=OWNER -f r=REPO -F n=N ${fpush_before[@]+"${fpush_before[@]}"} \
+      --jq '.data.repository.pullRequest.timelineItems
+            | {more: .pageInfo.hasPreviousPage, cursor: (.pageInfo.startCursor // ""),
+               nodes: [.nodes[] | {oid: (.afterCommit.oid // ""), at: (.createdAt // "")}]} | @json') \
+      || { echo "ERROR: could not read page $fpush_pages of the force-push events on OWNER/REPO#N — gh printed why above; the bound is not falling back to the committer date on a read that failed"; exit 1; }
+    # Guarded like every other read here, and for the reason this whole
+    # arm exists: a failed jq leaves `head_push_time` empty, which is
+    # byte-identical to the legitimate absence of an event —
+    # `head_bound=committer`, the bound collapsing to the value
+    # `GIT_COMMITTER_DATE` can set, and the gate printing that there was
+    # no force-push event as a statement of fact. The block sets no
+    # shell options, so nothing catches it for them.
+    head_push_time=$(printf '%s\n' "$fpush_raw" | jq -r --arg s "$HEAD_SHA" \
+      '[.nodes[] | select(.oid == $s) | .at] | max // ""') \
+      || { echo "ERROR: could not read the force-push stamp for $HEAD_SHA out of the timeline OWNER/REPO#N returned — an unreadable answer is not an absent event, and the bound does not fall back on one"; exit 1; }
+    fpush_seen=$(printf '%s\n' "$fpush_raw" | jq -r '.nodes | length') \
+      || { echo "ERROR: could not count the force-push events read on OWNER/REPO#N — see above: an unreadable answer is not an absent event"; exit 1; }
+    fpush_more=$(printf '%s\n' "$fpush_raw" | jq -r '.more') \
+      || { echo "ERROR: could not read whether older force-push events remain on OWNER/REPO#N — without it the gate cannot tell an exhausted connection from a truncated one"; exit 1; }
+    fpush_cursor=$(printf '%s\n' "$fpush_raw" | jq -r '.cursor') \
+      || { echo "ERROR: could not read the cursor for the next page of force-push events on OWNER/REPO#N — without it this walk cannot continue, and a truncated walk is not an absent event"; exit 1; }
+    # Shape, not only exit status: jq exits 0 over a payload that has
+    # no `.nodes` and no `.pageInfo`, so only a well-formed answer is
+    # allowed to decide, and an empty stamp counts as the no-event
+    # case only when it came out of one.
+    case $fpush_seen in
+      '' | *[!0-9]* ) echo "ERROR: the force-push event count on OWNER/REPO#N read back as '${fpush_seen:-<empty>}', not a number, so the timeline read did not return what this gate expects"; exit 1 ;;
+    esac
+    case $fpush_more in
+      true | false ) : ;;
+      * ) echo "ERROR: the timeline's hasPreviousPage on OWNER/REPO#N read back as '${fpush_more:-<empty>}', not a boolean, so the gate cannot tell an exhausted connection from a truncated one"; exit 1 ;;
+    esac
+    case $head_push_time in
+      '' | [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z ) : ;;
+      * ) echo "ERROR: the force-push stamp for $HEAD_SHA read back as '$head_push_time', which is not an ISO-8601 UTC timestamp, and the gate will not bound a head on a value it cannot read"; exit 1 ;;
+    esac
+    fpush_total_seen=$((fpush_total_seen + fpush_seen))
+    [ -z "$head_push_time" ] || break
+    [ "$fpush_more" = true ] || break
+    [ -n "$fpush_cursor" ] \
+      || { echo "ERROR: OWNER/REPO#N reports older force-push events but returned no cursor to reach them — a walk that cannot continue is not an exhausted one"; exit 1; }
+  done
+  # The server stamp, where there is one, is the whole bound — not the
+  # later of it and the committer date. It is the moment this SHA
+  # became the head, so it already precedes every run dispatched for
+  # this head, and taking a later committer date buys nothing: what it
+  # buys is a path for a client-set value to beat the server stamp,
+  # which is the one thing this bound exists to prevent. Two things
+  # follow from a `sort | tail -1` here. A committer date later than
+  # the stamp — a future-dated `GIT_COMMITTER_DATE`, or ordinary clock
+  # skew — would make `head_time` the committer date while the label
+  # below still said "the head's push stamp", so the lines would print
+  # a sentence the code itself contradicts. And it would push the
+  # bound into the future, dropping an in-flight dispatch below it, so
+  # the `none` arm would tell the operator to re-dispatch a round the
+  # next line warns re-dispatching cancels. Choosing the value and the
+  # label from the same test is what makes them agree by construction
+  # rather than by maintenance.
+  if [ -n "$head_push_time" ]; then
+    head_bound=server
+    head_time=$head_push_time
+    head_time_note="the head's push stamp"
+  else
+    # Read here, where it is the bound. `.commit.committer.date` comes
+    # back normalised to UTC even for a commit made on a machine that is
+    # not, so the pattern below requires the `Z`, and the lexicographic
+    # comparison in `runner_dispatch` is valid because of it.
+    head_commit_time=$(gh api repos/OWNER/REPO/commits/"$HEAD_SHA" --jq .commit.committer.date) \
+      || { echo "ERROR: could not read the committer date of $HEAD_SHA, and with no force-push stamp for this head there is nothing else to bound a runner-side run with"; exit 1; }
+    case $head_commit_time in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z ) : ;;
+      * ) echo "ERROR: $HEAD_SHA's committer date read back as '${head_commit_time:-<empty>}', which is not an ISO-8601 UTC timestamp, so the fallback half of the bound is unreadable and there is no bound"; exit 1 ;;
+    esac
+    head_bound=committer
+    head_time=$head_commit_time
+    head_time_note="the committer date, not a push stamp — see the caveat above"
+    echo "(a) kind (i): no force-push event for $HEAD_SHA among the $fpush_total_seen read on OWNER/REPO#N over $fpush_pages page(s) (older ones remain: $fpush_more) — the bound below is the committer date, which the commit's author can set, so it cannot say a completed run belongs to this head rather than the last"
+  fi
+  disp=$(runner_dispatch OWNER/REPO N "$head_time" "$round_surface") \
+    || { echo "ERROR: could not locate the dispatch in $RUNNER_REPO"; exit 1; }
+  IFS=$'\x1f' read -r disp_kind disp_id disp_status disp_url disp_earlier <<<"$disp"
+  # The tuple is checked for shape BEFORE anything is decided from it.
+  # Below the `case` this refusal still exits, but only after the
+  # operator has read "a local review (kind (ii)) is the path on this
+  # head" — advice drawn from a tuple the gate has just said it cannot
+  # read. `-eq` on a non-number is a shell error followed by the line
+  # printing anyway with a hole in it, and the drill builds exactly
+  # that tuple for the unguarded controls.
+  case $disp_earlier in
+    '' | *[!0-9]* ) echo "ERROR: runner_dispatch reported '${disp_earlier:-<nothing>}' earlier runs, which is not a count, so the tuple is not the one this gate reads"; exit 1 ;;
+  esac
+  case $disp_kind in
+    # The `none`, `running` and `died` readings each consult the
+    # bound, because each gives advice that depends on it.
+    # "Re-dispatch it" is the one here, and on an unauthoritative
+    # bound a round for this head could have been dispatched before
+    # the committer date and so fall outside the window — in which
+    # case re-dispatching cancels a round that is running, which is
+    # what the `running` reading warns against.
+    none)    if [ "$head_bound" = server ]; then
+               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO has no review run for OWNER/REPO#N since $head_time ($head_time_note) — nothing was dispatched for it. Re-dispatch it, or wait for the webhook (AT-3007). Do not merge on a round that is not there"
+             else
+               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO has no review run for OWNER/REPO#N since $head_time ($head_time_note) — but with no server-side push stamp that window may start after a round this head's dispatch already began, so this is not proof that nothing was dispatched. Wait for the webhook (AT-3007); before re-dispatching, read $RUNNER_REPO's recent runs for this PR, because a second dispatch cancels one that is running. Do not merge on a round that is not there"
+             fi ;;
+    # WAIT blocks either way, so an unauthoritative bound may produce
+    # it — but on that bound a round still running may be the PREVIOUS
+    # head's, which will post its check run on the old SHA and so can
+    # never resolve this wait, while the line's own warning discourages
+    # the re-dispatch that would end it. So the arm says which it is.
+    running) if [ "$head_bound" = server ]; then
+               echo "(a) kind (i): no round here yet, and $RUNNER_REPO's run $disp_id for OWNER/REPO#N, started since $head_time ($head_time_note), is '$disp_status' ($disp_url) — WAIT for it. Do NOT re-dispatch: a second dispatch cancels this one"
+             else
+               echo "(a) kind (i): no round here yet, and $RUNNER_REPO's run $disp_id for OWNER/REPO#N is '$disp_status' ($disp_url), started after $head_time ($head_time_note) — WAIT, but read which head it was dispatched for before waiting long: with no server-side push stamp this may be the previous head's round, which posts on the old SHA and will never complete this wait. Do NOT re-dispatch blind: a second dispatch cancels a round that is genuinely this head's."
+               echo "    gh run view $disp_id --repo $RUNNER_REPO"
+             fi ;;
+    # The one reading that opens a path forward rather than blocking, so
+    # it is the one the bound has to be trusted for. Without the server
+    # stamp the gate cannot tell this head's dead dispatch from the last
+    # head's finished round, and it says so instead of guessing: WAIT
+    # and re-dispatch both block, and blocking is the safe side.
+    died)    if [ "$head_bound" = server ]; then
+               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO's newest run for OWNER/REPO#N since $head_time ($head_time_note) completed without posting one ($disp_url) — the runner could not produce a verdict. Read why, then per Review routing a local review (kind (ii)) is the path on this head:"
+               echo "    gh run view $disp_id --repo $RUNNER_REPO --log-failed"
+             else
+               echo "(a) kind (i): $RUNNER_REPO's run $disp_id completed after $head_time ($head_time_note) ($disp_url), but with no server-side push stamp for $HEAD_SHA the gate cannot say it is THIS head's dispatch rather than the previous head's round — it is not read as a dead dispatch, and kind (ii) is not opened on it. WAIT; before re-dispatching, read $RUNNER_REPO's recent runs for this PR, because a second dispatch cancels one that is running — and on this bound a round genuinely in flight for this head can have been created before it, which puts it in the earlier count rather than among the candidates:"
+               echo "    gh run view $disp_id --repo $RUNNER_REPO"
+             fi ;;
+    posted)  echo "ERROR: $RUNNER_REPO's run $disp_id ($disp_url) completed beside a round discovery did find — this line cannot be reached from here, so the gate block has been edited; it blocks rather than warns, because a gate that has announced it cannot be trusted may not go on to decide"; exit 1 ;;
+    # Every other failure in this block exits loudly; a reading the gate
+    # does not know is one more, not a row to pass over in silence on
+    # the way to the comment count.
+    *)       echo "ERROR: runner_dispatch returned '${disp_kind:-<nothing>}', which this gate does not know how to read — it will not guess on a head nothing has reviewed"; exit 1 ;;
+  esac
+  [ "$disp_earlier" -eq 0 ] \
+    || echo "    $disp_earlier earlier run(s) for this PR predate this head and did not decide"
+else
+  # An empty RUNNER_REPO is a valid value — "this repository reviews
+  # itself", so there is no elsewhere for a dispatch to have died in —
+  # and it is byte-identical to the state of having forgotten to fill
+  # it. Both skip the locator and leave the same `[]` row, which is the
+  # conflation this whole arm exists to end, here on the configuration
+  # surface rather than in a read. So the gate prints which reading it
+  # took and what would change it; no new placeholder convention is
+  # invented for it, because the literal is filled from this
+  # repository's AGENTS.md exactly as REVIEW_WF and EXPECTED_REVIEWERS
+  # are (Review routing rule 5).
+  echo "(a) kind (i): no round on either surface here, and RUNNER_REPO is empty, taken as 'this repository reviews itself', so there is nowhere else to look. Wait and re-ask; if it stays empty the workflow did not trigger on this push, and Review routing's local review (kind (ii)) is the path. Do not merge on a round that is not there. And if a runner does review this repository, that empty value is an unfilled literal rather than a fact: fill it from this repository's AGENTS.md (Review routing rule 5), as REVIEW_WF and EXPECTED_REVIEWERS are filled, and read this row again"
 fi
 c_total=$(gh api repos/OWNER/REPO/issues/N --jq .comments) \
   || { echo "ERROR: could not read the comment count"; exit 1; }

@@ -1,6 +1,6 @@
 """Run gate_headline_drill.sh against the plugin's SKILL.md (AT-2648).
 
-The core pr-response-cycle gate has thirteen shell functions carried inside
+The core pr-response-cycle gate has fourteen shell functions carried inside
 plugins/pr-response-cycle/skills/pr-response-cycle/SKILL.md, pasted whole
 into a shell on whatever machine runs the gate. The drill extracts them from
 that file by name and feeds them the aggregate headlines, review lists and
@@ -45,11 +45,11 @@ GATE_FUNCTIONS = tuple(_DRILL_FUNCTION_NAMES.findall(DRILL.read_text(encoding="u
 # How many the drill names today. Update it together with the drill, as
 # EXPECTED_CHECKS is: a regex that matched nothing would otherwise hand the
 # parametrized test an empty tuple, which pytest skips rather than fails.
-EXPECTED_GATE_FUNCTIONS = 13
+EXPECTED_GATE_FUNCTIONS = 14
 
 # Checks the drill runs when every scenario section executes and shellcheck
 # is on PATH. Update it together with the drill, never to match a shortfall.
-EXPECTED_CHECKS = 416
+EXPECTED_CHECKS = 744
 
 RESULT_LINE = re.compile(r"^RESULT: (\d+) passed, (\d+) failed, (\d+) skipped$", re.M)
 
