@@ -1,4 +1,8 @@
-"""Helpers for the test modules that run a tool rather than import a module.
+"""Helpers shared by the test modules.
+
+Most are for the modules that run a tool rather than import a module;
+``LiveGhCalled`` is the type the live-`gh` ban in `tests/conftest.py`
+raises, kept here so a test can assert on it.
 
 Here rather than in `tests/conftest.py` because `pythonpath` reaches
 `.github/scripts` and not `.github/scripts/tests`: importing a name out of
@@ -39,3 +43,13 @@ def ran(name: str, argv: list[str], **kwargs: Any) -> subprocess.CompletedProces
     if completed.returncode not in RAN:
         pytest.fail(f"{name} exited {completed.returncode}: {completed.stderr}")
     return completed
+
+
+class LiveGhCalled(BaseException):
+    """Raised by the ``_no_live_gh`` fixture when a test reaches `gh`.
+
+    A ``BaseException``, not an ``Exception``: scripts this suite drives
+    catch ``Exception`` around paths that can reach `gh` (review_pr_local.py
+    turns a reviewer's raise into a degraded result), and an ``Exception``
+    subclass would be absorbed there and leave the test green.
+    """
