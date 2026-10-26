@@ -1664,6 +1664,21 @@ def _post_comment(pr_number: str, repo: str, body: str) -> bool:
     return True
 
 
+def _annotation_value(text: str) -> str:
+    """Escape a value so a workflow command keeps it on its one line."""
+    stripped = text.strip()
+    return stripped.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+_REASON_REVIEW_FAILED = "review API failed"
+_REASON_REVIEW_TIMED_OUT = "review API timed out"
+
+
+def _intended_verdict_note(verdict: str, reason: str) -> str:
+    """The note a review fallback appends, so it reads apart from a comment."""
+    return f"\n\n> [!] Intended verdict: **{verdict}** ({reason}, posted as comment)"
+
+
 _MINIMIZE_QUERY = """
 mutation($id: ID!) {
   minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
@@ -2092,6 +2107,17 @@ def post_verdict(
         reviewer_token = os.environ.get("REVIEWER_TOKEN", "").strip()
         if verdict == "approve" and reviewer_token:
             review_env["GH_TOKEN"] = reviewer_token
+        elif verdict == "approve":
+            # The mint step is skipped or continue-on-error, so an absent
+            # token is otherwise invisible in the run (AT-2597). A notice,
+            # not a warning: auto-approve with no App is a supported setup;
+            # the warning belongs to the fallback below, if it happens.
+            print(
+                "::notice::No reviewer App token; approve will be attempted"
+                " under GH_TOKEN; if the API rejects it, the verdict is posted"
+                f" as a comment marked '{_REASON_REVIEW_FAILED}'",
+                file=sys.stderr,
+            )
         try:
             result = subprocess.run(
                 base_args + [flag],
@@ -2102,17 +2128,23 @@ def post_verdict(
                 env=review_env,
             )
         except subprocess.TimeoutExpired:
-            print("Post review timed out, falling back to comment", file=sys.stderr)
-            return _post_comment(pr_number, repo, comment)
-        if result.returncode != 0:
             print(
-                f"Post review failed: {result.stderr}, falling back to comment",
+                "::warning::Post review timed out, falling back to comment",
                 file=sys.stderr,
             )
-            fallback_note = (
-                f"\n\n> [!] Intended verdict: **{verdict}**"
-                " (review API failed, posted as comment)"
+            timeout_note = _intended_verdict_note(verdict, _REASON_REVIEW_TIMED_OUT)
+            # Returning False, not exiting, is deliberate: review_result
+            # records it as posted=false (AT-2520), pinned by
+            # test_aggregate_review_result.py
+            # test_timed_out_review_returns_the_actual_comment_fallback_outcome.
+            return _post_comment(pr_number, repo, comment + timeout_note)
+        if result.returncode != 0:
+            print(
+                "::warning::Post review failed, falling back to comment: "
+                + _annotation_value(result.stderr),
+                file=sys.stderr,
             )
+            fallback_note = _intended_verdict_note(verdict, _REASON_REVIEW_FAILED)
             if not _post_comment(pr_number, repo, comment + fallback_note):
                 print("Both review and fallback comment failed", file=sys.stderr)
                 sys.exit(1)
