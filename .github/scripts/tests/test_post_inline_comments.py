@@ -484,7 +484,11 @@ class TestPostCutoffSummary:
 
         def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
             if cmd[:2] == ["gh", "api"]:
-                return SimpleNamespace(returncode=0, stdout="1", stderr="")
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(["github-actions[bot]", "Bot", "<!-- round-cutoff-claude-r6 -->\n<!-- fold-count: 2 -->"]),
+                    stderr="",
+                )
             posted.append(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -509,6 +513,9 @@ class TestMainRoundCutoff:
         monkeypatch.setattr(
             post_inline_comments, "fetch_existing_threads", lambda repo, pr: []
         )
+        # The cutoff route looks the head up for its fold comment; never a
+        # real `gh pr view` from a test.
+        monkeypatch.setattr(post_inline_comments, "get_pr_head_sha", lambda pr: "abc")
         monkeypatch.setattr(
             sys,
             "argv",
@@ -539,6 +546,7 @@ class TestMainRoundCutoff:
             reviewer: str,
             round_number: int,
             comments: list[dict[str, Any]],
+            head: str | None = None,
         ) -> None:
             folded.update(round_number=round_number, comments=comments)
 
@@ -694,7 +702,7 @@ class TestFoldedFindingGate:
         assert len(comments) == 2 and no_location == out_of_range == 0
         with monkeypatch.context() as scoped:
             scoped.setattr(subprocess, "run", transport)
-            post_inline_comments.post_fallback("o/r", "7", reviewer, comments)
+            post_inline_comments.post_fallback("o/r", "7", reviewer, 14, comments)
             post_cutoff_summary("o/r", "7", reviewer, 14, comments)
         return captured[0], captured[1]
 
@@ -789,7 +797,7 @@ class TestFoldedFindingGate:
         first, rest = folded[0].split("\n", 1)
         result = self.run_gate(
             first + "\n" + envelope + "\n" + rest,
-            "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both",
+            "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both",
         )
         assert result.returncode == 1, result.stdout + result.stderr
         reason = (
@@ -805,7 +813,7 @@ class TestFoldedFindingGate:
     ) -> None:
         body = folded[0].replace("b.py:2", "a.py:1")
         first, second = [line for line in body.splitlines() if line.startswith("- **")]
-        reply = "inline-fallback-claude\n> " + first + "\nFixed: first"
+        reply = "inline-fallback-claude-r14\n> " + first + "\nFixed: first"
         partial = self.run_gate(body, reply)
         assert partial.returncode == 1
         assert (
@@ -840,7 +848,7 @@ class TestFoldedFindingGate:
         assert absent.returncode == 1
         assert "carries findings that have no thread id" in absent.stdout
         result = self.run_gate(
-            crlf_body, "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"
+            crlf_body, "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 0, result.stdout + result.stderr
         for body in [
@@ -902,13 +910,13 @@ class TestFoldedFindingGate:
     ) -> None:
         reply = (
             "<!-- " + marker + " -->\n"
-            "inline-fallback-claude\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second"
+            "inline-fallback-claude-r14\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second"
         )
         result = self.run_gate(
             folded[0], reply, source_type="User", source_author="local-operator"
         )
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "BLOCK: inline-fallback-claude (comment 1," in result.stdout
+        assert "BLOCK: inline-fallback-claude-r14 (comment 1," in result.stdout
 
     @pytest.mark.parametrize("folded", [True], indirect=True)
     @pytest.mark.parametrize("index", [0, 1])
@@ -947,7 +955,8 @@ class TestFoldedFindingGate:
     def test_another_marker_does_not_answer_legacy_marker(
         self, folded: tuple[str, str], marker: str
     ) -> None:
-        result = self.run_gate(folded[0], marker + "\n> a.py:1\n> b.py:2\nFixed: both")
+        legacy = folded[0].replace("inline-fallback-claude-r14", "inline-fallback-claude")
+        result = self.run_gate(legacy, marker + "\n> a.py:1\n> b.py:2\nFixed: both")
         assert result.returncode == 1, result.stdout + result.stderr
 
     @pytest.mark.parametrize("folded", ["separator"], indirect=True)
@@ -975,7 +984,7 @@ class TestFoldedFindingGate:
         self, folded: tuple[str, str], path: str
     ) -> None:
         body = folded[0].replace("a.py", path)
-        reply = "inline-fallback-claude\n> " + path + ":1\n> b.py:2\nFixed: both"
+        reply = "inline-fallback-claude-r14\n> " + path + ":1\n> b.py:2\nFixed: both"
         result = self.run_gate(body, reply)
         assert result.returncode == 0, result.stdout + result.stderr
 
@@ -993,7 +1002,7 @@ class TestFoldedFindingGate:
         body = folded[0].replace("b.py:2", "a.py:1")
         first, second = [line for line in body.splitlines() if line.startswith("- **")]
         assert first.endswith(": ") and second.endswith("   ")
-        partial = "inline-fallback-claude\n> " + first.rstrip() + "\nFixed: first"
+        partial = "inline-fallback-claude-r14\n> " + first.rstrip() + "\nFixed: first"
         assert self.run_gate(body, partial).returncode == 1
         wrong = (
             partial + "\n> " + second.rstrip().replace("second  with", "second with")
@@ -1019,7 +1028,7 @@ class TestFoldedFindingGate:
             else original_gate_function(name),
         )
         result = self.run_gate(
-            folded[0], "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"
+            folded[0], "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 1, result.stdout + result.stderr
         assert "could not read the items" in result.stdout
@@ -1058,12 +1067,12 @@ class TestFoldedFindingGate:
     def test_prefix_does_not_whitelist_severity(self, folded: tuple[str, str]) -> None:
         assert self.run_gate(folded[0]).returncode == 1
         missing = self.run_gate(
-            folded[0], "inline-fallback-claude\n> b.py:2\nFixed: second"
+            folded[0], "inline-fallback-claude-r14\n> b.py:2\nFixed: second"
         )
         assert missing.returncode == 1, missing.stdout + missing.stderr
         assert "a.py:1" in missing.stdout
         result = self.run_gate(
-            folded[0], "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both"
+            folded[0], "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1108,7 +1117,7 @@ class TestFoldedFindingGate:
         body = folded[0]
         first, second = [line for line in body.splitlines() if line.startswith("- **")]
         assert first == second
-        one = "inline-fallback-claude\n> " + first.rstrip() + "\nFixed: authentication"
+        one = "inline-fallback-claude-r14\n> " + first.rstrip() + "\nFixed: authentication"
         assert self.run_gate(body, one).returncode == 1
         result = self.run_gate(body, one + "\n> " + second.rstrip() + "\nFixed: socket")
         assert result.returncode == 0, result.stdout + result.stderr
@@ -1117,7 +1126,7 @@ class TestFoldedFindingGate:
     def test_legacy_fallback_remains_visible_after_the_head_window_moves(
         self, folded: tuple[str, str]
     ) -> None:
-        body = folded[0]
+        body = folded[0].replace("-r14 -->", " -->", 1)
         old = "2026-10-21T00:00:00Z"
         assert self.run_gate(body, source_at=old).returncode == 1
         reply = (
@@ -1161,7 +1170,7 @@ class TestFoldedFindingGate:
         body = marker + "\n<!-- fold-count: 3 -->\n" + rest
         result = self.run_gate(
             body,
-            "inline-fallback-claude\n> a.py:1\n> b.py:2\nFixed: both",
+            "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both",
             source_at="2026-10-21T00:00:00Z",
         )
         assert result.returncode == 1
