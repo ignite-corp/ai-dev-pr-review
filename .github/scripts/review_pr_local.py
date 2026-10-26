@@ -1405,8 +1405,8 @@ def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
     """Run one reviewer; return the conclusion aggregate_reviews.py reads.
 
     Actions loses the exit code to `continue-on-error`, so each reviewer
-    path records its own death separately -- claude's and gemini's always()
-    nets write a `failed` verdict, codex's fails the job (AT-1837, AT-2539).
+    path records its own death separately -- each reviewer's always() net
+    writes a `failed` verdict (AT-1837, AT-2539, AT-2603).
     Here the exit code is in hand.
     """
     log = work / f"{name}-review.log"

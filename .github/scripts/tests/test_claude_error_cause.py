@@ -555,9 +555,10 @@ class TestWhatTheAggregateShows:
     def test_a_cause_is_shown_only_on_the_kind_that_carries_it(
         self, error: str
     ) -> None:
-        # The classes describe the claude net's action_invocation_failed;
-        # attached to any other error -- a gemini or codex payload, which an
-        # LLM may author -- they would name the wrong cause.
+        # A cause renders only on a kind whose net emits it
+        # (aggregate_reviews.ERROR_CAUSES_BY_KIND): gemini's and codex's nets
+        # emit only timeout, so `rejected` on their kinds stays bare, and so
+        # does any cause on a kind no net writes, such as output_unparseable.
         review = {**_failed("rejected"), "error": error}
         assert _failed_status_detail(review) == error
         assert _partial_short_message("gemini", review, "success") == error

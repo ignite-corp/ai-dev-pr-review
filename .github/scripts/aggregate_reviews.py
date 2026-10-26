@@ -81,16 +81,24 @@ REVIEWERS: dict[str, str] = {name: f"review-{name}.json" for name in REVIEWER_NA
 # Keeps the PR review title concise while showing enough context.
 DESC_TRUNCATE_LEN = 80
 ERROR_TRUNCATE_LEN = 60
-# Why the claude path wrote neither a verdict nor an execution log, as
-# classified by its error net in base-ai-review-single.yml (AT-2276). The
-# payload keeps ``error: action_invocation_failed`` for every regex keyed on
-# it and carries the class in ``error_cause``; only a value in this closed
-# set is rendered, so a payload cannot put arbitrary text after the error.
-ERROR_CAUSE_KIND = "action_invocation_failed"
+# Why a reviewer net wrote a failed verdict, as classified by that net in
+# base-ai-review-single.yml: claude's (AT-2276), and gemini's and codex's for
+# a step cut by its timeout (AT-2603). The payload keeps its ``error`` kind
+# for every regex keyed on it and carries the class in ``error_cause``; only
+# a value in this closed set is rendered, so a payload cannot put arbitrary
+# text after the error.
 ERROR_CAUSE_TEXT: dict[str, str] = {
     "rejected": "rejected -- actor not in allowed_bots",
     "timeout": "timeout -- step time limit reached",
     "action_error": "action_error -- action failed before producing a log",
+}
+# Which causes each net's kind may carry. A cause on any other kind, or one
+# that kind's net never emits, would name the wrong cause, so it is not
+# rendered.
+ERROR_CAUSES_BY_KIND: dict[str, frozenset[str]] = {
+    "action_invocation_failed": frozenset(ERROR_CAUSE_TEXT),
+    "script_invocation_failed": frozenset({"timeout"}),
+    "cli_invocation_failed": frozenset({"timeout"}),
 }
 MIN_REVIEWERS_FOR_VERDICT = 2
 _DISMISS_MESSAGE = "Superseded by new review"
@@ -184,6 +192,9 @@ def _normalize_status(name: str, review: dict[str, Any]) -> str:
             " treating as failed (fail-closed)",
             file=sys.stderr,
         )
+    # "failed" is what lets a net's error_cause render (_error_with_cause);
+    # a status this function supplied is no evidence a net wrote the payload.
+    review.pop("error_cause", None)
     review["status"] = STATUS_FAILED
     return STATUS_FAILED
 
@@ -962,14 +973,23 @@ def _failed_status_detail(review: dict[str, Any]) -> str:
 def _error_with_cause(err: str, review: dict[str, Any]) -> str:
     """The truncated ``error`` string, followed by its class when one is known.
 
-    Only on the error kind the classes describe: the claude net's
-    ``action_invocation_failed``. On any other kind -- another reviewer's
-    payload, which an LLM may author -- they would name the wrong cause.
+    Only on the error kinds the nets write, only the causes each net emits
+    (``ERROR_CAUSES_BY_KIND``), and only on a payload whose status is
+    "failed". That status is the provenance: every model-output path
+    re-derives a model-emitted status to ok/early_exit before the file is
+    final -- review_status.stamp_model_status in the extract scripts and
+    review_gemini.py, and promote_legacy_verdict.sh for codex's direct
+    write, including a write left by a run step cut before it stamped it,
+    which 'Normalize review file name' promotes with model semantics -- so
+    a model can copy a net's kind and cause but not its status, and
+    ``_normalize_status`` drops the cause of a payload it fail-closes.
     """
     cause = review.get("error_cause")
     text = (
         ERROR_CAUSE_TEXT.get(cause)
-        if isinstance(cause, str) and err == ERROR_CAUSE_KIND
+        if isinstance(cause, str)
+        and cause in ERROR_CAUSES_BY_KIND.get(err, ())
+        and review.get("status") == STATUS_FAILED
         else None
     )
     head = err[:ERROR_TRUNCATE_LEN]
@@ -1002,24 +1022,24 @@ def _has_payload(review: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
 # There is deliberately no counterpart for the parallel round where no
 # reviewer wrote any artifact at all. That signature -- every job green,
 # nothing uploaded -- has no known producer short of every net dying with
-# its step: each reviewer path records its own death, claude's and
-# gemini's as a `failed` verdict and codex's by failing the job
+# its step: each reviewer path records its own death as a `failed` verdict
 # (base-ai-review-single.yml, the note above 'Run Claude review'; AT-2539
-# closed gemini's gap), and the nets are ordinary steps that can die with
-# the job. What is left is that, or a job this pipeline's reviewer steps
-# did not produce, and the aggregate is given nothing that separates
-# either from a caller's deliberate exclusion: it reads job conclusions
-# and artifacts, and both say only that nothing was written -- it cannot
-# tell from here. Nor is there a trivial-diff round hiding behind it to
-# protect -- every "nothing to review" state is decided before the
+# closed gemini's gap; AT-2603 closed codex's, which failed the job instead,
+# and claude's for a file cut mid-write), and the nets are ordinary steps
+# that can die with the job. What is left is that, or a job this pipeline's
+# reviewer steps did not produce, and the aggregate is given nothing that
+# separates either from a caller's deliberate exclusion: it reads job
+# conclusions and artifacts, and both say only that nothing was written --
+# it cannot tell from here. Nor is there a trivial-diff round hiding behind
+# it to protect -- every "nothing to review" state is decided before the
 # reviewers run and is reported elsewhere: prepare fails the round on an
 # empty diff (extract_pr_diff.sh, AT-2201), a size skip exits 1, and a
 # policy skip takes its own branch in main() with POLICY_SKIP_ROSTER_REASON.
 # base-ai-review-single.yml says the same thing from the reviewer's side --
-# "the prompt requires a verdict file even for early_exit, so a missing
-# file here is always an infrastructure failure, never a benign skip".
-# Those reviewers therefore keep the conclusion-derived
-# "early-exit or no-output", which is honest about not knowing.
+# "the prompt requires a verdict file even for early_exit, so a missing file
+# here is always an infrastructure failure, never a benign skip". Those
+# reviewers therefore keep the conclusion-derived "early-exit or no-output",
+# which is honest about not knowing.
 SEQUENTIAL_EARLY_EXIT_ROSTER_REASON = "skipped (sequential early exit)"
 # Every reason that means "this round was fine without them". Exported so a
 # reader has one place to find the partition the output descriptions and
