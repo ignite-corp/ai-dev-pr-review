@@ -79,12 +79,12 @@ def _run_step_name(reviewer: str) -> str:
     return f"Run {reviewer.capitalize()} review"
 
 
-# Reviewers with no `Emit <Name> error verdict` step on this tree, and why.
-# Recorded and asserted rather than skipped over: a skip reads as "this
-# reviewer's ordering was checked" on a green run. The reason is asserted
-# too, not only the key, and is interpolated into the message of the
-# control that guards the absence -- a value no assertion reads and no
-# failure prints is a comment wearing a dict.
+# Reviewers whose error verdict is not written by an `Emit <Name> error
+# verdict` step on this tree, and why. Recorded and asserted rather than
+# skipped over: a skip reads as "this reviewer's ordering was checked" on a
+# green run. The reason is asserted too, not only the key, and is
+# interpolated into the message of the control that guards the absence -- a
+# value no assertion reads and no failure prints is a comment wearing a dict.
 #
 # AN ENTRY MUST BE DELETED WHEN THAT REVIEWER'S STEP LANDS. This said the
 # opposite -- "nothing here needs editing when a step lands" -- and it was
@@ -98,8 +98,11 @@ def _run_step_name(reviewer: str) -> str:
 # `Emit <Name> error verdict`, so a parenthetical suffix change does not
 # empty the lookup -- which is narrower than it sounds, not safer: it is
 # the renames nobody is thinking about that arrive unannounced.
-NO_ERROR_VERDICT_STEP = {
-    "codex": "codex has no error-verdict step by design: it fails its job instead",
+NO_EMIT_ERROR_VERDICT_STEP = {
+    "codex": (
+        "codex's error verdict is written by 'Verify Codex verdict file' "
+        "(AT-2603), which keeps that name because its readers cite it"
+    ),
 }
 
 
@@ -301,7 +304,7 @@ def _log_fallback_steps(steps: list[dict[str, Any]], reviewer: str) -> list[int]
 
 
 def test_every_recorded_absence_is_still_an_absence() -> None:
-    """No `NO_ERROR_VERDICT_STEP` key may name a reviewer that has the step.
+    """No `NO_EMIT_ERROR_VERDICT_STEP` key may name a reviewer that has the step.
 
     The gate for the hazard described above that dict, rather than a note
     asking the next person to remember: an entry whose reviewer has since
@@ -311,9 +314,9 @@ def test_every_recorded_absence_is_still_an_absence() -> None:
     state from AT-2539's merge until it was removed, and nothing failed.
     """
     steps = _single_steps()
-    live = {r: _emit_steps(steps, r) for r in NO_ERROR_VERDICT_STEP}
+    live = {r: _emit_steps(steps, r) for r in NO_EMIT_ERROR_VERDICT_STEP}
     assert not any(live.values()), (
-        "NO_ERROR_VERDICT_STEP records an absence that is no longer one -- delete "
+        "NO_EMIT_ERROR_VERDICT_STEP records an absence that is no longer one -- delete "
         f"the entry now that the step exists: { ({r: i for r, i in live.items() if i}) }"
     )
     # Positive control: every key coming back empty is also what a lookup
@@ -518,13 +521,16 @@ def test_a_net_clears_the_verdict_file_when_the_marker_is_absent(reviewer: str) 
 def test_the_emitted_error_verdict_comes_after_the_net(reviewer: str) -> None:
     """A net that runs after the error-verdict step would delete the verdict.
 
-    claude and gemini both have such a step; codex alone does not, because
-    it fails its job instead. Only codex therefore reaches the absence
-    branch, where the reason is asserted against `NO_ERROR_VERDICT_STEP`
-    rather than skipped over, and the net is still required to exist. The
-    other two run the ordering assertion itself -- gemini's since AT-2539
-    merged, which is also when its `NO_ERROR_VERDICT_STEP` entry had to go
-    (see the note above that dict).
+    claude and gemini both have such a step; codex's error verdict is
+    written by 'Verify Codex verdict file' instead (AT-2603), whose order
+    after the net is asserted in
+    `test_a_net_clears_the_verdict_file_when_the_marker_is_absent`. Only
+    codex therefore reaches the absence branch, where the reason is
+    asserted against `NO_EMIT_ERROR_VERDICT_STEP` rather than skipped over,
+    and the net is still required to exist. The other two run the ordering
+    assertion itself -- gemini's since AT-2539 merged, which is also when
+    its `NO_EMIT_ERROR_VERDICT_STEP` entry had to go (see the note above
+    that dict).
     """
     steps = _single_steps()
     emit = _emit_steps(steps, reviewer)
@@ -536,14 +542,15 @@ def test_the_emitted_error_verdict_comes_after_the_net(reviewer: str) -> None:
     ]
     assert nets, f"no {reviewer} net to order against"
     if not emit:
-        reason = NO_ERROR_VERDICT_STEP.get(reviewer, "")
+        reason = NO_EMIT_ERROR_VERDICT_STEP.get(reviewer, "")
         # The reason itself and not just the key: a key whose reason is
         # empty records nothing, and the whole point of a mapping here
         # rather than a set is that the reason reaches a reader.
         assert reason, (
-            f"{reviewer} has no 'Emit {reviewer.capitalize()} error verdict' step and no "
-            "recorded reason for not having one; reasons are recorded for "
-            f"{sorted(NO_ERROR_VERDICT_STEP)}"
+            f"{reviewer}'s error verdict is not written by an 'Emit "
+            f"{reviewer.capitalize()} error verdict' step, and no reason for that "
+            "is recorded; reasons are recorded for "
+            f"{sorted(NO_EMIT_ERROR_VERDICT_STEP)}"
         )
         # Positive control for that absence: an empty list from a lookup
         # that can find nothing at all would read exactly the same. The
@@ -552,8 +559,8 @@ def test_the_emitted_error_verdict_comes_after_the_net(reviewer: str) -> None:
         # says what the absence was expected to be.
         assert _emit_steps(steps, "claude"), (
             "the error-verdict lookup finds no step for any reviewer, so an empty list "
-            f"proves nothing about {reviewer}, whose step is recorded missing because "
-            f"{reason}"
+            f"proves nothing about {reviewer}, whose 'Emit' step is recorded "
+            f"absent because {reason}"
         )
         return
     assert min(nets) < min(emit), (

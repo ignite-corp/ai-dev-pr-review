@@ -534,9 +534,9 @@ jobs:
       # sequential clauses tolerate a failed upstream job (AT-2125). The
       # cost is that the step's outcome does not reach the conclusion, so
       # the failure has to be recorded by the reviewer path itself --
-      # claude's and gemini's always() steps emit an error verdict, and
-      # codex's fails the job (AT-2539). What that costs the chaining
-      # guard is written where the guard is:
+      # each reviewer's always() net emits a failed verdict (claude AT-1837,
+      # gemini AT-2539, codex AT-2603, before which it failed the job). What
+      # that costs the chaining guard is written where the guard is:
       # base-ai-review-orchestrator.yml, the note above review-codex-s.
       - name: Run Claude review
         if: inputs.reviewer == 'claude'
@@ -637,6 +637,10 @@ jobs:
       # verdict file even for early_exit, so a missing file here is always an
       # infrastructure failure, never a benign skip. Not continue-on-error:
       # if we cannot even record the failure, the job must not report success.
+      # Presence means one parseable JSON object, the gate 'Emit Gemini error
+      # verdict' uses and explains (AT-2603): a file cut mid-write is
+      # non-empty, and `-s` alone let the aggregate drop it as malformed --
+      # the same absence this net exists to replace.
       - name: Emit Claude error verdict (no verdict file)
         if: inputs.reviewer == 'claude' && always()
         env:
@@ -658,15 +662,20 @@ jobs:
           if [ -L review-claude.json ]; then
             rm -f -- review-claude.json
           fi
-          if [ -s review-claude.json ]; then
+          OBJECT_FILTER='length == 1 and (.[0] | type == "object")'
+          if [ -s review-claude.json ] && jq -e -s "$OBJECT_FILTER" review-claude.json >/dev/null 2>&1; then
             echo "::notice::Claude verdict file present"
             exit 0
+          fi
+          REPLACED=""
+          if [ -s review-claude.json ]; then
+            REPLACED="; verdict file present but not a JSON object, replaced"
           fi
           ERROR_CAUSE=""
           INNER_OUTCOME="${INNER_OUTCOME:-}"
           if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
             ERROR_KIND="output_unparseable"
-            DETAIL="claude-code-action outcome=${INNER_OUTCOME:-unknown} (step outcome=${STEP_OUTCOME}); execution log held no verdict JSON"
+            DETAIL="claude-code-action outcome=${INNER_OUTCOME:-unknown} (step outcome=${STEP_OUTCOME}); execution log held no verdict JSON${REPLACED}"
           else
             ERROR_KIND="action_invocation_failed"
             # Why, when it can be told (AT-2276). The caller's step reports
@@ -686,24 +695,35 @@ jobs:
             fi
             # This step runs under always(), including after 'Validate
             # timeout inputs' refused the value, so only digits reach $(( )).
+            # The judgment from `case` to the timeout cause is shared verbatim
+            # with gemini's and codex's nets (test_reviewer_net_shapes.py
+            # holds the three identical); TIMED_OUTCOME and NOW are the
+            # inputs that differ. Here the outcome is the inner action's,
+            # because the caller's step reports success on a cut, and NOW is
+            # this net's time: it runs two quick steps after the action.
+            TIMED_OUTCOME="$INNER_OUTCOME"
+            NOW=$(date +%s)
             case "${STEP_CAP_MINUTES:-}" in
               ""|*[!0-9]*) CAP_SECONDS=0 ;;
               *) CAP_SECONDS=$(( 10#$STEP_CAP_MINUTES * 60 )) ;;
             esac
             SLACK_SECONDS=$(( CAP_SECONDS / 2 < 60 ? CAP_SECONDS / 2 : 60 ))
             CAP_SECONDS=$(( CAP_SECONDS - SLACK_SECONDS ))
-            if [ "$INNER_OUTCOME" = "failure" ] && [ -n "$STARTED" ] \
+            if [ "${TIMED_OUTCOME:-}" = "failure" ] && [ -n "$STARTED" ] \
               && [ "$CAP_SECONDS" -gt 0 ] \
-              && [ $(( $(date +%s) - STARTED )) -ge "$CAP_SECONDS" ]; then
+              && [ $(( NOW - STARTED )) -ge "$CAP_SECONDS" ]; then
               ERROR_CAUSE="timeout"
             elif [ "$INNER_OUTCOME" = "failure" ] && [ "$CHECK" = "rejected" ]; then
               ERROR_CAUSE="rejected"
             elif [ "$INNER_OUTCOME" = "failure" ]; then
               ERROR_CAUSE="action_error"
             fi
-            DETAIL="claude-code-action outcome=${INNER_OUTCOME:-unknown} (step outcome=${STEP_OUTCOME}); no execution log produced"
+            DETAIL="claude-code-action outcome=${INNER_OUTCOME:-unknown} (step outcome=${STEP_OUTCOME}); no execution log produced${REPLACED}"
           fi
           echo "::warning::Claude review produced no verdict file -- emitting error verdict (${ERROR_KIND}${ERROR_CAUSE:+: ${ERROR_CAUSE}})"
+          # rm -rf first: a directory at that name passes the gate's `-s`
+          # and fails the redirect, which would take the step down.
+          rm -rf -- review-claude.json
           jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" --arg cause "$ERROR_CAUSE" '{
             summary: ("Claude review failed: no verdict file produced -- " + $detail),
             status: "failed",
@@ -712,7 +732,7 @@ jobs:
             error: $kind,
             error_detail: $detail
           } + (if $cause == "" then {} else {error_cause: $cause} end)' > review-claude.json
-          jq empty review-claude.json
+          jq -e -s "$OBJECT_FILTER" review-claude.json >/dev/null
 
       # --- Claude: auto auth switch on usage-limit events (AT-1606) ---
       # When the review hits a subscription (OAuth) usage-limit error, set
@@ -891,10 +911,20 @@ jobs:
       # aggregate's single-document load. Whether the object has the
       # verdict's fields is not checked here; that is the model-output
       # path, not a dead step.
+      #
+      # A step cut by its timeout-minutes also names the cause, as
+      # error_cause=timeout (AT-2603), judged the way AT-2276 judges it for
+      # claude: elapsed time against the step cap, less a minute (half the
+      # cap below two). The start is the mtime of the marker 'Clear Gemini
+      # verdict file' writes as its last act, right before the run step.
+      # STEP_CAP_MINUTES must equal that step's timeout-minutes, which an
+      # expression cannot read; a test holds the two together.
       - name: Emit Gemini error verdict (no verdict file)
         if: inputs.reviewer == 'gemini' && always()
         env:
           STEP_OUTCOME: ${{ steps.gemini-review.outcome }}
+          STEP_CAP_MINUTES: 10
+          START_MARKER: ${{ runner.temp }}/gemini-start
         run: |
           set -euo pipefail
           # The workspace is model-writable, so never trust or follow a
@@ -904,6 +934,17 @@ jobs:
           # tools and the pre-run clear removed any PR-committed file, so
           # this is defence in depth -- kept so the write cannot follow a
           # link however one arrives.
+          #
+          # From the link guard to the self-check this body is shared with
+          # codex's net, apart from the reviewer's name; what differs is set
+          # here (test_reviewer_net_shapes.py holds the two identical).
+          ERROR_KIND="script_invocation_failed"
+          OUTCOME_DETAIL="review_gemini.py outcome=${STEP_OUTCOME:-unknown}"
+          # The run step's end, for the timeout judgment. One quick step,
+          # 'Clear unowned Gemini verdict file', sits between the run step
+          # and this net, so this net's own time stands in for that end and
+          # the slack absorbs the difference.
+          NOW=$(date +%s)
           if [ -L review-gemini.json ]; then
             rm -f -- review-gemini.json
           fi
@@ -914,7 +955,6 @@ jobs:
             echo "::notice::Gemini verdict file present"
             exit 0
           fi
-          ERROR_KIND="script_invocation_failed"
           # The detail reaches the roster and the PR, so it says which guard
           # failed: a file killed mid-write is not "nothing written". One
           # REASON, so the summary and the log cannot contradict it.
@@ -923,16 +963,38 @@ jobs:
           else
             REASON="no verdict file written"
           fi
-          DETAIL="review_gemini.py outcome=${STEP_OUTCOME}; ${REASON}"
-          echo "::warning::Gemini review produced no usable verdict file -- emitting error verdict (${ERROR_KIND})"
-          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" '{
+          DETAIL="${OUTCOME_DETAIL}; ${REASON}"
+          ERROR_CAUSE=""
+          STARTED=""
+          if [ -n "${START_MARKER:-}" ] && [ -f "$START_MARKER" ]; then
+            STARTED=$(date -r "$START_MARKER" +%s 2>/dev/null || true)
+          fi
+          # Shared verbatim with claude's net from `case` to the timeout
+          # cause (test_reviewer_net_shapes.py holds the copies identical).
+          TIMED_OUTCOME="${STEP_OUTCOME:-}"
+          case "${STEP_CAP_MINUTES:-}" in
+            ""|*[!0-9]*) CAP_SECONDS=0 ;;
+            *) CAP_SECONDS=$(( 10#$STEP_CAP_MINUTES * 60 )) ;;
+          esac
+          SLACK_SECONDS=$(( CAP_SECONDS / 2 < 60 ? CAP_SECONDS / 2 : 60 ))
+          CAP_SECONDS=$(( CAP_SECONDS - SLACK_SECONDS ))
+          if [ "${TIMED_OUTCOME:-}" = "failure" ] && [ -n "$STARTED" ] \
+            && [ "$CAP_SECONDS" -gt 0 ] \
+            && [ $(( NOW - STARTED )) -ge "$CAP_SECONDS" ]; then
+            ERROR_CAUSE="timeout"
+          fi
+          echo "::warning::Gemini review produced no usable verdict file -- emitting error verdict (${ERROR_KIND}${ERROR_CAUSE:+: ${ERROR_CAUSE}})"
+          # rm -rf first: a directory at that name passes the gate's `-s`
+          # and fails the redirect, which would take the step down.
+          rm -rf -- review-gemini.json
+          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" --arg cause "$ERROR_CAUSE" '{
             summary: ("Gemini review failed: " + $detail),
             status: "failed",
             early_exit: false,
             issues: [],
             error: $kind,
             error_detail: $detail
-          }' > review-gemini.json
+          } + (if $cause == "" then {} else {error_cause: $cause} end)' > review-gemini.json
           jq -e -s "$OBJECT_FILTER" review-gemini.json >/dev/null
 
       # --- Codex ---
@@ -1293,6 +1355,9 @@ jobs:
         if: inputs.reviewer == 'codex' && always()
         run: |
           set -euo pipefail
+          # The run step's end, which 'Verify Codex verdict file' times a
+          # cut against: this is the first step after it (AT-2603).
+          : > "${RUNNER_TEMP}/codex-end"
           for name in review-codex.json verdict-codex.json verdict-openai.json; do
             if [ -L "$name" ]; then
               echo "::notice::Removed symlink $name before upload"
@@ -1336,6 +1401,7 @@ jobs:
         if: inputs.reviewer == 'codex' && always()
         env:
           REVIEWER: ${{ inputs.reviewer }}
+          RUN_OUTCOME: ${{ steps.codex_run.outcome }}
         run: |
           # The marker says the run step took responsibility for the
           # verdict file: it cleared the name and ran the CLI, or it wrote
@@ -1354,7 +1420,7 @@ jobs:
           # infrastructure verdict exists to displace it either.
           PROMOTE="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
           if [ -f "${RUNNER_TEMP}/codex-start" ]; then
-            if [ -f "$PROMOTE" ]; then
+            if [ -f "$PROMOTE" ] && [ "${RUN_OUTCOME:-}" = "success" ]; then
               # --target-is-ours: the run step already adjudicated that
               # file, by stamping the CLI's write or by writing an
               # infrastructure verdict of its own. Without the flag the
@@ -1363,6 +1429,14 @@ jobs:
               # ran. The flag rather than a look at the payload, because
               # a model can write any payload it likes (AT-1799).
               bash "$PROMOTE" promote --target-is-ours "review-${REVIEWER}.json"
+            elif [ -f "$PROMOTE" ]; then
+              # The marker is written before the CLI, so a step that did
+              # not finish -- cut by its timeout-minutes, or cancelled --
+              # may have left the model's own write unstamped. Only a
+              # finished step has adjudicated the file; anything else gets
+              # model semantics, which re-derive a model-written "failed"
+              # so it cannot pass for a net's (AT-2603).
+              bash "$PROMOTE" promote "review-${REVIEWER}.json"
             fi
           elif [ -f "$PROMOTE" ]; then
             # `||` for the same reason the claude and gemini nets carry it:
@@ -1378,10 +1452,29 @@ jobs:
             rm -rf -- "review-${REVIEWER}.json"
           fi
 
+      # codex's net, the same shape claude's and gemini's have (AT-2603). It
+      # used to fail the job when no verdict was there, so a run step cut by
+      # its timeout-minutes turned the job red and left the roster only
+      # "failed (see logs)". It now writes a failed verdict of the kind the
+      # run step already uses for a CLI that died, cli_invocation_failed, so
+      # the job stays green and the roster names codex with its cause. The
+      # timeout cause is judged as gemini's net judges it, from the mtime of
+      # the codex-start marker the run step writes right before the CLI to
+      # that of the codex-end marker the drop step writes right after it;
+      # STEP_CAP_MINUTES must equal that step's timeout-minutes, which a test
+      # holds. The presence gate is gemini's single-object filter. Not
+      # continue-on-error: if we cannot even record the failure, the job
+      # must not report success. The step keeps its name because 'Normalize
+      # review file name' and the provenance tests name it as this path's
+      # earliest reader.
       - name: Verify Codex verdict file
         if: inputs.reviewer == 'codex' && always()
         env:
           EXIT_CODE: ${{ steps.codex_run.outputs.exit_code }}
+          STEP_OUTCOME: ${{ steps.codex_run.outcome }}
+          STEP_CAP_MINUTES: 10
+          START_MARKER: ${{ runner.temp }}/codex-start
+          END_MARKER: ${{ runner.temp }}/codex-end
         run: |
           set -euo pipefail
           # Both steps above promote verdict-codex.json / verdict-openai.json
@@ -1390,12 +1483,73 @@ jobs:
           # step never got there -- so checking the canonical file alone is
           # sufficient here (AT-2424: it was not, while the only promotion
           # ran after the error verdict and was skipped by it).
-          if [ -s "review-codex.json" ]; then
-            echo "::notice::Codex verdict file present"
-          else
-            echo "::error::Codex review produced no verdict file (exit_code=${EXIT_CODE:-unknown})"
-            exit 1
+          # Never follow a link at the verdict path (AT-2941); the write
+          # below would go through it.
+          #
+          # From the link guard to the self-check this body is shared with
+          # gemini's net, apart from the reviewer's name; what differs is set
+          # here (test_reviewer_net_shapes.py holds the two identical).
+          ERROR_KIND="cli_invocation_failed"
+          OUTCOME_DETAIL="codex step outcome=${STEP_OUTCOME:-unknown} (exit_code=${EXIT_CODE:-unknown})"
+          # The run step's end, for the timeout judgment. This net runs
+          # after the log upload, the sysctl restore and Normalize, so its
+          # own time would charge those to the run step; the drop step
+          # right after the run step records the end instead.
+          NOW=$(date +%s)
+          if [ -n "${END_MARKER:-}" ] && [ -f "$END_MARKER" ]; then
+            NOW=$(date -r "$END_MARKER" +%s 2>/dev/null || date +%s)
           fi
+          if [ -L review-codex.json ]; then
+            rm -f -- review-codex.json
+          fi
+          # One filter for the gate and the self-check after the write, so
+          # the two cannot drift apart.
+          OBJECT_FILTER='length == 1 and (.[0] | type == "object")'
+          if [ -s review-codex.json ] && jq -e -s "$OBJECT_FILTER" review-codex.json >/dev/null 2>&1; then
+            echo "::notice::Codex verdict file present"
+            exit 0
+          fi
+          # The detail reaches the roster and the PR, so it says which guard
+          # failed: a file killed mid-write is not "nothing written". One
+          # REASON, so the summary and the log cannot contradict it.
+          if [ -s review-codex.json ]; then
+            REASON="verdict file present but not a JSON object, replaced"
+          else
+            REASON="no verdict file written"
+          fi
+          DETAIL="${OUTCOME_DETAIL}; ${REASON}"
+          ERROR_CAUSE=""
+          STARTED=""
+          if [ -n "${START_MARKER:-}" ] && [ -f "$START_MARKER" ]; then
+            STARTED=$(date -r "$START_MARKER" +%s 2>/dev/null || true)
+          fi
+          # Shared verbatim with claude's net from `case` to the timeout
+          # cause (test_reviewer_net_shapes.py holds the copies identical).
+          TIMED_OUTCOME="${STEP_OUTCOME:-}"
+          case "${STEP_CAP_MINUTES:-}" in
+            ""|*[!0-9]*) CAP_SECONDS=0 ;;
+            *) CAP_SECONDS=$(( 10#$STEP_CAP_MINUTES * 60 )) ;;
+          esac
+          SLACK_SECONDS=$(( CAP_SECONDS / 2 < 60 ? CAP_SECONDS / 2 : 60 ))
+          CAP_SECONDS=$(( CAP_SECONDS - SLACK_SECONDS ))
+          if [ "${TIMED_OUTCOME:-}" = "failure" ] && [ -n "$STARTED" ] \
+            && [ "$CAP_SECONDS" -gt 0 ] \
+            && [ $(( NOW - STARTED )) -ge "$CAP_SECONDS" ]; then
+            ERROR_CAUSE="timeout"
+          fi
+          echo "::warning::Codex review produced no usable verdict file -- emitting error verdict (${ERROR_KIND}${ERROR_CAUSE:+: ${ERROR_CAUSE}})"
+          # rm -rf first: a directory at that name passes the gate's `-s`
+          # and fails the redirect, which would take the step down.
+          rm -rf -- review-codex.json
+          jq -n --arg kind "$ERROR_KIND" --arg detail "$DETAIL" --arg cause "$ERROR_CAUSE" '{
+            summary: ("Codex review failed: " + $detail),
+            status: "failed",
+            early_exit: false,
+            issues: [],
+            error: $kind,
+            error_detail: $detail
+          } + (if $cause == "" then {} else {error_cause: $cause} end)' > review-codex.json
+          jq -e -s "$OBJECT_FILTER" review-codex.json >/dev/null
 
       # --- Common: Post inline comments ---
       - name: Post inline comments

@@ -2157,9 +2157,18 @@ class _CodexStepHarness:
 
     @classmethod
     def _run_normalize_step(
-        cls, workdir: Path, scripts_root: Path | None = None
+        cls,
+        workdir: Path,
+        scripts_root: Path | None = None,
+        *,
+        run_outcome: str,
     ) -> None:
-        """Run 'Normalize review file name' over the workdir as it stands."""
+        """Run 'Normalize review file name' over the workdir as it stands.
+
+        ``run_outcome`` is what 'Run Codex review' concluded: "success" when
+        it finished and adjudicated the file itself, anything else when it
+        was cut or never ran (AT-2603).
+        """
         runner_temp = workdir / "runner-temp"
         runner_temp.mkdir(exist_ok=True)
         cls._link_scripts(workdir, scripts_root)
@@ -2170,6 +2179,7 @@ class _CodexStepHarness:
                 "PATH": os.environ["PATH"],
                 "RUNNER_TEMP": str(runner_temp),
                 "REVIEWER": "codex",
+                "RUN_OUTCOME": run_outcome,
             },
             capture_output=True,
             text=True,
@@ -2398,7 +2408,7 @@ class TestCodexLegacyVerdictPromotion(_CodexStepHarness):
         (tmp_path / "verdict-codex.json").write_text(
             json.dumps({"summary": "the real verdict", "issues": []})
         )
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="failure")
         assert self._verdict(tmp_path)["summary"] == "the real verdict"
 
     @pytest.mark.parametrize(
@@ -2491,7 +2501,7 @@ class TestCodexLegacyVerdictPromotion(_CodexStepHarness):
         self._mark(tmp_path)
         (tmp_path / "verdict-openai.json").write_text("not json at all")
         (tmp_path / "verdict-codex.json").write_text("[]")
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="failure")
         assert not (tmp_path / "review-codex.json").exists()
         assert not (tmp_path / "review-codex.json.tmp").exists()
 
@@ -2731,7 +2741,7 @@ class TestCodexVerdictProvenance(_CodexStepHarness):
             json.dumps({"summary": "the real verdict", "issues": []})
         )
         self._mark(tmp_path)
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="failure")
         assert (tmp_path / "review-codex.json").is_file()
         assert self._verdict(tmp_path)["summary"] == "the real verdict"
 
@@ -2764,7 +2774,7 @@ class TestCodexVerdictProvenance(_CodexStepHarness):
         self._plant(tmp_path / "verdict-openai.json")
         self._plant(tmp_path / "review-codex.json")
         self._run_codex_step(tmp_path, scripts_root=self._old_pin(tmp_path))
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="success")
         verdict = self._verdict(tmp_path)
         assert verdict["summary"] != _PLANTED_SUMMARY
         assert verdict["error"] == "provenance_unavailable"
@@ -2815,7 +2825,7 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         (tmp_path / "verdict-openai.json").write_text(
             json.dumps({"summary": "Codex reviewed the diff", "issues": []})
         )
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="failure")
         verdict = self._verdict(tmp_path)
         assert verdict["summary"] == "Codex reviewed the diff"
         assert verdict["early_exit"] is False
@@ -2852,7 +2862,7 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         # Our own verdict is not model output and is not re-judged.
         self._run_codex_step(tmp_path, **step_kwargs)
         assert self._verdict(tmp_path)["status"] == "failed"
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="success")
         verdict = self._verdict(tmp_path)
         assert verdict["status"] == "failed"
         assert verdict["error"] == error_kind
@@ -2890,23 +2900,40 @@ class TestCodexNormalizeNet(_CodexStepHarness):
     def test_the_net_stamps_a_verdict_the_run_step_never_reached(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The fall-through in --target-is-ours mode. A run step killed
-        # between the CLI's write and its own promotion leaves raw model
-        # output at the canonical name -- not yet a verdict, because the
-        # legacy schema has no early_exit -- and model semantics are right
-        # for exactly that. An infrastructure verdict never reaches this
-        # path: every one the workflow writes is already shape-valid.
+        # A run step killed between the CLI's write and its own promotion
+        # leaves raw model output at the canonical name -- not yet a
+        # verdict, because the legacy schema has no early_exit. The step
+        # did not finish, so Normalize promotes it with model semantics
+        # (AT-2603), which are right for exactly that.
         self._mark(tmp_path)
         (tmp_path / "review-codex.json").write_text(
             json.dumps({"summary": "killed before stamping", "issues": []})
         )
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="failure")
         verdict = self._verdict(tmp_path)
         assert verdict["summary"] == "killed before stamping"
         assert verdict["status"] == "ok"
         assert verdict["early_exit"] is False
         _, available = self._aggregate_sees(tmp_path, monkeypatch)
         assert "codex" in available
+
+    def test_a_finished_run_step_stamps_a_non_verdict_through_ours_mode(
+        self, tmp_path: Path
+    ) -> None:
+        # The fall-through in --target-is-ours mode (promote() in
+        # promote_legacy_verdict.sh): the target is the run step's, but it
+        # is not yet a verdict, so the early return does not take it and
+        # the stamp does. An infrastructure verdict never reaches this
+        # path: every one the workflow writes is already shape-valid.
+        self._mark(tmp_path)
+        (tmp_path / "review-codex.json").write_text(
+            json.dumps({"summary": "finished, not stamped", "issues": []})
+        )
+        self._run_normalize_step(tmp_path, run_outcome="success")
+        verdict = self._verdict(tmp_path)
+        assert verdict["summary"] == "finished, not stamped"
+        assert verdict["status"] == "ok"
+        assert verdict["early_exit"] is False
 
     def test_the_net_does_not_trust_a_model_emitted_failed_status(
         self, tmp_path: Path
@@ -2926,7 +2953,7 @@ class TestCodexNormalizeNet(_CodexStepHarness):
                 }
             )
         )
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="failure")
         assert self._verdict(tmp_path)["status"] == "ok"
 
     def test_a_cancelled_run_leaves_the_net_nothing_the_pr_checked_out(
@@ -2940,7 +2967,7 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         self._run_codex_step_cancelled(tmp_path)
         assert (tmp_path / "runner-temp" / "codex-start").exists()
         assert not (tmp_path / "review-codex.json").exists()
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="cancelled")
         assert not (tmp_path / "review-codex.json").exists()
 
     def test_the_net_clears_without_the_script_when_the_cli_never_started(
@@ -2953,7 +2980,9 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         # step never got far enough to write one -- so 'Verify Codex
         # verdict file' would have reported it as a verdict present.
         self._plant(tmp_path / "review-codex.json")
-        self._run_normalize_step(tmp_path, scripts_root=self._old_pin(tmp_path))
+        self._run_normalize_step(
+            tmp_path, scripts_root=self._old_pin(tmp_path), run_outcome="skipped"
+        )
         assert not (tmp_path / "review-codex.json").exists()
 
     def test_the_normalize_step_promotes_nothing_when_the_cli_never_started(
@@ -2966,7 +2995,7 @@ class TestCodexNormalizeNet(_CodexStepHarness):
         # step fails honestly.
         self._plant(tmp_path / "verdict-openai.json")
         self._plant(tmp_path / "review-codex.json")
-        self._run_normalize_step(tmp_path)
+        self._run_normalize_step(tmp_path, run_outcome="skipped")
         assert not (tmp_path / "review-codex.json").exists()
         assert not (tmp_path / "verdict-openai.json").exists()
 
