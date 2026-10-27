@@ -192,6 +192,25 @@ def test_the_repository_selection_is_not_empty_and_skips_caches() -> None:
     assert all("__pycache__" not in path.parts for path in selected)
 
 
+def test_strict_reaches_every_script_and_no_test() -> None:
+    """Strict outside tests/, standard inside it (AT-2604).
+
+    `strict` is a list of globs, and pyright's `*` stops at a `/` -- the
+    rule `gate.matches` already follows -- so a script in a new directory
+    beside tests/ would be checked at standard with nothing saying so.
+    """
+    with open(ROOT / "pyproject.toml", "rb") as handle:
+        config = tomllib.load(handle)["tool"]["pyright"]
+    tests_dir = PurePath(".github/scripts/tests")
+    selected = gate.expected_files(ROOT, config["include"], config["exclude"])
+    strict = {
+        path
+        for path in selected
+        if any(gate.matches(path, pattern) for pattern in config["strict"])
+    }
+    assert {p for p in selected if tests_dir not in p.parents} == strict
+
+
 def test_ci_runs_this_gate_and_not_an_inline_copy() -> None:
     """The point of the extraction: the gate CI runs is the one tested here.
 

@@ -63,8 +63,19 @@ exclude = ["**/__pycache__", "**/node_modules", "**/.venv", "**/.pytest_cache"]
 pythonVersion = "3.14"
 # Stated rather than inherited, for the same reason as line-length above: a
 # pyright default change would otherwise move what this gate measures without
-# a line of this file changing. `strict` is 2806 errors over 53 of the 74
-# files (154 of them outside tests/, measured on pyright 1.1.408), which is
-# its own migration -- AT-2604 -- not a line in this one. The prompt template
-# no longer tells consumers this repository runs it (AT-2418).
+# a line of this file changing.
+#
+# Strict for every script, standard for the tests (AT-2604, decided
+# 2026-10-27): strict over tests/ alone was 2829 errors on pyright 1.1.408,
+# measured on main at 4586002 before this change (the 2806 recorded on
+# 2026-10-26 was the whole tree on an older main), nearly all Unknown types
+# from untyped fixtures. `strict` takes a path glob
+# and pyright's `*` does not cross a `/`, so the glob names the scripts beside
+# tests/ and not the files beneath it. It selects no file of its own, so the
+# filesAnalyzed count above is unchanged. Done here rather than through
+# executionEnvironments, which in 1.1.408 does not accept typeCheckingMode
+# and would have to restate every strict-only rule by name.
+# tests/test_check_pyright_coverage.py fails when a script sits where the
+# glob does not reach.
 typeCheckingMode = "standard"
+strict = [".github/scripts/*.py"]
