@@ -315,52 +315,91 @@ jobs:
           # AT-2164 both failures were masked as streak 0 and a dead
           # credential read as healthy in exactly the week the check broke.
           scan_errors=0
+          # Dependabot secret checks whose org level answered HTTP 403, named
+          # in one notice after the loop. Counted even when a repo-level copy
+          # settles the consumer, so a fleet of repo copies cannot hide it.
+          dependabot_org_denied=0
+          # Dependabot secret levels (org or repo) that were neither
+          # confirmed nor answered an org-level 403 (5xx, network, an
+          # unexpected body): the probe did not run, so nothing is absent.
+          # One key can contribute both levels.
+          dependabot_unread=0
 
+          # secret_fetch_rc <stderr file>: maps a failed gh call to 1 for
+          # HTTP 404 (absent), 2 for HTTP 403, and 3 for any other failure.
+          secret_fetch_rc() {
+            if grep -q 'HTTP 404' "$1"; then
+              return 1
+            elif grep -q 'HTTP 403' "$1"; then
+              return 2
+            fi
+            return 3
+          }
+
+          # Returns 0 when the org secret reaches <repo>, 1 when it is absent
+          # (HTTP 404) or its visibility excludes <repo>, 2 when a request
+          # answered HTTP 403, and 3 when one failed otherwise or the body
+          # was unexpected. Only the Dependabot caller tells 1-3 apart; the
+          # Actions caller treats any non-zero as "try the repo level".
+          # Secret endpoints return metadata only, never a value.
           check_org_secret_grants_repo() {
             local scope="$1" # actions | dependabot
             local key="$2"
             local repo="$3"
-            local meta
-            if ! meta=$(gh api "orgs/ignite-corp/${scope}/secrets/${key}" 2>/dev/null); then
-              return 1
+            local meta err rc=0
+            err=$(mktemp)
+            if ! meta=$(gh api "orgs/ignite-corp/${scope}/secrets/${key}" 2>"$err"); then
+              secret_fetch_rc "$err" || rc=$?
+              rm -f "$err"
+              return "$rc"
             fi
             local visibility
-            visibility=$(jq -r '.visibility' <<<"$meta")
+            visibility=$(jq -r '.visibility' <<<"$meta" 2>/dev/null || true)
             case "$visibility" in
-              all)
-                return 0
-                ;;
-              private)
-                # dependabot 'private' visibility => all private repos
-                if [ "$scope" = "dependabot" ]; then
-                  return 0
-                fi
-                # actions 'private' also = all private repos in the org
-                return 0
+              all | private)
+                # 'private' = every private repo in the org, both scopes.
+                rc=0
                 ;;
               selected)
-                local url
-                url=$(jq -r '.selected_repositories_url' <<<"$meta")
+                local url listing listed
+                url=$(jq -r '.selected_repositories_url' <<<"$meta" 2>/dev/null || true)
                 if [ -z "$url" ] || [ "$url" = "null" ]; then
-                  return 1
+                  rc=3
+                elif ! listing=$(gh api --paginate "$url" 2>"$err"); then
+                  secret_fetch_rc "$err" || rc=$?
+                  # A 404 on the listing is not a verdict on the secret.
+                  [ "$rc" -eq 1 ] && rc=3
+                # Every page must carry a repositories array: only a
+                # well-formed listing without <repo> is a verdict of absent.
+                elif ! listed=$(jq -s --arg name "$repo" \
+                  'if length > 0 and all(.[]; (.repositories | type) == "array")
+                   then any(.[].repositories[]; .name == $name) else error("shape") end' \
+                  <<<"$listing" 2>/dev/null); then
+                  rc=3
+                elif [ "$listed" != "true" ]; then
+                  rc=1
                 fi
-                if gh api --paginate "$url" 2>/dev/null \
-                  | jq -e --arg name "$repo" '.repositories[]? | select(.name == $name)' > /dev/null; then
-                  return 0
-                fi
-                return 1
                 ;;
               *)
-                return 1
+                rc=3
                 ;;
             esac
+            rm -f "$err"
+            return "$rc"
           }
 
+          # Same codes as above for the repository-level secret.
           check_repo_secret() {
             local scope="$1"
             local key="$2"
             local slug="$3"
-            gh api "repos/${slug}/${scope}/secrets/${key}" >/dev/null 2>&1
+            local err rc=0
+            err=$(mktemp)
+            if ! gh api "repos/${slug}/${scope}/secrets/${key}" >/dev/null 2>"$err"; then
+              secret_fetch_rc "$err" || rc=$?
+            fi
+            rm -f "$err"
+            return "$rc"
           }
 
           # check_prompt_guidance <slug> <ref> <system-path> <checklist-path> [--control]
@@ -611,24 +650,16 @@ jobs:
 
             # 3. Secrets accessibility
             #
-            # Actions scope: org-level + repo-level both introspectable via the GitHub App
-            # token (the App holds Organization Secrets: Read). Missing = [FLAG].
-            #
-            # Dependabot scope: this App does not hold "Organization dependabot
-            # secrets", so check_org_secret_grants_repo dependabot always returns 1
-            # (failure) under App auth, regardless of actual configuration. The blocker
-            # is the grant, not the catalog: GitHub's permissions-required-for-github-apps
-            # reference lists GET /orgs/{org}/dependabot/secrets/{secret_name} under that
-            # permission for installation tokens (IAT), checked 2026-10-16 under AT-2537.
-            # This corrects the original reading here, "no such permission exists in the
-            # App catalog as of 2026-06-17" -- whether it was wrong then or has since been
-            # added is not established. Granting organization_dependabot_secrets: read
-            # would let this probe run org-level; whether to request it is open under
-            # AT-2888. We therefore probe repo-level only, surface as
-            # informational, and rely on downstream "recent ai-review runs failed"
-            # to catch real misconfig
-            # (a Dependabot PR with broken secret auth fails the actual ai-review run, which
-            # our fail-count check above already detects).
+            # Both scopes are probed org-level, then repo-level, with the
+            # fleet App's token (the permissions are listed once, in
+            # AGENTS.md). Actions missing = [FLAG]. Dependabot is reported,
+            # never flagged: a Dependabot PR with broken secret auth fails its
+            # ai-review run, which check 1 already catches. The line names
+            # the level that answered. Only a 404 or an org visibility that
+            # excludes the consumer counts as absent: an org-level 403, or any
+            # level that failed otherwise, raises a notice after the loop and,
+            # unless the other level confirms a copy, leaves Dependabot
+            # "unknown" rather than 0 (AT-2888).
             for key in "${REQUIRED_SECRETS[@]}"; do
               actions_ok=0
               if check_org_secret_grants_repo actions "$key" "$name"; then
@@ -637,12 +668,33 @@ jobs:
                 actions_ok=1
               fi
 
-              dependabot_repo_present=0
-              if check_repo_secret dependabot "$key" "$slug"; then
-                dependabot_repo_present=1
+              dependabot_ok=0
+              if check_org_secret_grants_repo dependabot "$key" "$name"; then
+                dependabot_ok="1 (org)"
+              else
+                dependabot_org_rc=$?
+                case "$dependabot_org_rc" in
+                  2) dependabot_org_denied=$((dependabot_org_denied + 1)) ;;
+                  3) dependabot_unread=$((dependabot_unread + 1)) ;;
+                esac
+                if check_repo_secret dependabot "$key" "$slug"; then
+                  dependabot_ok="1 (repo)"
+                else
+                  dependabot_repo_rc=$?
+                  if [ "$dependabot_repo_rc" -ne 1 ]; then
+                    dependabot_unread=$((dependabot_unread + 1))
+                  fi
+                  if [ "$dependabot_org_rc" -eq 2 ]; then
+                    dependabot_ok="unknown (org-level probe denied)"
+                  elif [ "$dependabot_org_rc" -eq 3 ]; then
+                    dependabot_ok="unknown (org-level probe failed)"
+                  elif [ "$dependabot_repo_rc" -ne 1 ]; then
+                    dependabot_ok="unknown (repo-level probe failed)"
+                  fi
+                fi
               fi
 
-              echo "  ${key}: actions=${actions_ok} dependabot_repo=${dependabot_repo_present} (org-level invisible to App)"
+              echo "  ${key}: actions=${actions_ok} dependabot=${dependabot_ok}"
               if [ "$actions_ok" -ne 1 ]; then
                 echo "  [FLAG] entry ${i}/${total}: ${key} missing on actions scope"
                 consumer_flags=$((consumer_flags + 1))
@@ -932,7 +984,7 @@ jobs:
           echo "- Stale chore/add-anthropic-api-key startup_failure runs before ${STALE_BEFORE}: ignored"
           echo "- Gemini partial responses (429 RESOURCE_EXHAUSTED): informational, do not fail"
           echo "- verify_action_shas.py UnicodeDecodeError until floating tag passes PR #17 fix: informational"
-          echo "- Dependabot org-level secrets: not introspectable via GitHub App (platform limitation); repo-level only checked"
+          echo "- Dependabot secret access: reported per secret, never a failure (see check 3)"
           echo "::endgroup::"
 
           # Not evaluated is neither OK nor a flag: it does not fail the run,
@@ -946,6 +998,12 @@ jobs:
           fi
           if [ "$runner_not_evaluated" -ne 0 ]; then
             echo "::notice::runner default prompts or review pin could not be fetched -- not evaluated"
+          fi
+          if [ "$dependabot_org_denied" -gt 0 ]; then
+            echo "::notice::org-level Dependabot secrets could not be read (HTTP 403) -- usually the fleet App lacks the organization permission \"Dependabot secrets\" (organization_dependabot_secrets: read); a rate limit also answers 403; org level not read for ${dependabot_org_denied} secret check(s)"
+          fi
+          if [ "$dependabot_unread" -gt 0 ]; then
+            echo "::notice::Dependabot secret probe failed (not a 404, nor an org-level 403) -- ${dependabot_unread} org or repo level(s) not read"
           fi
 
           if [ "$runner_flag" -ne 0 ]; then

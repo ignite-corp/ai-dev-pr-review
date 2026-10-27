@@ -29,7 +29,8 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
   the module docstring). A commit that matches no release is flagged too. The
   base repo's own entry is skipped here -- self-review.yml calls the
   orchestrator by local path, so it has no pin.
-- org/repo-level secret accessibility
+- org/repo-level secret accessibility, Actions and Dependabot (Dependabot is
+  reported, not flagged)
 - Dependabot PR status
 - reviewer prompt guidance (AT-2844): each consumer's `.github/prompts/`
   pair (this repo's entry: `examples/prompts/`, the pair self-review.yml
@@ -83,13 +84,12 @@ like something else.
   by both `ruleset-audit.yml` and the health check, and the consumer and
   runner review prompts the health check matches), `actions: read` (consumer
   run conclusions), `secrets: read` / `organization_secrets: read` /
-  `dependabot_secrets: read` (secret accessibility; this is the
-  repository-level key, and for Dependabot the health job probes repo-level
-  only -- org-level Dependabot is a separate permission,
-  `organization_dependabot_secrets`, which this App did not hold as of
-  2026-10-16 (`gh api orgs/ignite-corp/installations`); re-read that call
-  before building on the absence. The org-level Actions probe above is
-  unaffected: it uses `organization_secrets: read`, which the App does hold),
+  `dependabot_secrets: read` / `organization_dependabot_secrets: read`
+  (secret accessibility, repository- and org-level for each scope; the
+  org-level Dependabot grant was added 2026-10-27 under AT-2888 -- re-read
+  `gh api orgs/ignite-corp/installations` before building on it -- and a
+  health run that gets HTTP 403 there names the permission in a notice
+  rather than reading the secret as absent),
   `pull_requests: read` (Dependabot PR status, via a REST call; the
   reviewer-error streak uses GraphQL, which the reference does not map, so this
   entry rests on the REST call alone). The live installation

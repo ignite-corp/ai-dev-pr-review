@@ -182,6 +182,8 @@ def run_health_tail(
     prompts: dict[str, object] | None = None,
     consumers: tuple[str, ...] = (BASE_REPO,),
     prompt_guidance: Path = PROMPT_GUIDANCE,
+    required_secrets: tuple[str, ...] = (),
+    secrets: dict[str, object] | None = None,
 ) -> tuple[int, str]:
     """Run the health step's consumer loop with a stubbed ``gh``.
 
@@ -195,6 +197,11 @@ def run_health_tail(
     review workflow body once and then fails like ``FETCH_FAILS``. Every other ``gh`` call answers an empty JSON list
     so the run-conclusion and Dependabot checks see nothing to flag.
     ``prompt_guidance`` replaces the matcher script the step runs.
+    ``required_secrets`` is the step's REQUIRED_SECRETS (empty by default,
+    so check 3 does not run); ``secrets`` answers a secret metadata path
+    (``orgs/...`` or ``repos/...``, as the step requests it): a dict is
+    served as its JSON, an int is that HTTP error, and a path not listed
+    is a 404.
 
     Returns (exit code, combined stdout+stderr). The job summary the step
     writes is left at ``tmp_path / "summary.md"``.
@@ -223,6 +230,16 @@ def run_health_tail(
         ),
         encoding="utf-8",
     )
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir()
+    for path, answer in (secrets or {}).items():
+        target = secret_dir / path.replace("/", "__")
+        if isinstance(answer, int):
+            target.with_name(target.name + ".status").write_text(
+                str(answer), encoding="utf-8"
+            )
+        else:
+            target.write_text(json.dumps(answer), encoding="utf-8")
     payload_file = tmp_path / "gh_stdout"
     payload_file.write_text(gh_stdout, encoding="utf-8")
     gh_stub = bin_dir / "gh"
@@ -230,6 +247,10 @@ def run_health_tail(
         "\n".join(
             [
                 "#!/bin/bash",
+                # The selected-repositories listing is fetched with --paginate.
+                'if [ "$1" = "api" ] && [ "$2" = "--paginate" ] && [[ "$3" == */secrets/* ]]; then',
+                '  set -- api "$3"',
+                "fi",
                 'if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then',
                 f'  cat "{payload_file}"',
                 f"  exit {gh_exit}",
@@ -242,6 +263,13 @@ def run_health_tail(
                 '  if [ -e "${f}.fail" ]; then echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; fi',
                 '  if [ -e "${f}.once" ]; then mv "${f}.once" "${f}.fail"; fi',
                 '  if [ -f "$f" ]; then printf \'{"content":"%s"}\\n\' "$(base64 -w0 < "$f")"; exit 0; fi',
+                '  echo "gh: Not Found (HTTP 404)" >&2',
+                "  exit 1",
+                "fi",
+                'if [ "$1" = "api" ] && [[ "$2" == */secrets/* ]]; then',
+                f'  f="{secret_dir}/${{2//\\//__}}"',
+                '  if [ -f "${f}.status" ]; then echo "gh: request failed (HTTP $(cat "${f}.status"))" >&2; exit 1; fi',
+                '  if [ -f "$f" ]; then cat "$f"; exit 0; fi',
                 '  echo "gh: Not Found (HTTP 404)" >&2',
                 "  exit 1",
                 "fi",
@@ -260,7 +288,7 @@ def run_health_tail(
             "set -eu",
             f"CONSUMERS=({' '.join(consumers)})",
             f"BASE_REPO={BASE_REPO}",
-            "REQUIRED_SECRETS=()",
+            f"REQUIRED_SECRETS=({' '.join(required_secrets)})",
             "STALE_BEFORE=2026-06-09T00:00:00Z",
             f"CONSECUTIVE_ERROR_THRESHOLD={STREAK_THRESHOLD}",
             "RECENT_PR_COUNT=10",
@@ -809,6 +837,173 @@ class TestPromptGuidanceCheck:
         assert code == 0
         assert "[WARN] entry 1/1: could not read the reviewer prompt" in log
         assert "Consumer 1/1: not evaluated" in log
+
+
+_SECRET = "OPENAI_API_KEY"
+_ORG_ACTIONS = f"orgs/ignite-corp/actions/secrets/{_SECRET}"
+_ORG_DEPENDABOT = f"orgs/ignite-corp/dependabot/secrets/{_SECRET}"
+_REPO_DEPENDABOT = f"repos/ignite-corp/{BASE_REPO}/dependabot/secrets/{_SECRET}"
+_SELECTED_URL = f"https://api.github.com/{_ORG_DEPENDABOT}/repositories"
+
+
+def _selected_meta() -> dict[str, str]:
+    return {
+        "name": _SECRET,
+        "visibility": "selected",
+        "selected_repositories_url": _SELECTED_URL,
+    }
+
+
+_PERMISSION_NOTICE = (
+    "::notice::org-level Dependabot secrets could not be read (HTTP 403)"
+)
+
+
+@requires_jq
+class TestDependabotSecretProbe:
+    """Check 3, Dependabot scope (AT-2888): org-level secrets are probed
+    with the fleet App's token, the way org Actions secrets are. The Actions
+    secret is reachable at org level in every case, so only the Dependabot
+    answer varies."""
+
+    def _run(self, tmp_path: Path, secrets: dict[str, object]) -> tuple[int, str]:
+        return run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            required_secrets=(_SECRET,),
+            secrets={_ORG_ACTIONS: {"name": _SECRET, "visibility": "all"}, **secrets},
+        )
+
+    def test_an_org_level_secret_reaching_the_consumer_counts(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(
+            tmp_path, {_ORG_DEPENDABOT: {"name": _SECRET, "visibility": "all"}}
+        )
+        assert code == 0
+        assert f"  {_SECRET}: actions=1 dependabot=1 (org)" in log
+        assert _PERMISSION_NOTICE not in log
+        assert "Consumer 1/1: OK" in log
+
+    def test_a_missing_org_level_secret_reads_as_absent(self, tmp_path: Path) -> None:
+        # Org 404 and no repo-level secret: absent, reported, not a failure.
+        code, log = self._run(tmp_path, {})
+        assert code == 0
+        assert f"  {_SECRET}: actions=1 dependabot=0" in log
+        assert _PERMISSION_NOTICE not in log
+        assert "Consumer 1/1: OK" in log
+
+    def test_a_repo_level_secret_still_counts_when_org_level_is_missing(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(tmp_path, {_REPO_DEPENDABOT: {"name": _SECRET}})
+        assert code == 0
+        assert f"  {_SECRET}: actions=1 dependabot=1 (repo)" in log
+        assert _PERMISSION_NOTICE not in log
+
+    def test_a_permission_failure_is_a_notice_naming_the_permission(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(tmp_path, {_ORG_DEPENDABOT: 403})
+        assert code == 0
+        # Neither present nor absent: the org level was not read.
+        assert f"  {_SECRET}: actions=1 dependabot=unknown" in log
+        assert f"  {_SECRET}: actions=1 dependabot=0" not in log
+        assert _PERMISSION_NOTICE in log
+        assert "organization_dependabot_secrets: read" in log
+        assert "Consumer 1/1: OK" in log
+
+    def test_a_permission_failure_is_named_even_when_a_repo_copy_answers(
+        self, tmp_path: Path
+    ) -> None:
+        # A repo-level copy settles this consumer, but the org level was still
+        # not read: a fleet where every repo holds a copy must not hide a 403.
+        code, log = self._run(
+            tmp_path, {_ORG_DEPENDABOT: 403, _REPO_DEPENDABOT: {"name": _SECRET}}
+        )
+        assert code == 0
+        assert f"  {_SECRET}: actions=1 dependabot=1 (repo)" in log
+        assert _PERMISSION_NOTICE in log
+
+    def test_a_failed_org_probe_is_unknown_not_absent(self, tmp_path: Path) -> None:
+        # Only a 404 confirms absence; a 5xx is a probe that did not answer.
+        code, log = self._run(tmp_path, {_ORG_DEPENDABOT: 502})
+        assert code == 0
+        assert (
+            f"  {_SECRET}: actions=1 dependabot=unknown (org-level probe failed)" in log
+        )
+        assert f"  {_SECRET}: actions=1 dependabot=0" not in log
+        assert "::notice::Dependabot secret probe failed" in log
+        assert _PERMISSION_NOTICE not in log
+
+    def test_a_selected_org_secret_listing_the_consumer_counts(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(
+            tmp_path,
+            {
+                _ORG_DEPENDABOT: _selected_meta(),
+                _SELECTED_URL: {"repositories": [{"name": BASE_REPO}]},
+            },
+        )
+        assert code == 0
+        assert f"  {_SECRET}: actions=1 dependabot=1 (org)" in log
+
+    def test_a_selected_org_secret_not_listing_the_consumer_is_absent(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(
+            tmp_path,
+            {
+                _ORG_DEPENDABOT: _selected_meta(),
+                _SELECTED_URL: {"repositories": [{"name": "another-repo"}]},
+            },
+        )
+        assert code == 0
+        assert f"  {_SECRET}: actions=1 dependabot=0" in log
+        assert "::notice::Dependabot secret probe failed" not in log
+
+    def test_a_failed_selected_listing_is_unknown_not_absent(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(
+            tmp_path, {_ORG_DEPENDABOT: _selected_meta(), _SELECTED_URL: 502}
+        )
+        assert code == 0
+        assert (
+            f"  {_SECRET}: actions=1 dependabot=unknown (org-level probe failed)" in log
+        )
+        assert "::notice::Dependabot secret probe failed" in log
+
+    def test_a_malformed_selected_listing_is_unknown_not_absent(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(
+            tmp_path,
+            {_ORG_DEPENDABOT: _selected_meta(), _SELECTED_URL: {"message": "odd"}},
+        )
+        assert code == 0
+        assert (
+            f"  {_SECRET}: actions=1 dependabot=unknown (org-level probe failed)" in log
+        )
+
+    def test_both_levels_failing_count_as_two_unread_levels(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = self._run(tmp_path, {_ORG_DEPENDABOT: 502, _REPO_DEPENDABOT: 502})
+        assert code == 0
+        assert "-- 2 org or repo level(s) not read" in log
+
+    def test_a_failed_repo_probe_is_unknown_not_absent(self, tmp_path: Path) -> None:
+        # Org 404 is a verdict; the repo level failing is not.
+        code, log = self._run(tmp_path, {_REPO_DEPENDABOT: 502})
+        assert code == 0
+        assert (
+            f"  {_SECRET}: actions=1 dependabot=unknown (repo-level probe failed)"
+            in log
+        )
+        assert "::notice::Dependabot secret probe failed" in log
 
 
 def test_every_expression_opener_in_the_workflow_is_closed() -> None:
