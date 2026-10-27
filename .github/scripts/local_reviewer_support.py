@@ -37,11 +37,12 @@ from typing import Any
 # contract and now lives in the neutral module, so a shim importing it from
 # here still gets the aggregate's own functions and not a second copy
 # (AT-2510). It cannot live here -- this module is the LOCAL driver's, and
-# the Actions-path aggregate must not be made to import it.
-from github_pr_support import (  # noqa: F401
-    is_valid_review,
-    normalize_severity,
-    usable_verdict,
+# the Actions-path aggregate must not be made to import it. The `as` aliases
+# mark the names as re-exports for pyright and ruff alike.
+from github_pr_support import (
+    is_valid_review as is_valid_review,
+    normalize_severity as normalize_severity,
+    usable_verdict as usable_verdict,
 )
 from local_review_config import LocalConfig
 from review_status import write_verdict_json
