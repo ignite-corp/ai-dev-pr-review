@@ -339,12 +339,6 @@ def main() -> None:
             response_schema=schema_dict,
         )
 
-        # Unreachable on the pinned SDK, which types `models` as never None;
-        # kept rather than deleted in a typing-only change.
-        if client.models is None:  # pyright: ignore[reportUnnecessaryComparison]
-            raise RuntimeError(
-                "google-genai Client.models is None after Client(api_key=...)"
-            )
         response = _call_gemini_with_retry(
             client,
             model=MODEL,
