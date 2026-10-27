@@ -13,11 +13,12 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from google import genai
 from google.genai import types as genai_types
 
+from github_pr_support import is_json_array
 from review_status import stamp_model_status, write_verdict_json
 
 REVIEW_FILE = "review-gemini.json"
@@ -29,12 +30,21 @@ REVIEW_SCHEMA_PATH = (
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
 # Configurable via env (matches MODEL / *_MODEL pattern). gemini-2.5 family supports
 # up to 65536 output tokens; 32768 default keeps cost low while handling most large PRs.
-try:
-    MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "32768"))
-except ValueError:
-    # Invalid override (empty string, non-numeric) -- fall back to default rather than
-    # crash at import time. Operator sees the fallback via the usage_metadata log.
-    MAX_OUTPUT_TOKENS = 32768
+_DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
+
+def _max_output_tokens() -> int:
+    try:
+        return int(
+            os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", str(_DEFAULT_MAX_OUTPUT_TOKENS))
+        )
+    except ValueError:
+        # Invalid override (empty string, non-numeric) -- fall back to default rather than
+        # crash at import time. Operator sees the fallback via the usage_metadata log.
+        return _DEFAULT_MAX_OUTPUT_TOKENS
+
+
+MAX_OUTPUT_TOKENS = _max_output_tokens()
 
 _MAX_RETRY_ATTEMPTS = 3
 _INITIAL_BACKOFF_SECONDS = 4.0
@@ -57,7 +67,12 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return False
 
 
-def _call_gemini_with_retry(client, model, contents, config):  # type: ignore[no-untyped-def]
+def _call_gemini_with_retry(
+    client: genai.Client,
+    model: str,
+    contents: str,
+    config: genai_types.GenerateContentConfig,
+) -> genai_types.GenerateContentResponse:
     """Call Gemini generate_content with exponential backoff on 429.
 
     On non-rate-limit errors, raise immediately. On retry exhaustion, raise
@@ -67,7 +82,9 @@ def _call_gemini_with_retry(client, model, contents, config):  # type: ignore[no
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
         try:
-            return client.models.generate_content(
+            # The SDK's `contents` union names PIL.Image, which is not
+            # installed, so its signature is partially Unknown to pyright.
+            return client.models.generate_content(  # pyright: ignore[reportUnknownMemberType]
                 model=model, contents=contents, config=config
             )
         except Exception as exc:
@@ -292,7 +309,7 @@ PR Diff:
 ```"""
 
 
-def extract_json(text: str) -> dict:  # type: ignore[type-arg]
+def extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
     try:
         return json.loads(text)
@@ -322,7 +339,9 @@ def main() -> None:
             response_schema=schema_dict,
         )
 
-        if client.models is None:
+        # Unreachable on the pinned SDK, which types `models` as never None;
+        # kept rather than deleted in a typing-only change.
+        if client.models is None:  # pyright: ignore[reportUnnecessaryComparison]
             raise RuntimeError(
                 "google-genai Client.models is None after Client(api_key=...)"
             )
@@ -361,7 +380,7 @@ def main() -> None:
             raise ValueError(
                 "Gemini returned empty response (filtered or no candidates)"
             )
-        review = extract_json(text)  # type: ignore[reportUnknownVariableType]
+        review = extract_json(text)
         # Stamp explicit status (AT-1799 contract): keep a valid model-emitted
         # value, otherwise derive from the early_exit flag.
         stamp_model_status(review)
@@ -372,7 +391,7 @@ def main() -> None:
             file=sys.stderr,
         )
         print(f"Gemini review failed: {exc}", file=sys.stderr)
-        review = {
+        review: dict[str, Any] = {
             "summary": f"Review failed: {exc}",
             "status": "failed",
             "early_exit": False,
@@ -383,7 +402,10 @@ def main() -> None:
     # Link-safe: the workspace is model-writable, so REVIEW_FILE may be a
     # symlink; do not write through it (AT-2941).
     write_verdict_json(REVIEW_FILE, review, indent=2, ensure_ascii=False)
-    print(f"Gemini: {len(review.get('issues', []))} issue(s) found")
+    # The model's `issues` is unvalidated here: a non-list is the aggregate's
+    # to reject, not a crash after the verdict is written (AT-2604).
+    issues = review.get("issues")
+    print(f"Gemini: {len(issues) if is_json_array(issues) else 0} issue(s) found")
 
 
 if __name__ == "__main__":
