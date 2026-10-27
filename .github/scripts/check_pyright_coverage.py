@@ -24,9 +24,11 @@ at, so an exclude this script cannot read fails loudly instead of being
 counted.
 
 What it does not see: sources pyright adds on its own -- a module imported
-from outside `include`, or the `ignore` / `strict` lists -- none of which
-this repository sets. An absent `exclude` is read as an empty list, which is
-what pyright's own fallback then contradicts, loudly.
+from outside `include`, or the `ignore` list -- neither of which this
+repository has. The `strict` list it does set (AT-2604) raises the mode of
+files already selected and adds none, so it moves no count. An absent
+`exclude` is read as an empty list, which is what pyright's own fallback then
+contradicts, loudly.
 """
 
 from __future__ import annotations
