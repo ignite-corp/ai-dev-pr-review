@@ -19,6 +19,13 @@
 # review with an explanatory notice instead of leaving a red X. Dispatch this
 # workflow against the release PR once the tag exists to get its review.
 #
+# Skips happen inside the reusable workflows, never on the `review` job:
+# `review / aggregate / Aggregate & Verdict` exists only when all three of its
+# jobs run, and an absent required check leaves a PR pending forever. `guard`
+# names the release-pin reason, `review` adds the fork one and hands it on as
+# `skip_reason`, and the aggregate job passes with that reason as its summary
+# (AT-3119).
+#
 # Auto-approve: the org var ALLOW_AUTO_APPROVE is `true`, but this repo sets a
 # repo-level var ALLOW_AUTO_APPROVE=false to override it. This repo is the
 # review tool itself; letting the pipeline approve its own PRs would defeat
@@ -64,7 +71,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      skip: ${{ steps.pin.outputs.skip }}
+      # Empty means review; anything else is why not, shown as the aggregate
+      # check's summary.
+      skip_reason: ${{ steps.pin.outputs.skip_reason }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -80,23 +89,29 @@ jobs:
             exit 1
           fi
           if git ls-remote --exit-code --tags origin "$PIN" >/dev/null 2>&1; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "pinned tag $PIN exists; running self-review"
           else
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=release pin bump: pinned tag $PIN does not exist yet, so the scripts cannot be checked out; dispatch this workflow once the tag exists" >> "$GITHUB_OUTPUT"
             echo "::notice::self-review skipped -- pinned tag $PIN does not exist yet (expected during a release pin bump; unexpected otherwise)"
           fi
 
   review:
     needs: guard
-    # This is a public repo: fork PRs cannot read the org secrets, so skip
-    # instead of failing the required check machinery with empty credentials.
-    if: >-
-      needs.guard.outputs.skip != 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+    # Not gated on the guard's outcome: a skipped `review` job never creates
+    # `review / aggregate / Aggregate & Verdict` (AT-3119). A guard that
+    # failed set no reason, so the full review runs and its aggregate reports
+    # what happened. `${{ }}` because a bare leading `!` is a YAML tag.
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/base-ai-review-orchestrator.yml
     with:
+      # The fork skip is read from the event here, not from `guard`: it must
+      # hold even when `guard` failed. This is a public repo and fork PRs
+      # cannot read the org secrets; an empty head repo is a deleted fork.
+      # Written to fail closed: any event but a dispatch whose head is not
+      # this repository is skipped, so a trigger added later reaches the
+      # secrets only once someone opts it in. The two secrets below repeat
+      # the test.
+      skip_reason: ${{ needs.guard.outputs.skip_reason || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository) && 'fork PR -- the org secrets the reviewers need are not available to it' || '' }}
       pr_number: ${{ inputs.pr_number || '' }}
       # This repo has no .github/prompts; reuse the starter templates that
       # consumers copy from examples/prompts.
@@ -113,8 +128,14 @@ jobs:
       claude-timeout-minutes: 20
       review-job-timeout-minutes: 25
     secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      # The orchestrator requires these two, and a fork PR reads every secret
+      # as empty. A skip never reads them, so a placeholder stands in there;
+      # a review gets the real ones. The fork test repeats the one in
+      # `skip_reason` above on purpose: it must hold when `guard` failed, so
+      # it cannot be a guard output. test_skip_paths_report_aggregate.py
+      # evaluates all three sites on every path.
+      OPENAI_API_KEY: ${{ (needs.guard.outputs.skip_reason != '' || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository)) && 'unused-review-skipped' || secrets.OPENAI_API_KEY }}
+      GOOGLE_AI_API_KEY: ${{ (needs.guard.outputs.skip_reason != '' || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository)) && 'unused-review-skipped' || secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       # Used by the claude job's usage-limit auth-switch post-step (AT-1606);

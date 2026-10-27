@@ -137,7 +137,11 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
 - The pinned tag will not exist until the release is cut, so **cut the release
   immediately after the pin-bump merge**. Until it exists, `self-review.yml`'s
   `guard` job skips the pin-bump PR's own review (with a `::notice::` naming
-  the pin) instead of failing on the missing ref.
+  the pin) instead of failing on the missing ref. The skip happens inside the
+  reusable workflows, so the aggregate job still runs and passes, with the
+  reason as its summary (AT-3119). Confirm on the first pin-bump PR after
+  AT-3119 that `review / aggregate / Aggregate & Verdict` is attached to the
+  PR head; only a real run shows that.
 
 ### Release PR: merge without a verdict, review after the tag (AT-2542)
 
@@ -153,7 +157,7 @@ verdict path is built for it. Instead:
   Those two are this repository's own required checks on `main` (ruleset,
   measured 2026-10-27); the `Aggregate & Verdict` gate under "Required check"
   below is the consumers' gate, and here `guard` skips the release PR's
-  review job.
+  review (the aggregate check still reports and passes, AT-3119).
 - **Required step after tagging.** Publish the tag right after the merge, then
   dispatch self-review at the release PR. This is a required step of the
   release, not an optional follow-up; the release is not done until the run
