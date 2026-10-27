@@ -235,7 +235,7 @@ thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml
 
 `base-ai-review-aggregate.yml`도 같은 다섯 개를 선언하지만, 소비자는 orchestrator에서 읽습니다.
 
-`review_result`는 check 결론 대신 사실을 기록합니다. 배열에는 리뷰어 이름이 들어가며, `responded`는 기존 유효 페이로드 규칙을 따르므로 오류가 있는 부분 응답이 `responded`와 `partial` 양쪽에 포함될 수 있습니다. `posted`는 마커가 있는 판정 리뷰 또는 폴백 코멘트를 실제로 게시했을 때만 true입니다. approve 값만으로 전체 응답이나 미처분 major 해소를 보증하지 않습니다. 대상 check 소비자는 대상과 head를 검증하고, 구성된 전체 리뷰어 응답·부분 실패 없음·미처분 major 0·게시 성공을 요구해야 합니다. 기존의 전부 정책 제외 예외는 `reason=policy_skipped`, `policy_skipped=true`, 응답 0으로 명시되며 전체 리뷰가 아닙니다. 취합은 실패·조기 종료 경로에서도 이 출력을 시도하지만 기존 종료 코드는 바꾸지 않습니다. 출력이 없거나 손상됐거나 쓸 수 없으면 미확인 상태이며 대상 check를 통과시키면 안 됩니다.
+`review_result`는 check 결론 대신 사실을 기록합니다. 배열에는 리뷰어 이름이 들어가며, `responded`는 기존 유효 페이로드 규칙을 따르므로 오류가 있는 부분 응답이 `responded`와 `partial` 양쪽에 포함될 수 있습니다. `posted`는 마커가 있는 판정 리뷰 또는 폴백 코멘트를 실제로 게시했을 때만 true입니다. approve 값만으로 전체 응답이나 미처분 major 해소를 보증하지 않습니다. 대상 check 소비자는 대상과 head를 검증하고, 구성된 전체 리뷰어 응답·부분 실패 없음·미처분 major 0·게시 성공을 요구해야 합니다. 기존의 전부 정책 제외 예외는 `reason=policy_skipped`, `policy_skipped=true`, 응답 0으로 명시되며 전체 리뷰가 아닙니다. 취합은 실패·조기 종료 경로에서도 이 출력을 시도하지만 기존 종료 코드는 바꾸지 않습니다. 출력이 없거나 손상됐거나 쓸 수 없으면 미확인 상태이며 대상 check를 통과시키면 안 됩니다. `unreviewed_majors`는 이전 라운드에서 이미 처분된 major를 세지 않습니다(AT-2843): 리뷰가 major로 연 스레드가 해결(resolved)되어 있고, 그 스레드의 최신 사람 답글이 저장소 소유자·조직 멤버·협업자의 것이며 `By design:`, `Deferred to`, `Won't fix` 중 하나로 시작하고, 이번 major가 그 스레드와 일치하는 경우입니다. 이런 major는 어떤 판정 규칙에도 세지 않으며, 판정 본문에서는 `- + **major**` 줄이 아니라 "Dispositioned in an earlier round" 아래에 나옵니다. 따라서 0은 major가 제기되지 않았다는 뜻이 아니라 남아 있는 major가 없다는 뜻입니다.
 
 **응답 수가 정족수에 못 미친다는 것 자체는 문제가 아닙니다.** 정상적으로 `reviewers_responded_count < reviewers_expected_count`로 끝나는 초록색 경로가 둘 있으므로, 게이트는 숫자만 비교하지 말고 `missing`의 사유를 읽어야 합니다:
 

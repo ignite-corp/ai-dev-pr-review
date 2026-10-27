@@ -1958,6 +1958,10 @@ def aggregate_env(
             "RUN_URL": "",
             "HEAD_SHA": head_sha,
             "PR_AUTHOR": pr_author,
+            # The posting step's dedup threshold (inline_comment_env): the
+            # aggregate matches re-raised majors to their threads with the
+            # same matcher, so both must read one value (AT-2843).
+            "JACCARD_THRESHOLD": config.get("JACCARD_THRESHOLD"),
             "BOT_LOGIN": bot_login,
             "INLINE_BOT_LOGIN": bot_login,
             "INLINE_REVIEW_RUN_ID": inline_run_id,

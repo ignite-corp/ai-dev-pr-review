@@ -250,6 +250,31 @@ def test_auto_approve_is_pinned_off_whatever_the_operator_sets(monkeypatch):
     assert env["ALLOW_AUTO_APPROVE"] == "false"
 
 
+def test_aggregate_reads_the_same_jaccard_threshold_as_the_posting_step(
+    monkeypatch, tmp_path
+):
+    """AT-2843: the aggregate matches re-raised majors with the posting
+    step's dedup, so a configured threshold must reach both, or a raised
+    one leaves the aggregate matching looser than the posting step."""
+    monkeypatch.delenv("JACCARD_THRESHOLD", raising=False)
+    config_file = tmp_path / "local.env"
+    config_file.write_text("JACCARD_THRESHOLD=0.75\n", encoding="utf-8")
+    config = LocalConfig.load(config_file)
+    env = driver.aggregate_env(
+        "o/r",
+        "1",
+        config,
+        bot_login="me",
+        head_sha="abc",
+        pr_author="a",
+        size=driver.initial_size(),
+        policy=driver.initial_policy(),
+        conclusions=driver.initial_conclusions(),
+    )
+    posting = driver.inline_comment_env("o/r", "1", config, "me")
+    assert env["JACCARD_THRESHOLD"] == posting["JACCARD_THRESHOLD"] == "0.75"
+
+
 def test_only_one_function_decides_the_auto_approve_value():
     """Deny by default: a second env builder assigning it fails here.
 

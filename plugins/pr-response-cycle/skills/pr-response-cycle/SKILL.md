@@ -1211,7 +1211,11 @@ finding_key() {
 
 # (c)'s mechanical half for kind (i). The aggregate lists each major as
 # `- + **major** `<path>[:<line>]` -- <description>` (the path is optional:
-# `file: null` is a legal payload and renders without the path part). An
+# `file: null` is a legal payload and renders without the path part). A
+# major an earlier round's resolved thread already disposed of is rendered
+# `- = **major** ...` in a closing "Dispositioned in an earlier round"
+# section instead, outside the headline's N (ai-dev-pr-review AT-2843), so
+# the `- + **major**` selection below deliberately does not count it. An
 # item is answered when thread_answers finds a replied thread for it —
 # resolved, since (b) already demanded zero unresolved — or when a later
 # comment from someone other than the workflow quotes it with `>`: the quote

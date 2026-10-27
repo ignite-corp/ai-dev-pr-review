@@ -1015,16 +1015,17 @@ class TestUndispositionedMajorsGate:
         # The defect this feature was reviewed for is that a blocked
         # reader is told the approval is withheld and given no way to act.
         # The note is the whole user interface, so it has to name what
-        # re-runs a round in this repo's terms, and it must not promise
-        # that a reply alone clears the withhold -- the aggregate never
-        # sees a disposition (AT-2843).
+        # re-runs a round in this repo's terms, and the only reply that
+        # clears a re-raised major: a Resolve Policy disposition on a
+        # resolved thread (AT-2843).
         calls = self._run_main_recording_gh(monkeypatch, _two_majors_no_consensus())
         body = next(body for cmd, body in calls if "comment" in cmd)
 
         assert "Auto-approve withheld" in body
         assert "The next round decides again" in body
         assert "push a commit, or re-run the workflow" in body
-        assert "posts once a round ends with no major raised" in body
+        assert "with a Resolve Policy disposition" in body
+        assert "posts once a round ends with no major standing" in body
         assert "A human approving this PR satisfies a required-review rule" in body
 
     def test_coverage_reason_wins_when_both_withholds_apply(
@@ -1152,6 +1153,7 @@ class TestMajorCountIsOneComputation:
             patch("aggregate_reviews.fetch_round_count", return_value=0),
             patch("aggregate_reviews._fetch_fold_comments", return_value=[]),
             patch("aggregate_reviews._fetch_inline_posts", return_value=[]),
+            patch("aggregate_reviews._fetch_disposition_threads", return_value=[]),
         ):
             main()
 

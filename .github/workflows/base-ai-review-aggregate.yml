@@ -466,6 +466,10 @@ jobs:
           DEPENDABOT_MAJOR_CONSENSUS_OVERLAP: ${{ vars.DEPENDABOT_MAJOR_CONSENSUS_OVERLAP || '0.5' }}
           MAJOR_CONSENSUS_MIN: ${{ vars.MAJOR_CONSENSUS_MIN || '2' }}
           REVIEW_MODE: ${{ vars.REVIEW_MODE || 'parallel' }}
+          # The posting step's dedup threshold, read here too: a re-raised
+          # major is matched to its earlier thread with the same matcher, so
+          # both must score at one threshold (AT-2843).
+          JACCARD_THRESHOLD: ${{ vars.JACCARD_THRESHOLD || '0.6' }}
           # Resolved by prepare so a dispatched run selects the same
           # thresholds as the pull_request run of the same PR: without it the
           # dispatch path has no event payload, and an empty author scores a
