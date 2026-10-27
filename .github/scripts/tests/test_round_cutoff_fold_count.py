@@ -35,7 +35,7 @@ import pytest
 
 import aggregate_reviews
 import post_inline_comments
-from post_inline_comments import _normalize_body
+from post_inline_comments import normalize_body
 from github_pr_support import (
     REVIEWER_NAMES,
     fold_count_line,
@@ -165,7 +165,7 @@ def _run_post(
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
     monkeypatch.setenv("BOT_LOGIN", bot_login)
     threads = [
-        {"path": th["path"], "line": th["line"], "body": _normalize_body(th["body"])}
+        {"path": th["path"], "line": th["line"], "body": normalize_body(th["body"])}
         for th in (existing_threads or [])
     ]
     monkeypatch.setattr(

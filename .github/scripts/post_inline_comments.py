@@ -7,7 +7,7 @@ Falls back to a plain PR comment if the API call fails.
 
 Dedup strategy (fuzzy):
   1. Fetch ALL existing threads (resolved + unresolved)
-  2. Normalise each thread's first comment body via _normalize_body
+  2. Normalise each thread's first comment body via normalize_body
   3. For each new issue, check whether a thread on the same file exists
      whose normalised body has Jaccard token-set similarity
      >= DEDUP_STRONG_JACCARD (duplicate regardless of line distance --
@@ -16,7 +16,7 @@ Dedup strategy (fuzzy):
      survives both force-push line shifts and small wording changes
      (paraphrases, added punctuation, reworded suggestions).
   4. New issues are also checked against the CURRENT batch (same
-     _is_duplicate semantics), so one reviewer emitting the same finding
+     is_duplicate semantics), so one reviewer emitting the same finding
      twice in a round posts once -- at the highest severity seen.
 
 Issues outside the diff range are not posted -- they appear in aggregate summary.
@@ -112,7 +112,7 @@ _SEVERITY_RANK: dict[str, int] = {
     sev: rank for rank, sev in enumerate(("suggestion", "minor", "major", "critical"))
 }
 
-# Pre-compiled patterns for _normalize_body
+# Pre-compiled patterns for normalize_body
 _ICON_RE = re.compile("[" + "".join(SEVERITY_ICONS.values()) + "*]")
 _BOLD_RE = re.compile(r"\*\*.*?\*\*")
 _REVIEWER_RE = re.compile(
@@ -176,7 +176,7 @@ def parse_diff(diff_text: str) -> dict[str, set[int]]:
     return valid
 
 
-def _normalize_body(text: str) -> str:
+def normalize_body(text: str) -> str:
     """Normalize review comment body for exact-match dedup.
 
     Strips generated prefixes (icons, severity, reviewer tag, leading colon)
@@ -226,7 +226,7 @@ def _parse_thread_nodes(
             {
                 "path": node.get("path", ""),
                 "line": node.get("line"),
-                "body": _normalize_body(body),
+                "body": normalize_body(body),
             }
         )
     return threads
@@ -253,7 +253,7 @@ def fetch_existing_threads(
     )
 
 
-def _is_duplicate(
+def is_duplicate(
     file_path: str,
     description: str | None,
     existing_threads: list[dict[str, Any]],
@@ -276,7 +276,7 @@ def _is_duplicate(
     ``line=None`` skips the line-distance check, preserving backward
     compatibility for callers that lack a right-side line number.
     """
-    normalized = _normalize_body(description or "")
+    normalized = normalize_body(description or "")
     tokens = set(normalized.split())
     if not tokens:
         return False
@@ -311,14 +311,14 @@ def build_comments(
 
     Besides deduping against existing threads, each issue is checked
     against the comments already accepted in this batch (same
-    ``_is_duplicate`` semantics): a batch-internal duplicate replaces the
+    ``is_duplicate`` semantics): a batch-internal duplicate replaces the
     earlier comment when its severity is higher and is skipped otherwise.
 
     Returns (comments, no_location, out_of_range).
     """
     comments: list[dict[str, Any]] = []
     # Dedup-shaped mirror of `comments` (path/line/normalised body plus
-    # severity) so batch entries can feed _is_duplicate directly.
+    # severity) so batch entries can feed is_duplicate directly.
     batch_entries: list[dict[str, Any]] = []
     no_location = 0
     out_of_range = 0
@@ -338,7 +338,7 @@ def build_comments(
             out_of_range += 1
             continue
         desc = issue.get("description", "")
-        if _is_duplicate(file_path, desc, existing_threads, line=line_num):
+        if is_duplicate(file_path, desc, existing_threads, line=line_num):
             print(f"{reviewer}: skip {file_path}:{line_num} (similar thread exists)")
             continue
 
@@ -350,7 +350,7 @@ def build_comments(
             (
                 i
                 for i, entry in enumerate(batch_entries)
-                if _is_duplicate(file_path, desc, [entry], line=line_num)
+                if is_duplicate(file_path, desc, [entry], line=line_num)
             ),
             None,
         )
@@ -373,7 +373,7 @@ def build_comments(
         entry = {
             "path": file_path,
             "line": line_num,
-            "body": _normalize_body(desc or ""),
+            "body": normalize_body(desc or ""),
             "severity": sev,
         }
         if dup_idx is not None:

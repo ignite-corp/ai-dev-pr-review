@@ -79,6 +79,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from github_pr_support import is_json_array, is_json_object
 from post_inline_comments import parse_diff
 
 # How far from the cited line the quoted evidence may sit.
@@ -289,7 +290,7 @@ def check_reviewer_coordinates(
         # check, and repeating that here would say what the shim and the
         # aggregate both already say.
         return counts
-    if not isinstance(verdict, dict) or not isinstance(verdict.get("issues"), list):
+    if not (is_json_object(verdict) and is_json_array(issues := verdict.get("issues"))):
         return counts
 
     try:
@@ -300,8 +301,8 @@ def check_reviewer_coordinates(
     offsets = diff_offset_index(diff_text)
 
     changed = False
-    for issue in verdict["issues"]:
-        if not isinstance(issue, dict):
+    for issue in issues:
+        if not is_json_object(issue):
             continue
         located = _issue_location(issue)
         if located is None:

@@ -32,7 +32,7 @@ from aggregate_reviews import (
     REVIEWER_NAMES,
 )
 from github_pr_support import inline_post_marker
-from post_inline_comments import DEDUP_STRONG_JACCARD, _is_duplicate, _normalize_body
+from post_inline_comments import DEDUP_STRONG_JACCARD, is_duplicate, normalize_body
 from test_gate_headline_drill import gate_function
 
 _REVIEWER = next(iter(REVIEWER_NAMES))
@@ -238,11 +238,11 @@ class TestWhatCountsAsDispositioned:
         # the posting step opens a new thread, which is where it is answered.
         thread = _thread(line=10)
         parsed = _parse_disposition_threads([thread])
-        issue_tokens = set(_normalize_body(_DESC).split())
+        issue_tokens = set(normalize_body(_DESC).split())
         thread_tokens = set(parsed[0]["body"].split())
         jaccard = len(issue_tokens & thread_tokens) / len(issue_tokens | thread_tokens)
         assert jaccard < DEDUP_STRONG_JACCARD
-        assert not _is_duplicate("a.py", _DESC, parsed, line=40)
+        assert not is_duplicate("a.py", _DESC, parsed, line=40)
         assert _dispositioned(_available(_issue()), thread) == {}
 
     def test_outdated_thread_scores_as_the_posting_step_does(self) -> None:

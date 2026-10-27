@@ -71,12 +71,14 @@ from github_pr_support import (
     inline_run_identity,
     is_valid_review as _is_valid_review,
     normalize_severity as _normalize_severity,
+    array_field,
+    object_field,
 )
 
 # The posting step's own thread matcher (stdlib-only, like this script): a
 # re-raised major is the same finding a thread holds exactly when the
 # posting step would have deduplicated it against that thread (AT-2843).
-from post_inline_comments import _is_duplicate, _normalize_body
+from post_inline_comments import is_duplicate, normalize_body
 
 logger = logging.getLogger(__name__)
 
@@ -1039,7 +1041,7 @@ _DISPOSITION_PAGE_SIZE = 50
 
 
 def _comment_fields(node: dict[str, Any]) -> dict[str, Any]:
-    author = node.get("author") or {}
+    author = object_field(node, "author")
     return {
         "login": author.get("login") or "",
         "author_type": author.get("__typename") or "",
@@ -1049,7 +1051,7 @@ def _comment_fields(node: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The resolved threads that close a posted major, in ``_is_duplicate``'s shape.
+    """The resolved threads that close a posted major, in ``is_duplicate``'s shape.
 
     Narrow on purpose, because a match lets a reply neutralize a
     reviewer's major. A thread qualifies only when all hold:
@@ -1073,7 +1075,7 @@ def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, An
     for node in nodes:
         if node.get("isResolved") is not True:
             continue
-        head = ((node.get("head") or {}).get("nodes")) or []
+        head = array_field(object_field(node, "head"), "nodes")
         if not head:
             continue
         first = _comment_fields(head[0])
@@ -1084,7 +1086,7 @@ def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, An
         if not _POSTED_MAJOR_RE.match(posted.partition("\n")[0]):
             continue
         tail = [
-            _comment_fields(c) for c in ((node.get("tail") or {}).get("nodes")) or []
+            _comment_fields(c) for c in array_field(object_field(node, "tail"), "nodes")
         ]
         # The opening comment is in the window only on a short thread; on
         # the local driver it is a User's, so it is excluded by identity.
@@ -1108,7 +1110,7 @@ def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, An
                 "line": node.get("line"),
                 # The whole posted body, as _parse_thread_nodes normalizes it
                 # for the posting step's own dedup, so both score alike.
-                "body": _normalize_body(posted),
+                "body": normalize_body(posted),
                 # In backticks, not a bare @login: the verdict is reposted
                 # every round, and a mention would re-notify each time.
                 "disposition": f"{prefix.rstrip(':')} by `{human[-1]['login']}`",
@@ -1140,7 +1142,7 @@ def _dispositioned_majors(
     """This round's majors an earlier round's thread already disposes of (AT-2843).
 
     A major matches a thread when the posting step would deduplicate it
-    against that thread -- ``post_inline_comments._is_duplicate``, same
+    against that thread -- ``post_inline_comments.is_duplicate``, same
     file and near-identical text, line distance ignored at the strong
     threshold because a rebase moves lines -- which is also why a re-raised
     major opens no new thread: the old one is the only place its
@@ -1162,7 +1164,7 @@ def _dispositioned_majors(
             except (TypeError, ValueError):
                 line = None
             for thread in threads:
-                if _is_duplicate(
+                if is_duplicate(
                     issue["file"], issue.get("description"), [thread], line=line
                 ):
                     out[(name, index)] = thread["disposition"]
@@ -1426,8 +1428,8 @@ def _fetch_fold_comments(repo: str, pr_number: str) -> list[dict[str, Any]]:
     owner, name = parts
     return [
         {
-            "login": (node.get("author") or {}).get("login") or "",
-            "author_type": (node.get("author") or {}).get("__typename") or "",
+            "login": object_field(node, "author").get("login") or "",
+            "author_type": object_field(node, "author").get("__typename") or "",
             "body": node.get("body") or "",
         }
         for node in fetch_paginated_nodes(
@@ -2251,7 +2253,7 @@ def _fold_prior_round_items(pr_number: str, repo: str, *, head_sha: str) -> list
             node.get("body")
         ):
             continue
-        reviewed = (node.get("commit") or {}).get("oid")
+        reviewed = object_field(node, "commit").get("oid")
         if node["state"] == "APPROVED" and head and reviewed == head:
             standing.append(node["id"])
             continue

@@ -277,9 +277,9 @@ def test_current_round_marker_and_body_reviewer_must_agree(
 
 def test_round_marker_does_not_change_thread_dedup() -> None:
     body = "- **minor** (claude): the loader never closes its handle"
-    assert posting._normalize_body(
+    assert posting.normalize_body(
         inline_post_marker("claude", 2, _RUN_ID) + "\n" + body
-    ) == posting._normalize_body(body)
+    ) == posting.normalize_body(body)
 
 
 def test_fold_dedup_timeout_still_posts_real_findings(
