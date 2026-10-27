@@ -43,7 +43,7 @@ The boundary between the Actions, local and cross-repo paths is recorded in [`do
 | `GOOGLE_AI_API_KEY` | yes | Gemini reviewer | Org or repo secret. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | one of these two | Claude reviewer | Claude Pro/Max subscription OAuth token (`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | one of these two | Claude reviewer | Standard `sk-ant-` API key. |
-| `REVIEWER_APP_PRIVATE_KEY` | no | Aggregate approve | Private key of a dedicated reviewer GitHub App. Paired with the `REVIEWER_APP_ID` var, it enables a real APPROVED review on `approve` verdicts. Without it (or the var), `approve` posts a plain comment — the current default behavior. |
+| `REVIEWER_APP_PRIVATE_KEY` | no | Aggregate approve | Private key of a dedicated reviewer GitHub App. Paired with the `REVIEWER_APP_ID` var, it enables a real APPROVED review on `approve` verdicts, and, from the first release that includes AT-2597 (see that release's notes), `request_changes` reviews are posted under the same App identity — except that when the App's `request_changes` post is rejected, it is retried under the default token as `github-actions[bot]`, so a gate should accept both logins. When the default token is itself the App token (cross-repo runs), there is no retry: the verdict falls back to an issue comment with the `Intended verdict` note. Without it (or the var), `approve` posts a plain comment — the current default behavior — and `request_changes` reviews are posted as `github-actions[bot]`. |
 
 ### Claude reviewer auth: OAuth token vs API key
 
@@ -430,7 +430,7 @@ Where each verdict is posted, for same-repository runs as of main 64e8f46, 2026-
 | `ALLOW_AUTO_APPROVE` off (the default), any verdict | issue comment; an `approve` or `request_changes` headline says `posted as comment (auto-approve off)` | `github-actions[bot]` |
 | on, `approve`, reviewer App token present | review, `APPROVED` | the reviewer App's bot account |
 | on, `approve`, no reviewer App token (mint step skipped or failed) | review attempted under `GITHUB_TOKEN`, with a `::notice::No reviewer App token` line in the run log; GitHub accepts it only where the repository lets Actions approve pull requests, which this README says to leave off, and otherwise it ends as the `review API failed` row | `github-actions[bot]` |
-| on, `request_changes`, including the prepare-failure and size-skip verdicts | review, `CHANGES_REQUESTED` | `github-actions[bot]`; the reviewer App token is used for `approve` only |
+| on, `request_changes`, including the prepare-failure and size-skip verdicts | review, `CHANGES_REQUESTED` | from the first release that includes AT-2597 (see that release's notes), the reviewer App's bot account when the reviewer App token is present. If that post fails, it is retried once under the default token (`GITHUB_TOKEN`) as `github-actions[bot]`, so a gate should accept both logins. With no reviewer App token, `github-actions[bot]`, with a `::notice::No reviewer App token` line in the run log. Earlier releases post it as `github-actions[bot]`, with no notice |
 | on, `approve` withheld (a reviewer did not respond, or majors are unreviewed) | issue comment ending `> [!] Auto-approve withheld, posted as comment: <reason>.` | `github-actions[bot]` |
 | `comment` verdict, including the policy-skip verdict | issue comment, no note | `github-actions[bot]` |
 | the review call fails | issue comment ending `> [!] Intended verdict: **<verdict>** (review API failed, posted as comment)`, and a `::warning::` in the run log | `github-actions[bot]` |

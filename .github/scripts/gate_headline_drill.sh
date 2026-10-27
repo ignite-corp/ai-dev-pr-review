@@ -1061,11 +1061,18 @@ R_EARLIER=$(rev 8 2026-10-01T11:14:37Z 'github-actions[bot]' Bot APPROVED "$NEXT
 chk "newest across both surfaces: a review a minute after the comment wins" "$(agg "$FN" "$(lst "$C_DOT")" "$(lst "$R_LATER")" "$NEXT_HEAD" "$W_S" "$W_E")" review:7:APPROVED
 chk "newest across both surfaces: a review a minute before the comment loses" "$(agg "$FN" "$(lst "$C_DOT")" "$(lst "$R_EARLIER")" "$NEXT_HEAD" "$W_S" "$W_E")" comment:5930195222:comment
 chk "both lists empty: nothing" "$(agg "$FN" '[]' '[]' "$HEAD_IC" "$E_S" "$E_E")" none
-# Identity is per verdict, not per repository (LENS, aggregate_reviews.py
-# post_verdict at ai-dev-pr-review d554aee): request_changes never uses the
-# App token, so on an App-shaped PR a CHANGES_REQUESTED review is
-# github-actions[bot]'s; the App mint is continue-on-error, so an approval
-# can land as github-actions[bot]'s review there too; a review-API failure
+# Identity is per verdict, not per repository. Before AT-2597,
+# request_changes never used the App token, so on an App-shaped PR a
+# CHANGES_REQUESTED review is github-actions[bot]'s (LENS,
+# aggregate_reviews.py post_verdict at ai-dev-pr-review d554aee). From
+# the first release that includes AT-2597 (see that release's notes), it
+# is posted under the App token when one is present (R_RC_APP below),
+# and a request_changes the App failed to post is retried under the
+# default token, so it can land as github-actions[bot]'s too -- unless
+# the default token is itself the App token (cross-repo runs), where
+# there is no retry and the verdict falls back to an issue comment. The
+# App mint is continue-on-error, so an approval can land as
+# github-actions[bot]'s review there too; a review-API failure
 # and a timeout both fall back to an issue comment with an `Intended
 # verdict` note appended after the body, differing only in the reason
 # (AT-2597). The note-less comment-only control is C_DOT, shape 1 above.
@@ -1075,6 +1082,9 @@ chk "its headline is then refused by the roster on the Result word" "$(verdict "
 # shellcheck disable=SC1090,SC2034  # the function reads EXPECTED_REVIEWERS
 out=$(. "$FN"; EXPECTED_REVIEWERS=3; "$FUNC_NAME" "$(headline_of "$FN" "$R_RC_GA")")
 chk "the refusal names the Result, not the identity" "$(printf '%s\n' "$out" | grep -c 'Result is not Approved')" 1
+R_RC_APP=$(rev 18 2026-10-02T10:09:06Z 'ignite-ai-review-approver[bot]' Bot CHANGES_REQUESTED "$HEAD_IC" "$MARK"$'\n'"$H_CRITICAL")
+chk "a CHANGES_REQUESTED review by the reviewer App (AT-2597) is selected: identity accepted" "$(agg "$FN" '[]' "$(lst "$R_IC_PREV" "$R_RC_APP")" "$HEAD_IC" "$E_S" "$E_E")" review:18:CHANGES_REQUESTED
+chk "its headline is refused by the roster too" "$(verdict "$FN" "$(headline_of "$FN" "$R_RC_APP")")" block
 R_GA_ON_APP=$(rev 10 2026-10-02T10:09:06Z 'github-actions[bot]' Bot APPROVED "$HEAD_IC" "$MARK"$'\n'"$H_REVIEW_NO_ISSUES")
 chk "a github-actions[bot] APPROVED review on an App-shaped PR (mint failed) is accepted" "$(agg "$FN" '[]' "$(lst "$R_IC_PREV" "$R_GA_ON_APP")" "$HEAD_IC" "$E_S" "$E_E")" review:10:APPROVED
 chk "and its headline passes the roster" "$(verdict "$FN" "$(headline_of "$FN" "$R_GA_ON_APP")")" pass

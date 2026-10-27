@@ -601,7 +601,7 @@ class TestMainAllAbsentExitsNonzero:
 
 
 class TestReviewerToken:
-    """post_verdict uses REVIEWER_TOKEN only for the approve review call."""
+    """post_verdict uses REVIEWER_TOKEN for every formal review call (AT-2597)."""
 
     def _run(
         self, monkeypatch: pytest.MonkeyPatch, verdict: str
@@ -640,13 +640,13 @@ class TestReviewerToken:
         assert env is not None
         assert env["GH_TOKEN"] == "default-token"
 
-    def test_request_changes_does_not_use_reviewer_token(
+    def test_request_changes_with_reviewer_token_uses_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("REVIEWER_TOKEN", "app-token")
         env = self._run(monkeypatch, "request_changes")
         assert env is not None
-        assert env["GH_TOKEN"] == "default-token"
+        assert env["GH_TOKEN"] == "app-token"
 
 
 class TestCommentOnlyGating:
