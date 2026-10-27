@@ -112,6 +112,11 @@ on:
         required: false
         default: ""
         description: "Conclusion of the gemini reviewer job (success/failure/cancelled/skipped)"
+      skip_reason:
+        type: string
+        required: false
+        default: ""
+        description: "Non-empty when the caller skipped the review on purpose: the job then only reports this text and passes (AT-3119)"
     secrets:
       REVIEWER_APP_PRIVATE_KEY:
         required: false
@@ -160,6 +165,44 @@ jobs:
       reviewers_responded_count: ${{ steps.aggregate.outputs.reviewers_responded_count }}
       folded_findings_count: ${{ steps.aggregate.outputs.folded_findings_count }}
     steps:
+      # A skip by design (AT-3119): this job must still run and pass, because
+      # its check is the required one and a job that does not run reports
+      # none. Every step below that does review work carries
+      # `inputs.skip_reason == ''`; test_skip_paths_report_aggregate.py holds
+      # the list. The scripts checkout in particular fails on a release PR,
+      # whose pinned tag does not exist yet. The outputs stay empty, which
+      # reads as unknown, never success. The two target steps right below
+      # stay unguarded (they are held equal to prepare's): on a cross skip
+      # they still validate target_repo and mint its token, so an invalid
+      # cross call fails here as it would without a skip.
+      #
+      # Unlike the size and policy skips, this posts no PR comment, on
+      # purpose. Its trace is the check itself: the notice below is an
+      # annotation on this check run, visible from the PR's checks, and the
+      # summary is on the run. A comment cannot be the guarantee, because a
+      # fork PR's token is read-only and the fork skip is the case this
+      # exists for. Nor does the input open a new bypass: a pull_request run
+      # executes the PR's own copy of the calling workflow, which could
+      # already replace this call with any job of the same name. Protecting
+      # that file (CODEOWNERS on .github/workflows/) is what guards the gate,
+      # with or without skip_reason; the README input table says so.
+      - name: Report a skip by design
+        if: inputs.skip_reason != ''
+        env:
+          SKIP_REASON: ${{ inputs.skip_reason }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### AI review skipped by design"
+            echo
+            printf '%s\n' "$SKIP_REASON"
+            echo
+            echo "No reviewer ran and no verdict was posted. This check passes so that it is not left pending where it is required."
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Caller text on one line: a newline would start a second workflow
+          # command.
+          echo "::notice::AI review skipped by design -- ${SKIP_REASON//[$'\n\r']/ }"
+
       # Cross-repository review (AT-2520): the same two steps as in
       # base-ai-review-prepare.yml, byte for byte -- the comment there says
       # why, and test_target_repo_threading.py holds the copies equal.
@@ -274,6 +317,7 @@ jobs:
       # The token falls through to github.token when no target token was
       # minted.
       - name: Checkout caller repo (PR head)
+        if: inputs.skip_reason == ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
@@ -287,6 +331,7 @@ jobs:
       # the caller dispatched on -- reviewing one tree while reading another
       # tree's diff, silently (AT-2038).
       - name: Confirm the tree matches the diff
+        if: inputs.skip_reason == ''
         env:
           HEAD_SHA: ${{ inputs.head_sha }}
         run: |
@@ -309,6 +354,7 @@ jobs:
       # caller's context inside a reusable workflow (not the reusable's own
       # ref/SHA), so hardcoding is the only reliable mechanism.
       - name: Checkout ai-dev-pr-review scripts (pinned to release tag)
+        if: inputs.skip_reason == ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: ignite-corp/ai-dev-pr-review
@@ -327,6 +373,7 @@ jobs:
       # early_exit skips both downstream jobs by design, which makes two
       # absent artifacts the ordinary sequential outcome, not an outage.
       - name: Clear verdict files the PR checked out
+        if: inputs.skip_reason == ''
         run: |
           set -euo pipefail
           PROMOTE=".ai-dev-pr-review/.github/scripts/promote_legacy_verdict.sh"
@@ -359,24 +406,28 @@ jobs:
           done
 
       - name: Download Claude review
+        if: inputs.skip_reason == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: review-claude
         continue-on-error: true
 
       - name: Download Gemini review
+        if: inputs.skip_reason == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: review-gemini
         continue-on-error: true
 
       - name: Download Codex review
+        if: inputs.skip_reason == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: review-codex
         continue-on-error: true
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - if: inputs.skip_reason == ''
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".ai-dev-pr-review/.github/scripts/.python-version"
 
@@ -396,6 +447,7 @@ jobs:
       # (Input required and not supplied: private-key) on consumers that have
       # not opted in -- they degrade to the existing no-approve behavior.
       - name: Check reviewer App key present
+        if: inputs.skip_reason == ''
         id: reviewer_key
         env:
           REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
@@ -415,6 +467,7 @@ jobs:
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
       - name: Aggregate and post verdict
+        if: inputs.skip_reason == ''
         id: aggregate
         env:
           # The PR coordinate follows target_repo so the verdict is addressed

@@ -53,6 +53,15 @@ on:
         required: false
         type: string
         default: ""
+      # A skip by design that must still report the aggregate check (AT-3119).
+      # Skipping the caller's job instead leaves `<job> / aggregate /
+      # Aggregate & Verdict` absent, and an absent required check is pending
+      # forever. Empty for every consumer that never sets it.
+      skip_reason:
+        description: "Non-empty skips the review on purpose: prepare and the reviewers do not run, and the aggregate job passes with this text as its summary instead of posting a verdict, so its check still exists. Empty (the default) reviews as before (AT-3119)"
+        required: false
+        type: string
+        default: ""
     secrets:
       OPENAI_API_KEY:
         required: true
@@ -101,6 +110,11 @@ permissions:
 
 jobs:
   prepare:
+    # The reviewer jobs are skipped by their `needs.prepare.outputs.skip ==
+    # 'false'` clause, which a prepare that never ran leaves empty -- not by
+    # skip propagation, which the sequential ones' `!cancelled()` defeats.
+    # The aggregate below runs under always() and reports the reason.
+    if: inputs.skip_reason == ''
     uses: ./.github/workflows/base-ai-review-prepare.yml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
@@ -325,6 +339,7 @@ jobs:
     if: always()
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
+      skip_reason: ${{ inputs.skip_reason }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
