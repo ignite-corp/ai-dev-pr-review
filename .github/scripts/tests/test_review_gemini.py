@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -52,7 +53,9 @@ def test_call_gemini_with_retry_eventually_succeeds(monkeypatch):
                     raise Exception("429 RESOURCE_EXHAUSTED")
                 return {"text": "ok"}
 
-    result = review_gemini._call_gemini_with_retry(MockClient(), "m", "c", "cfg")
+    result = review_gemini._call_gemini_with_retry(
+        cast(Any, MockClient()), "m", "c", cast(Any, "cfg")
+    )
     assert call_count["n"] == 3
     assert result == {"text": "ok"}
 
@@ -69,7 +72,9 @@ def test_call_gemini_with_retry_raises_after_exhaustion(monkeypatch):
                 raise Exception("429 RESOURCE_EXHAUSTED")
 
     with pytest.raises(Exception, match="RESOURCE_EXHAUSTED"):
-        review_gemini._call_gemini_with_retry(MockClient(), "m", "c", "cfg")
+        review_gemini._call_gemini_with_retry(
+            cast(Any, MockClient()), "m", "c", cast(Any, "cfg")
+        )
 
 
 _EVIDENCE_RULE_MARKER = "MUST quote the diff line(s) where the reference is used"
@@ -258,6 +263,26 @@ def test_main_success_payload_stamped_status_ok(tmp_path, monkeypatch):
     review_gemini.main()
     data = json.loads((tmp_path / review_gemini.REVIEW_FILE).read_text())
     assert data["status"] == "ok"
+
+
+def test_main_null_issues_writes_the_verdict_and_does_not_crash(
+    tmp_path, monkeypatch, capsys
+):
+    """AT-2604: the closing count line ran len() on the model's `issues`.
+
+    A model that sent `"issues": null` had its verdict written and then
+    crashed the step with a TypeError; the verdict is the aggregate's to
+    judge, so the count reads a non-list as no issues.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GOOGLE_AI_API_KEY", "test-key")
+    _fake_success_client(
+        monkeypatch, '{"summary": "fine", "early_exit": false, "issues": null}'
+    )
+    review_gemini.main()
+    data = json.loads((tmp_path / review_gemini.REVIEW_FILE).read_text())
+    assert data["issues"] is None
+    assert "Gemini: 0 issue(s) found" in capsys.readouterr().out
 
 
 def test_main_success_payload_stamped_status_early_exit(tmp_path, monkeypatch):
