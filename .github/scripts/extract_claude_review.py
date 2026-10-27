@@ -13,8 +13,9 @@ import os
 import shlex
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
+from github_pr_support import is_json_array, is_json_object
 from review_status import stamp_model_status, write_verdict_json
 
 
@@ -22,17 +23,19 @@ _MAX_SCAN_BYTES = 50_000
 _OUTPUT_FILE = "review-claude.json"
 
 
-def _valid_review(obj: Any) -> bool:
+def _valid_review(obj: object) -> TypeGuard[dict[str, Any]]:
     if not (
-        isinstance(obj, dict)
+        is_json_object(obj)
         and isinstance(obj.get("summary"), str)
         and type(obj.get("early_exit")) is bool
-        and isinstance(obj.get("issues"), list)
     ):
         return False
-    for issue in obj["issues"]:
+    issues = obj.get("issues")
+    if not is_json_array(issues):
+        return False
+    for issue in issues:
         if not (
-            isinstance(issue, dict)
+            is_json_object(issue)
             and issue.get("severity") in ("critical", "major", "minor", "suggestion")
             and isinstance(issue.get("description"), str)
         ):
@@ -53,14 +56,14 @@ def review_json_schema() -> dict[str, Any]:
     schema = json.loads(path.read_text(encoding="utf-8"))
 
     def convert(node: Any) -> None:
-        if isinstance(node, dict):
+        if is_json_object(node):
             if node.pop("nullable", False):
                 node["type"] = [node["type"], "null"]
             if node.get("type") == "object":
                 node["additionalProperties"] = False
             for value in node.values():
                 convert(value)
-        elif isinstance(node, list):
+        elif is_json_array(node):
             for value in node:
                 convert(value)
 
@@ -114,10 +117,10 @@ def extract_review(exec_path: str, structured_output: str = "") -> bool:
         print(f"Cannot parse {exec_path}: {e}", file=sys.stderr)
         return False
 
-    entries = data if isinstance(data, list) else [data]
+    entries = data if is_json_array(data) else [data]
     # Prefer the SDK result over text that may include draft JSON or input quotes.
     for msg in reversed(entries):
-        if not isinstance(msg, dict):
+        if not is_json_object(msg):
             continue
         if msg.get("type") == "result" and "structured_output" in msg:
             obj = msg["structured_output"]
@@ -125,20 +128,17 @@ def extract_review(exec_path: str, structured_output: str = "") -> bool:
                 return False
             return _write_review(obj) if _valid_review(obj) else False
     for msg in reversed(entries):
-        if not isinstance(msg, dict):
+        if not is_json_object(msg):
             continue
         message = msg.get("message")
-        contents = (
+        raw = (
             message.get("content", [])
-            if isinstance(message, dict)
+            if is_json_object(message)
             else msg.get("content", [])
         )
-        if not isinstance(contents, list):
-            contents = [contents]
+        contents = raw if is_json_array(raw) else [raw]
         for content in contents:
-            text = (
-                content.get("text", "") if isinstance(content, dict) else str(content)
-            )
+            text = content.get("text", "") if is_json_object(content) else str(content)
             obj = _try_parse_review(text)
             if obj is not None:
                 return _write_review(obj)

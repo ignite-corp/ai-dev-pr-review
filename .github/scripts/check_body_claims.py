@@ -195,7 +195,7 @@ def emittable_strings(source: str, filename: str = "<source>") -> list[str]:
 
 def claims(body: str) -> list[Claim]:
     """Return the marked claims the body makes, in the order they appear."""
-    found = []
+    found: list[Claim] = []
     for match in _CLAIM_RE.finditer(body):
         text = normalize(match.group("text"))
         if text:
@@ -205,7 +205,7 @@ def claims(body: str) -> list[Claim]:
 
 def load_phrases(text: str) -> list[str]:
     """Read a phrase list: one per line, ``#`` comments and blanks skipped."""
-    phrases = []
+    phrases: list[str] = []
     for line in text.splitlines():
         stripped = normalize(line)
         if stripped and not stripped.startswith("#"):
@@ -280,7 +280,7 @@ def audit(
     retracted: list[str] | None = None,
 ) -> list[Finding]:
     """Return the findings for one body, sorted by dimension then detail."""
-    findings = []
+    findings: list[Finding] = []
     for claim in claims(body):
         finding = _judge_claim(claim, emittable, measured)
         if finding is not None:
