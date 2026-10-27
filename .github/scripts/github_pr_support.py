@@ -9,9 +9,33 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, TypeGuard
 
 logger = logging.getLogger(__name__)
+
+
+# Parsed JSON is `Any`; these narrow it to the shapes a JSON document has,
+# so the code reading a payload is type-checked past the isinstance test.
+def is_json_object(value: object) -> TypeGuard[dict[str, Any]]:
+    """A JSON object: a dict, whose keys JSON makes strings."""
+    return isinstance(value, dict)
+
+
+def is_json_array(value: object) -> TypeGuard[list[Any]]:
+    return isinstance(value, list)
+
+
+def object_field(node: dict[str, Any], key: str) -> dict[str, Any]:
+    """`node[key]` as an object; anything that is not one is read as {}."""
+    value = node.get(key)
+    return value if is_json_object(value) else {}
+
+
+def array_field(node: dict[str, Any], key: str) -> list[Any]:
+    """`node[key]` as an array; anything that is not one is read as []."""
+    value = node.get(key)
+    return value if is_json_array(value) else []
+
 
 REVIEWER_NAMES: tuple[str, ...] = ("claude", "codex", "gemini")
 GH_TIMEOUT_SEC = 60
@@ -364,10 +388,13 @@ def normalize_severity(data: Any) -> None:
     Unknown values are left alone so ``is_valid_review`` rejects the
     payload rather than this silently inventing a severity for it.
     """
-    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+    if not is_json_object(data):
         return
-    for issue in data["issues"]:
-        if not isinstance(issue, dict):
+    issues = data.get("issues")
+    if not is_json_array(issues):
+        return
+    for issue in issues:
+        if not is_json_object(issue):
             continue
         sev = issue.get("severity")
         if not isinstance(sev, str):
@@ -383,16 +410,17 @@ def normalize_severity(data: Any) -> None:
 
 def is_valid_review(data: Any) -> bool:
     """Check that a review payload has the required shape."""
-    if not isinstance(data, dict):
+    if not is_json_object(data):
         return False
     if not isinstance(data.get("summary"), str):
         return False
     if not isinstance(data.get("early_exit"), bool):
         return False
-    if not isinstance(data.get("issues"), list):
+    issues = data.get("issues")
+    if not is_json_array(issues):
         return False
-    for issue in data["issues"]:
-        if not isinstance(issue, dict):
+    for issue in issues:
+        if not is_json_object(issue):
             return False
         if issue.get("severity") not in SEVERITY_ICONS:
             return False
@@ -532,7 +560,7 @@ def fetch_paginated_nodes(
         return []
     nodes: list[dict[str, Any]] = []
     cursor = ""
-    for page_num in range(_MAX_FETCH_PAGES):
+    for _ in range(_MAX_FETCH_PAGES):
         cmd = [
             "gh",
             "api",
