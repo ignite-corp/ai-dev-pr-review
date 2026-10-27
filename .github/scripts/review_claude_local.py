@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from extract_claude_review import extract_review, review_json_schema
+from github_pr_support import is_json_object, object_field
 from local_review_config import LocalConfig
 from local_reviewer_support import (
     ERROR_CLI_FAILED,
@@ -132,7 +133,7 @@ def cli_env() -> dict[str, str]:
         if step.get("id") != _ACTION_STEP_ID:
             continue
         resolved: dict[str, str] = {}
-        for key, value in (step.get("env") or {}).items():
+        for key, value in object_field(step, "env").items():
             ref = _INPUT_REF_RE.fullmatch(str(value).strip())
             resolved[key] = str(
                 action["inputs"][ref.group(1)]["default"] if ref else value
@@ -266,10 +267,10 @@ def write_exec_file(stdout: str) -> bool:
         payload = json.loads(stdout)
     except ValueError:
         return False
-    if isinstance(payload, dict) and "structured_output" in payload:
+    if is_json_object(payload) and "structured_output" in payload:
         Path(EXEC_FILE).write_text(json.dumps([payload]), encoding="utf-8")
         return True
-    text = payload.get("result") if isinstance(payload, dict) else None
+    text = payload.get("result") if is_json_object(payload) else None
     if not isinstance(text, str):
         return False
     Path(EXEC_FILE).write_text(

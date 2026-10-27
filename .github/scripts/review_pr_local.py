@@ -78,7 +78,11 @@ from github_pr_support import (
     describe_size_overage,
     describe_size_warning,
     display_path,
+    array_field,
     format_labels,
+    is_json_array,
+    is_json_object,
+    object_field,
     size_warn_reached,
 )
 from local_review_config import (
@@ -504,7 +508,7 @@ def gh_json(args: list[str]) -> dict[str, Any]:
             f"gh {' '.join(args)} returned output that is not JSON ({exc}):"
             f" {result.stdout[:200]!r}"
         ) from exc
-    if not isinstance(payload, dict):
+    if not is_json_object(payload):
         raise DriverError(
             f"gh {' '.join(args)} returned {type(payload).__name__}, not an object"
         )
@@ -525,17 +529,19 @@ def resolve_refs(repo: str, pr_number: str) -> Refs:
     payload = gh_json(["api", f"repos/{repo}/pulls/{pr_number}"])
     merged = payload.get("merged") is True
     return Refs(
-        base_ref=(payload.get("base") or {}).get("ref") or "",
-        head_sha=(payload.get("head") or {}).get("sha") or "",
+        base_ref=object_field(payload, "base").get("ref") or "",
+        head_sha=object_field(payload, "head").get("sha") or "",
         # `.head.ref`, never `.head.label`: a fork PR's label is
         # owner-prefixed while the webhook reports the bare branch name.
-        head_ref=(payload.get("head") or {}).get("ref") or "",
-        pr_author=(payload.get("user") or {}).get("login") or "",
+        head_ref=object_field(payload, "head").get("ref") or "",
+        pr_author=object_field(payload, "user").get("login") or "",
         pr_merged="true" if merged else "false",
         # On an open PR merge_commit_sha names GitHub's test-merge commit,
         # not anything that landed (AT-2201).
         merge_commit_sha=(payload.get("merge_commit_sha") or "") if merged else "",
-        labels=format_labels([label["name"] for label in payload.get("labels") or []]),
+        labels=format_labels(
+            [label["name"] for label in array_field(payload, "labels")]
+        ),
         additions=int(payload.get("additions") or 0),
         deletions=int(payload.get("deletions") or 0),
     )
@@ -1159,7 +1165,7 @@ def filter_policy_excluded(work: Path) -> dict[str, Any]:
         raise DriverError(
             f"{POLICY_RESULT} is unreadable after filter_pr_diff.py succeeded: {exc}"
         ) from exc
-    if not isinstance(excluded, dict) or not set(POLICY_FIELDS) <= set(excluded):
+    if not is_json_object(excluded) or not set(POLICY_FIELDS) <= set(excluded):
         raise DriverError(
             f"{POLICY_RESULT} does not carry {', '.join(POLICY_FIELDS)}: {excluded!r}"
         )
@@ -1218,7 +1224,7 @@ def load_threads(work: Path) -> tuple[str, str]:
             file=sys.stderr,
         )
         return "0", ""
-    if not isinstance(threads, list):
+    if not is_json_array(threads):
         print(
             f"::warning::{THREADS_FILE} is not a list of threads; reviewing"
             " with no prior threads",
@@ -1274,7 +1280,7 @@ def _encode_threads(threads: list[Any]) -> str:
 
 def _cap_thread_body(thread: Any) -> Any:
     """reviewer_prompts._truncate's per-body rule, applied one step earlier."""
-    body = thread.get("body") if isinstance(thread, dict) else None
+    body = thread.get("body") if is_json_object(thread) else None
     if isinstance(body, str) and len(body) > MAX_THREAD_BODY_CHARS:
         return {**thread, "body": body[:MAX_THREAD_BODY_CHARS] + "..."}
     return thread
@@ -1496,7 +1502,7 @@ def verdict_failure(work: Path, name: str) -> str | None:
         payload = json.loads((work / f"review-{name}.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(payload, dict) or payload.get("status") != "failed":
+    if not is_json_object(payload) or payload.get("status") != "failed":
         return None
     error = payload.get("error")
     return error if isinstance(error, str) and error else "no kind given"
@@ -1569,7 +1575,7 @@ def has_early_exit(work: Path, name: str) -> bool:
         return False
     # A verdict that is not an object has no early_exit to read, and `.get`
     # on a top-level array is an AttributeError.
-    return isinstance(payload, dict) and payload.get("early_exit") is True
+    return is_json_object(payload) and payload.get("early_exit") is True
 
 
 def reviewer_conclusion(
@@ -1615,7 +1621,7 @@ def print_run_identity(config: LocalConfig) -> None:
     resolving from them would assert "local matches CI" -- a larger claim
     than "local follows the workflow default".
     """
-    parts = []
+    parts: list[str] = []
     for name in REVIEWER_NAMES:
         key = f"{name.upper()}_MODEL"
         source = "operator" if config.is_overridden(key) else "workflow default"

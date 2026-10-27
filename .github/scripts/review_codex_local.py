@@ -57,6 +57,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from github_pr_support import is_json_object
 from local_review_config import LocalConfig
 from local_reviewer_support import (
     ERROR_CLI_FAILED,
@@ -222,7 +223,7 @@ def normalize_verdict_file() -> None:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             continue
-        if not isinstance(payload, dict):
+        if not is_json_object(payload):
             continue
         payload.setdefault("early_exit", False)
         Path(REVIEW_FILE).write_text(json.dumps(payload, indent=2), encoding="utf-8")
