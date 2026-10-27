@@ -26,7 +26,7 @@ on:
         type: number
         default: 10
       review-job-timeout-minutes:
-        description: "Minutes the whole reviewer job may run; forwarded to the Claude reviewer jobs only. Must exceed claude-timeout-minutes by at least 5 whole minutes so the step cap is the one that fires; the job fails at its 'Validate timeout inputs' step otherwise"
+        description: "Minutes the whole reviewer job may run; forwarded to Claude and Codex jobs only. Claude requires at least 5 whole minutes above claude-timeout-minutes. Codex uses at least 26 minutes for two bounded 10-minute attempts and finalization, preserving larger caller values"
         required: false
         type: number
         default: 15
@@ -64,7 +64,9 @@ on:
         default: ""
     secrets:
       OPENAI_API_KEY:
-        required: true
+        required: false
+      CODEX_ACCESS_TOKEN:
+        required: false
       GOOGLE_AI_API_KEY:
         required: true
       ANTHROPIC_API_KEY:
@@ -154,11 +156,13 @@ jobs:
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
       reviewer: codex
+      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -241,11 +245,13 @@ jobs:
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
       reviewer: codex
+      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

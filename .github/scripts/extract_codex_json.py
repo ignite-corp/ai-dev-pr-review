@@ -2,7 +2,7 @@
 """Extract review verdict JSON from codex CLI stdout when the model emits text
 instead of using sandbox tools to write review-codex.json directly.
 
-Usage: extract_codex_json.py <input-log> <output-json>
+Usage: extract_codex_json.py [--events] <input-log> <output-json>
 
 The codex log contains the user prompt, internal events, then the assistant's
 text response (which should contain a JSON object with summary/early_exit/issues).
@@ -58,16 +58,43 @@ def extract(log_text: str) -> dict[str, Any] | None:
     return None
 
 
+def extract_events(log_text: str) -> dict[str, Any] | None:
+    """Read completed assistant messages individually, newest valid verdict first."""
+    for line in reversed(log_text.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not is_json_object(event) or event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not is_json_object(item) or item.get("type") != "agent_message":
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            verdict = extract(text)
+            if verdict is not None:
+                return verdict
+    return None
+
+
 def main(argv: list[str]) -> int:
+    events_mode = len(argv) == 4 and argv[1] == "--events"
+    if events_mode:
+        argv = [argv[0], *argv[2:]]
     if len(argv) != 3:
-        print("Usage: extract_codex_json.py <input-log> <output-json>", file=sys.stderr)
+        print(
+            "Usage: extract_codex_json.py [--events] <input-log> <output-json>",
+            file=sys.stderr,
+        )
         return 2
     log_path = Path(argv[1])
     out_path = Path(argv[2])
     if not log_path.is_file():
         print(f"::error::Log file not found: {log_path}", file=sys.stderr)
         return 1
-    obj = extract(log_path.read_text(encoding="utf-8", errors="replace"))
+    reader = extract_events if events_mode else extract
+    obj = reader(log_path.read_text(encoding="utf-8", errors="replace"))
     if obj is None:
         return 1
     stamp_model_status(obj)

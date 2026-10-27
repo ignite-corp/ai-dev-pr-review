@@ -135,6 +135,17 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
     (PREPARE.name, "Checkout caller default prompts", "with:token"): (
         "the caller's own token reads the caller's own repository (AT-2520)"
     ),
+    (
+        SINGLE.name,
+        "Authenticate Codex CLI with preferred credential",
+        "env:CODEX_ACCESS_TOKEN",
+    ): ("a Codex provider credential, not a GitHub token"),
+    (SINGLE.name, "Authenticate Codex CLI with preferred credential", "env:GH_TOKEN"): (
+        "the corp App token reads central Codex auth state, never the target"
+    ),
+    (SINGLE.name, "Persist Codex quota fallback", "env:GH_TOKEN"): (
+        "the corp App token writes central Codex auth state, never the target"
+    ),
     (SINGLE.name, "Switch Claude auth on usage limit", "env:GH_TOKEN"): (
         "the corp App token that writes an ignite-corp org variable (AT-1606), not the target"
     ),
@@ -158,6 +169,17 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
 # the target token": each names a credential that is wrong in any other
 # spelling.
 CALLER_SIDE_VALUE: dict[tuple[str, str, str], str] = {
+    (
+        SINGLE.name,
+        "Authenticate Codex CLI with preferred credential",
+        "env:CODEX_ACCESS_TOKEN",
+    ): ("${{ secrets.CODEX_ACCESS_TOKEN }}"),
+    (SINGLE.name, "Authenticate Codex CLI with preferred credential", "env:GH_TOKEN"): (
+        "${{ steps.auth_token_corp.outputs.token }}"
+    ),
+    (SINGLE.name, "Persist Codex quota fallback", "env:GH_TOKEN"): (
+        "${{ steps.auth_token_corp.outputs.token }}"
+    ),
     (PREPARE.name, "Checkout caller default prompts", "with:repository"): (
         "${{ github.repository }}"
     ),

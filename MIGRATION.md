@@ -4,7 +4,7 @@ After `ignite-corp/ai-dev-pr-review` is created and tagged `v1.0.0`, open one PR
 
 ## Common preconditions (all consumers)
 
-1. Org or repo secrets present: `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`.
+1. Org or repo secrets present: `GOOGLE_AI_API_KEY`, Claude credentials (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`), and Codex credentials: `CODEX_ACCESS_TOKEN` (preferred) and/or `OPENAI_API_KEY` (quota fallback or API-only). Both Codex credentials are recommended for automatic fallback; see [Codex authentication](docs/codex-auth.md).
 2. Repo vars (optional -- every one has a working default, so a consumer can migrate without setting any). These are read inside the reusable workflows, so they appear neither in the thin trigger's `with:` block nor anywhere else in the consumer's tree. Commonly set: `PR_SIZE_LIMIT`, `REVIEW_MODE`, `ALLOW_AUTO_APPROVE`. For the complete set with defaults and effects see [Runtime configuration via `vars.*`](README.md#runtime-configuration-via-vars) -- that table is the single list and is deliberately not copied here. Set them under `Settings -> Secrets and variables -> Actions -> Variables`.
 3. `.github/prompts/code-review-system.md` and `.github/prompts/code-review-checklist.md` remain in the consumer repo. Do NOT delete.
 4. Branch protection on the consumer repo's main branch still requires the "AI Code Review" check — verify the new thin trigger's job name matches the protected check name, or update the branch protection rule alongside the migration PR.
@@ -161,7 +161,7 @@ Same delete/add/keep lists as `ai-dev-cab`. Note: this repo is the architectural
 Repo: any cross-org consumer that does NOT currently have the workflows and will run reviews on its own org's Actions minutes. An `ignite-pilot-org` repo does not take this path: it is reviewed by the runner, with no workflow of its own (see [Cross-org usage](README.md#cross-org-usage)).
 
 **Prerequisites:**
-1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` as org-level secrets in the target org. Grant the consumer repo access.
+1. Org admin: configure `GOOGLE_AI_API_KEY`, Claude credentials (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`), and Codex credentials as org-level secrets in the target org. Codex prefers `CODEX_ACCESS_TOKEN`; `OPENAI_API_KEY` provides quota fallback or API-only use. Both are recommended for automatic fallback; see [Codex authentication](docs/codex-auth.md). Grant the consumer repo access to the configured secrets.
 2. Org admin: Settings -> Actions -> General -> Allow `ignite-corp/ai-dev-pr-review` in the actions allowlist. Permit the underlying actions listed in `examples/consumer-thin-trigger.yml` Variant 2.
 3. Org admin: confirm the repo allows the `pull-requests: write` permission for `GITHUB_TOKEN` so the workflow can post review comments.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from extract_codex_json import extract, stamp_model_status  # noqa: E402
+from extract_codex_json import extract, extract_events, main, stamp_model_status  # noqa: E402
 
 
 def test_extracts_last_json_with_required_fields():
@@ -30,6 +31,51 @@ def test_extracts_last_json_with_required_fields():
 def test_returns_none_when_no_valid_block():
     log = "Just some non-JSON text. {invalid json}"
     assert extract(log) is None
+
+
+def test_event_reader_ignores_raw_tool_reasoning_and_incomplete_messages():
+    verdict = {"summary": "candidate", "early_exit": False, "issues": []}
+    text = json.dumps(verdict)
+    agent = {"type": "item.completed", "item": {"type": "agent_message", "text": text}}
+    assert extract_events(json.dumps(agent)) == verdict
+    candidates = [
+        verdict,
+        {"type": "item.started", "item": {"type": "agent_message", "text": text}},
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "text": text,
+                "aggregated_output": text,
+            },
+        },
+        {"type": "item.completed", "item": {"type": "reasoning", "text": text}},
+    ]
+    for event in candidates:
+        assert extract_events(json.dumps(event)) is None
+
+
+def test_events_cli_uses_the_existing_link_safe_stamped_writer(tmp_path: Path):
+    verdict = {
+        "summary": "candidate",
+        "early_exit": False,
+        "issues": [],
+        "status": "failed",
+    }
+    event = {
+        "type": "item.completed",
+        "item": {"type": "agent_message", "text": json.dumps(verdict)},
+    }
+    events = tmp_path / "events.jsonl"
+    events.write_text(json.dumps(event))
+    outside = tmp_path / "untouched"
+    outside.write_text("preserve me")
+    output = tmp_path / "review.json"
+    output.symlink_to(outside)
+    assert main(["extract_codex_json.py", "--events", str(events), str(output)]) == 0
+    assert outside.read_text() == "preserve me"
+    assert not output.is_symlink()
+    assert json.loads(output.read_text())["status"] == "ok"
 
 
 def test_picks_last_valid_when_multiple_present():

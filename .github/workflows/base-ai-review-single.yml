@@ -27,7 +27,7 @@ on:
         type: number
         required: false
         default: 15
-        description: "Minutes the whole reviewer job may run; must exceed the running reviewer's step cap (claude-timeout-minutes for claude, the literal 10 for gemini and codex) by at least 5 whole minutes so the step cap is the one that fires. The job fails at its 'Validate timeout inputs' step otherwise"
+        description: "Minutes the reviewer job may run; must exceed its step cap by at least 5 whole minutes. Codex uses at least 26 minutes for two bounded 10-minute attempts and finalization, preserving larger caller values"
       target_repo:
         description: "Repository (owner/name) whose PR is reviewed; empty means the caller (AT-2520)"
         required: false
@@ -35,7 +35,9 @@ on:
         default: ""
     secrets:
       OPENAI_API_KEY:
-        required: true
+        required: false
+      CODEX_ACCESS_TOKEN:
+        required: false
       GOOGLE_AI_API_KEY:
         required: true
       ANTHROPIC_API_KEY:
@@ -63,14 +65,16 @@ jobs:
     env:
       LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
     # Upper bound for the whole job. The timeout-minutes on the reviewer
-    # steps below (10 by default; the claude one is an input, AT-2876) does
+    # steps below (the Claude one is an input, AT-2876) does
     # bind the claude composite's inner steps: the runner hands the caller
     # step's remaining timeout to every composite child
     # (ExecutionContext.CreateEmbeddedChild -> GetRemainingTimeout(),
     # actions/runner v2.336.0; in place since #599, v2.272.0).
     # actions/runner#1979 (open) is about timeout-minutes keys written inside
     # composite steps being ignored, not about the caller's step timeout.
-    timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
+    # Codex reserves two ten-minute attempts plus termination/finalization
+    # time, preserving a larger caller budget. Claude and Gemini retain theirs.
+    timeout-minutes: ${{ (inputs.reviewer == 'codex' && inputs.review-job-timeout-minutes < 26) && 26 || inputs.review-job-timeout-minutes }}
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
     steps:
@@ -93,8 +97,8 @@ jobs:
       # here, before any checkout, for every reviewer: the job cap applies to
       # the job whatever runs in it, and single.yml is itself a workflow_call
       # entry point, so a direct caller can pair a low job cap with the
-      # literal gemini/codex step cap too. The headroom is the gap the
-      # defaults (10/15) and self-review (20/25) both carry; both values must
+      # literal Gemini step cap too. Codex has a minimum two-attempt job budget.
+      # The headroom is the gap the defaults (10/15) and self-review (20/25) both carry; both values must
       # be positive integers without a leading zero, because the comparison
       # is integer arithmetic: a fractional value would slip past it as a
       # false condition, bash reads a leading zero as octal, and a zero cap
@@ -102,16 +106,16 @@ jobs:
       - name: Validate timeout inputs
         env:
           REVIEWER: ${{ inputs.reviewer }}
-          JOB_MINUTES: ${{ inputs.review-job-timeout-minutes }}
+          JOB_MINUTES: ${{ (inputs.reviewer == 'codex' && inputs.review-job-timeout-minutes < 26) && 26 || inputs.review-job-timeout-minutes }}
           CLAUDE_STEP_MINUTES: ${{ inputs.claude-timeout-minutes }}
-          # The literal timeout-minutes on the 'Run Gemini review' and 'Run
-          # Codex review' steps below; test_claude_review_timeout.py pins
-          # the three equal.
+          # Literals match the reviewer steps below and their error nets.
           OTHER_STEP_MINUTES: 10
+          CODEX_STEP_MINUTES: 21
           MIN_HEADROOM_MINUTES: 5
         run: |
           case "$REVIEWER" in
             claude) STEP_MINUTES="$CLAUDE_STEP_MINUTES"; STEP_LABEL="claude-timeout-minutes" ;;
+            codex) STEP_MINUTES="$CODEX_STEP_MINUTES"; STEP_LABEL="the codex step cap" ;;
             # Anything else was rejected by the step above.
             *) STEP_MINUTES="$OTHER_STEP_MINUTES"; STEP_LABEL="the $REVIEWER step cap" ;;
           esac
@@ -746,7 +750,7 @@ jobs:
       # is surfaced via a step output (mirrors base-ai-review-aggregate.yml).
       - name: Check reviewer App key present (auth switch)
         id: auth_key
-        if: inputs.reviewer == 'claude' && always()
+        if: (inputs.reviewer == 'claude' || inputs.reviewer == 'codex') && always()
         env:
           REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
         run: |
@@ -759,7 +763,7 @@ jobs:
       - name: Mint corp App token (auth switch)
         id: auth_token_corp
         if: >-
-          inputs.reviewer == 'claude' && always() &&
+          (inputs.reviewer == 'claude' || inputs.reviewer == 'codex') && always() &&
           vars.REVIEWER_APP_ID != '' &&
           steps.auth_key.outputs.present == 'true'
         continue-on-error: true
@@ -1005,23 +1009,33 @@ jobs:
         # verifying `codex exec --help` for the new version.
         run: npm install -g @openai/codex@0.147.0
 
-      - name: Authenticate Codex CLI with API key
+      - name: Authenticate Codex CLI with preferred credential
         if: inputs.reviewer == 'codex'
         env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ steps.auth_token_corp.outputs.token }}
         run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::OPENAI_API_KEY secret is empty -- codex review will fail. Set org/repo secret."
-            exit 1
+          set -euo pipefail
+          AUTH="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/codex_review_auth.py"
+          if [ -f "$AUTH" ]; then
+            python3 "$AUTH" prepare
+          else
+            # Self-review YAML runs ahead of released helper scripts. Keep the
+            # released API-only path until a compatible release is published;
+            # never load auth code from the PR workspace to bootstrap itself.
+            echo "::notice::Codex access-token support is not in the pinned release; using the existing API-key path"
+            if [ -z "$OPENAI_API_KEY" ]; then
+              echo "::error::OPENAI_API_KEY is required by the pinned API-only release"
+              exit 1
+            fi
+            unset CODEX_ACCESS_TOKEN GH_TOKEN
+            printenv OPENAI_API_KEY | codex -c 'cli_auth_credentials_store="file"' login --with-api-key
+            if [ ! -s "$HOME/.codex/auth.json" ]; then
+              echo "::error::Codex API login did not produce a nonempty auth.json"
+              exit 1
+            fi
           fi
-          # Pipe key to codex login (stdin). Writes ~/.codex/auth.json.
-          printenv OPENAI_API_KEY | codex login --with-api-key
-          # Verify auth.json was populated
-          if [ ! -s "$HOME/.codex/auth.json" ]; then
-            echo "::error::codex login did not produce auth.json"
-            exit 1
-          fi
-          echo "codex auth.json populated ($(wc -c < $HOME/.codex/auth.json) bytes)"
 
       # The sandboxed shell must not inherit credentials, nor read the
       # CLI's or the runner's own files (AT-3054). The profile
@@ -1097,12 +1111,16 @@ jobs:
         if: inputs.reviewer == 'codex'
         id: codex_run
         continue-on-error: true
-        timeout-minutes: 10
-        # No API key here: the CLI authenticates from what 'Authenticate
-        # Codex CLI with API key' stored, so the process the sandbox is
+        # Each attempt is independently capped at ten minutes below. The
+        # shared budget allows both caps, kill grace and finalization.
+        timeout-minutes: 21
+        # No credentials here: the CLI authenticates from what 'Authenticate
+        # Codex CLI with preferred credential' stored, so the process the sandbox is
         # spawned from carries no credential either.
         env:
           CODEX_MODEL: ${{ vars.CODEX_MODEL || 'gpt-5.6-luna' }}
+          # The CLI renders provider reset timestamps in local time.
+          TZ: UTC
           # The sandbox makes $TMPDIR writable; pinned so it cannot be
           # RUNNER_TEMP, which holds the scripts copy (AT-2941).
           TMPDIR: ${{ runner.temp }}/codex-tmp
@@ -1234,14 +1252,74 @@ jobs:
           # 0.147.0 `codex exec --help`: "If not provided as an argument
           # (or if `-` is used), instructions are read from stdin."
           LOG="${RUNNER_TEMP}/codex-run.log"
-          rm -f -- "$LOG"
-          (umask 077; : > "$LOG")
-          codex exec \
-            -c 'default_permissions="review"' \
-            --model "$CODEX_MODEL" \
-            - < "$COMBINED" \
-            2>&1 | tee -a "$LOG"
-          EXIT_CODE=${PIPESTATUS[0]}
+          EVENTS="${RUNNER_TEMP}/codex-events.jsonl"
+          ERRORS="${RUNNER_TEMP}/codex-stderr.log"
+          FINAL="${RUNNER_TEMP}/codex-final.txt"
+          AUTH="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/codex_review_auth.py"
+          run_codex_attempt() {
+            rm -f -- "$LOG" "$EVENTS" "$ERRORS" "$FINAL"
+            (umask 077; : > "$LOG"; : > "$EVENTS"; : > "$ERRORS"; : > "$FINAL")
+            JSON_ARGS=()
+            if [ -f "$AUTH" ]; then
+              JSON_ARGS=(--json --output-last-message "$FINAL")
+            fi
+            # stdout is CLI JSONL, stderr is never quota evidence. Model and
+            # tool text remain JSON string fields and cannot forge events.
+            set +e
+            timeout --signal=TERM --kill-after=5s 10m codex exec \
+              -c 'default_permissions="review"' \
+              -c 'cli_auth_credentials_store="file"' \
+              --model "$CODEX_MODEL" \
+              "${JSON_ARGS[@]}" \
+              - < "$COMBINED" 2> "$ERRORS" | tee "$EVENTS" >> "$LOG"
+            EXIT_CODE=${PIPESTATUS[0]}
+            set -e
+            ATTEMPT_CAUSE=""
+            case "$EXIT_CODE" in
+              124|137)
+                # 124 identifies timeout. 137 can also be an external kill,
+                # so do not claim its cause without independent evidence.
+                if [ "$EXIT_CODE" -eq 124 ]; then ATTEMPT_CAUSE="attempt_timeout"; fi
+                # Neither terminated attempt may pass with a partial verdict.
+                bash "$PROMOTE" clear review-codex.json
+                ;;
+            esac
+            cat "$ERRORS" >> "$LOG"
+            # Preserve the existing stdout-verdict extractor's text input.
+            if [ -f "$FINAL" ]; then cat "$FINAL" >> "$LOG"; fi
+          }
+          run_codex_attempt
+          if [ -f "$AUTH" ]; then
+            RETRY=0
+            python3 "$AUTH" retry --events "$EVENTS" --exit-code "$EXIT_CODE" || RETRY=$?
+            case "$RETRY" in
+              0|3)
+                # A quota failure can leave a partial direct/legacy verdict.
+                # It cannot survive either an API retry or missing fallback.
+                bash "$PROMOTE" clear review-codex.json
+                if [ "$RETRY" -eq 0 ]; then
+                  rm -f -- "${RUNNER_TEMP}/codex-token-quota.log"
+                  cp -- "$LOG" "${RUNNER_TEMP}/codex-token-quota.log"
+                  run_codex_attempt
+                  if [ "$EXIT_CODE" -ne 0 ]; then
+                    # An unsuccessful fallback is infrastructure failure even
+                    # if the interrupted API attempt wrote a partial verdict.
+                    bash "$PROMOTE" clear review-codex.json
+                  fi
+                else
+                  ATTEMPT_CAUSE="quota_exhausted"
+                fi
+                ;;
+              4) ;;  # Explicit NO_RETRY: non-quota, or this attempt used API.
+              *)
+                # Unexpected classifier failures must not leave a partial
+                # model verdict for the always() failure net to promote.
+                bash "$PROMOTE" clear review-codex.json
+                echo "::error::Codex quota classifier failed"
+                exit "$RETRY"
+                ;;
+            esac
+          fi
           echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
           # Last meaningful run-log line for fallback verdicts: strip ANSI
           # escapes and blank lines, keep one line, cap at 200 chars. Always
@@ -1313,11 +1391,18 @@ jobs:
             fi
           elif [ "$EXIT_CODE" -eq 0 ]; then
             # gpt-5-mini / low-reasoning models don't use sandbox tools -- extract JSON from stdout
-            python3 "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/extract_codex_json.py" \
-              "${RUNNER_TEMP}/codex-run.log" \
-              review-codex.json \
-            && echo "::notice::Extracted Codex verdict JSON from stdout" \
-            || {
+            # JSON event strings may contain unmatched braces. Feed only the
+            # CLI's captured final response to the text extractor, not events.
+            EXTRACT_INPUT="$LOG"
+            if [ -f "$AUTH" ]; then EXTRACT_INPUT="$FINAL"; fi
+            EXTRACTOR="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/extract_codex_json.py"
+            if python3 "$EXTRACTOR" "$EXTRACT_INPUT" review-codex.json; then
+              echo "::notice::Extracted Codex verdict JSON from stdout"
+            elif [ -f "$AUTH" ] && python3 "$EXTRACTOR" --events "$EVENTS" review-codex.json; then
+              # Decode completed assistant messages separately; raw events,
+              # tool output and reasoning are never text-extraction inputs.
+              echo "::notice::Recovered Codex verdict from a completed assistant message"
+            else
               echo "::warning::Codex emitted output but no parseable verdict JSON found"
               # write, not a redirect: see the malformed-JSON branch above.
               jq -n --arg detail "$LOG_TAIL" '{
@@ -1329,11 +1414,11 @@ jobs:
                 error: "output_unparseable",
                 error_detail: $detail
               }' | write_codex_verdict
-            }
+            fi
           else
             echo "::warning::Codex review failed (exit=${EXIT_CODE}) -- emitting error verdict"
             # write, not a redirect: see the malformed-JSON branch above.
-            jq -n --arg detail "$LOG_TAIL" --arg code "$EXIT_CODE" '{
+            jq -n --arg detail "$LOG_TAIL" --arg code "$EXIT_CODE" --arg cause "$ATTEMPT_CAUSE" '{
               summary: ("Codex review failed: CLI exited " + $code
                         + (if $detail == "" then "" else " -- " + $detail end)),
               status: "failed",
@@ -1341,15 +1426,15 @@ jobs:
               issues: [],
               error: "cli_invocation_failed",
               error_detail: $detail
-            }' | write_codex_verdict
+            } + (if $cause == "" then {} else {error_cause: $cause} end)' | write_codex_verdict
           fi
 
       # upload-artifact follows symlinks (its glob sets followSymbolicLinks
       # and stats with fs.stat), so a verdict path the model planted as a
       # link to a host file would ship that file's content as an artifact
       # downloadable by anyone with read access (AT-2941). Drop any link
-      # among the uploaded workspace paths first; codex-run.log lives under
-      # RUNNER_TEMP, which the model cannot symlink. always(), so a run
+      # among all uploaded paths first. RUNNER_TEMP is not model-writable;
+      # guarding both logs there is defense in depth. always(), so a run
       # step killed by its timeout does not leave a link for the upload.
       - name: Drop symlinked codex artifacts before upload
         if: inputs.reviewer == 'codex' && always()
@@ -1358,12 +1443,23 @@ jobs:
           # The run step's end, which 'Verify Codex verdict file' times a
           # cut against: this is the first step after it (AT-2603).
           : > "${RUNNER_TEMP}/codex-end"
-          for name in review-codex.json verdict-codex.json verdict-openai.json; do
+          for name in review-codex.json verdict-codex.json verdict-openai.json "${RUNNER_TEMP}/codex-run.log" "${RUNNER_TEMP}/codex-token-quota.log"; do
             if [ -L "$name" ]; then
               echo "::notice::Removed symlink $name before upload"
               rm -f -- "$name"
             fi
           done
+
+      - name: Persist Codex quota fallback
+        if: inputs.reviewer == 'codex' && always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.auth_token_corp.outputs.token }}
+        run: |
+          AUTH="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/codex_review_auth.py"
+          if [ -f "$AUTH" ]; then
+            python3 "$AUTH" persist
+          fi
 
       - name: Upload Codex logs
         if: inputs.reviewer == 'codex' && always()
@@ -1373,6 +1469,7 @@ jobs:
           name: codex-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/codex-run.log
+            ${{ runner.temp }}/codex-token-quota.log
             verdict-codex.json
             review-codex.json
           retention-days: 14
@@ -1472,7 +1569,7 @@ jobs:
         env:
           EXIT_CODE: ${{ steps.codex_run.outputs.exit_code }}
           STEP_OUTCOME: ${{ steps.codex_run.outcome }}
-          STEP_CAP_MINUTES: 10
+          STEP_CAP_MINUTES: 21
           START_MARKER: ${{ runner.temp }}/codex-start
           END_MARKER: ${{ runner.temp }}/codex-end
         run: |

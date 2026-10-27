@@ -24,7 +24,7 @@ _SINGLE = (
     Path(__file__).resolve().parents[2] / "workflows" / "base-ai-review-single.yml"
 )
 _RESTRICT = "Restrict the Codex sandbox"
-_AUTH = "Authenticate Codex CLI with API key"
+_AUTH = "Authenticate Codex CLI with preferred credential"
 _RUN = "Run Codex review"
 _WORKER = "Runner.Worker"
 

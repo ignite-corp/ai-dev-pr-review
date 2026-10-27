@@ -322,6 +322,26 @@ def run_health_tail(
 
 @requires_jq
 class TestCorpHealthOutputs:
+    def test_token_only_auth_is_not_evaluated_rather_than_clean_ok(
+        self, tmp_path: Path
+    ) -> None:
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=json.dumps(_graphql_payload([])),
+            required_secrets=("OPENAI_API_KEY",),
+            secrets={
+                "orgs/ignite-corp/actions/secrets/CODEX_ACCESS_TOKEN": {
+                    "visibility": "all"
+                }
+            },
+        )
+        assert code == 0
+        assert "token validity not probed" in log
+        assert "Consumer 1/1: not evaluated" in log
+        assert "Consumer 1/1: OK" not in log
+        assert NOT_EVALUATED_NOTICE in log
+
     def test_fetch_failure_is_not_evaluated_not_ok(self, tmp_path: Path) -> None:
         code, log = run_health_tail(CONSUMER_HEALTH, tmp_path, gh_stdout="", gh_exit=1)
         assert code == 0

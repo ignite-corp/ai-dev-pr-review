@@ -35,11 +35,12 @@ Actions·로컬·cross-repo 경로 사이의 경계는 [`docs/tasks/AT-2564/desi
 
 ## 소비자 레포에 필요한 시크릿
 
-`OPENAI_API_KEY`와 `GOOGLE_AI_API_KEY`는 필수입니다. Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
+`GOOGLE_AI_API_KEY`는 필수입니다. Codex 리뷰어는 `CODEX_ACCESS_TOKEN` 또는 `OPENAI_API_KEY` 중 하나 이상이 필요하며, 구독 한도 소진 시 API로 전환하려면 둘 다 설정하세요([Codex 인증](docs/codex-auth.md) 참고). Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
 
 | 시크릿 | 필수 | 사용처 | 비고 |
 |---|---|---|---|
-| `OPENAI_API_KEY` | 예 | Codex 리뷰어 | 조직 또는 레포 시크릿. Codex CLI가 stdin으로 로그인. |
+| `CODEX_ACCESS_TOKEN` | 우선 사용 | Codex 리뷰어 | 워크스페이스 액세스 토큰. [Codex 인증](docs/codex-auth.md) 참고. |
+| `OPENAI_API_KEY` | API 전환 시 | Codex 리뷰어 | 구독 한도 소진 후 유료 API 전환 또는 API 전용 구성에 필요. |
 | `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
@@ -110,6 +111,7 @@ jobs:
       code-review-checklist-path: .github/prompts/code-review-checklist.md
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -215,7 +217,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | 레포별 시스템 프롬프트의 **소비자 레포 내부** 경로. prepare 워크플로우가 프롬프트 인젝션 방지를 위해 PR head가 아닌 PR의 base 브랜치에서 `git show`로 읽음. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | 동일한 경로 의미. |
 | `claude-timeout-minutes` | number | false | `10` | Claude 리뷰어 단계가 러너에 의해 종료되기 전까지 실행될 수 있는 분 수. 기본값은 모든 소비자가 지금까지 쓰던 값이며, 이 레포 자체의 `self-review.yml`만 PR이 10분을 넘길 수 있어 올려 둠(AT-2876). |
-| `review-job-timeout-minutes` | number | false | `15` | 리뷰어 잡 전체의 상한. Claude 리뷰어 잡에만 전달됨. `claude-timeout-minutes`와 함께 올리되 항상 그보다 5분(정수) 이상 크게 유지 — 잡 상한이 아니라 단계 상한이 먼저 걸리도록. 그렇지 않으면 Claude 잡이 `Validate timeout inputs` 단계에서 실패함. |
+| `review-job-timeout-minutes` | number | false | `15` | 리뷰어 잡 전체의 상한. 오케스트레이터는 Claude와 Codex 잡에만 전달합니다. Claude는 `claude-timeout-minutes`보다 정수 5분 이상 커야 하며, 그렇지 않으면 `Validate timeout inputs` 단계에서 실패합니다. Codex는 각 10분으로 제한한 두 번의 시도와 마무리를 위해 최소 26분을 사용하며, 호출자가 더 큰 값을 지정하면 유지합니다. `base-ai-review-single.yml`을 직접 호출하면 모든 리뷰어에 지정할 수 있으며, Codex의 동일한 최솟값과 단계 상한 대비 5분의 여유가 적용됩니다. |
 | `target_repo` | string | false | `""` | 리뷰할 PR 이 있는 저장소(`owner/name`). 비우면 호출자 자신이며, 기존 소비자에게는 아무 변화가 없습니다(AT-2520). **private** 호출자에서 `pr_number`와 함께만 설정하세요: diff 와 프롬프트가 호출자의 로그와 artifact 에 남으므로 `prepare` 가 public 호출자를 거부합니다. 리뷰어 App(`REVIEWER_APP_ID` / `REVIEWER_APP_PRIVATE_KEY`)이 대상에 설치돼 있어야 하며, 각 job 이 대상용 설치 토큰을 직접 발급합니다. Cross-repository 런은 대상 App 토큰으로 인라인 코멘트·판정·승인을 게시하며, `BOT_LOGIN` 은 호출자의 설정 대신 해당 App 의 `<app-slug>[bot]` 이 됩니다. 대상 check run 게시와 runner 연결은 AT-2520 의 별도 후속 작업입니다. |
 | `default_prompts_path` | string | false | `""` | `code-review-system.md` 와 `code-review-checklist.md` 를 담은 **호출자 저장소**의 디렉터리. 대상 저장소의 base 브랜치에 없는 프롬프트 파일에만 쓰입니다(AT-2520). cross-repository 런은 PR head 에서 프롬프트를 읽지 않으므로 순서는 base 브랜치, 그다음 이 기본값입니다(AT-3032). `prepare` 는 호출자를 `github.sha` 에서 sparse checkout 해 일반 파일로만 읽으며, symlink 나 빈 파일이면 단계가 실패합니다. `target_repo` 가 다른 저장소를 가리킬 때만 적용됩니다: 같은 저장소 런에서는 호출자가 곧 리뷰 대상이고 `github.sha` 가 PR 작성자가 바꿀 수 있는 PR 머지 커밋이므로, 입력은 notice 와 함께 무시됩니다. 비우면(기본값) 기본 프롬프트가 없으므로 프롬프트 없는 대상은 이전처럼 `prepare` 에서 실패합니다. base 는 자체 기본 프롬프트를 두지 않습니다. |
 | `skip_reason` | string | false | `""` | 비어 있지 않으면 리뷰를 의도적으로 건너뜁니다: `prepare` 와 리뷰어는 실행되지 않고, `Aggregate & Verdict` 는 판정을 게시하는 대신 이 텍스트를 job summary 로 남기고 통과합니다. 호출 job 자체를 건너뛰면 필수 체크 `<job> / aggregate / Aggregate & Verdict` 가 아예 생기지 않아 PR 이 영원히 대기하므로, 그 대신 이 입력을 쓰세요(AT-3119). 이 레포의 `self-review.yml` 은 fork PR 과, 태그가 아직 없는 릴리스 핀 범프에서 이 값을 설정합니다. `target_repo` 런에서는 건너뛰더라도 대상 저장소를 해석하고 그 App 토큰을 발급하므로, 잘못된 cross-repository 호출은 건너뛰는 경우에도 job 을 실패시킵니다. 건너뛸 때 PR 코멘트는 남기지 않으며, 사유는 체크의 notice 와 런 summary 에 표시됩니다. 건너뛸 때 orchestrator 의 출력은 모두 비어 있으므로(알 수 없음이며, 성공이 아님), 아래 roster 게이트처럼 그 출력을 읽는 게이트 job 은 `skip_reason` 을 설정하는 것과 같은 조건으로 건너뛰어야 합니다. `skip_reason` 을 설정하면 필수 체크가 통과하므로 orchestrator 를 호출하는 워크플로를 보호하세요(예: `.github/workflows/` 에 CODEOWNERS). 그 파일을 수정할 수 있는 PR 은 이미 호출 자체를 바꿀 수 있으므로, 이 입력이 있든 없든 게이트를 지키는 것은 그 보호입니다. 비우면(기본값) 아무 변화가 없습니다. |
@@ -247,7 +249,7 @@ thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml
 | `skipped` | 위 사유가 아닌 이유로 리뷰어 잡이 건너뛰어짐 — `REVIEW_MODE` 제외이거나, 아예 실행되지 않은 잡. aggregate는 잡 conclusion만으로 둘을 구분할 수 없습니다. | 모호함 |
 | `early-exit or no-output` | 잡은 0으로 끝났지만 판정 아티팩트를 올리지 않음. 이것은 정상 스킵으로 **읽지 않으며**, 특히 리뷰어 전원이 이 사유일 때도 그렇습니다. 이제 이 사유를 만들어 내는 알려진 경로는 그물이 자기 스텝과 함께 죽는 경우뿐입니다: 리뷰 스텝이 `continue-on-error`이지만 각 리뷰어 경로가 자기 죽음을 `failed` 판정으로 스스로 기록하고(claude는 AT-1837부터, gemini는 AT-2539부터, codex는 AT-2603부터이며 그 전에는 잡을 실패시켰습니다. 쓰는 도중 잘린 판정 파일은 셋 모두에서 판정 없음으로 봅니다) — 그 그물 역시 잡과 함께 죽을 수 있는 보통 스텝입니다. 따라서 아무것도 올리지 않은 채 `success`를 보고하는 리뷰어는 그 경우이거나 이 파이프라인의 리뷰어 스텝이 만들어 내지 않은 실행이고, aggregate는 그 둘을 호출자가 의도적으로 제외한 것과 구분할 수 없습니다. 이 사유 뒤에 보호해야 할 사소한-diff 라운드가 있는 것도 아닙니다 — "리뷰할 것이 없음"에 해당하는 상태는 모두 리뷰어 실행 전에 결정되며(빈 diff는 `prepare`가 실패시키고, 크기 스킵은 빨간색으로 끝나고, 전부 제외된 diff는 `skipped (policy)`로 보고됩니다), 리뷰어 프롬프트는 조기 종료 시에도 판정 파일을 요구합니다. | 아니오 |
 | `failed (see logs)`, `cancelled`, `no verdict (unknown)` | 잡이 완료되지 못함. | 아니오 |
-| `failed: <상세>` | 리뷰어 페이로드에서 가져온 리뷰어 자신의 실패 상세. `failed: ` 접두사는 무조건 붙고 정상 사유 중에는 이 접두사로 시작하는 것이 없으므로, PR 내용을 바탕으로 LLM이 쓴 페이로드 텍스트가 정상 사유를 통째로 흉내 내 아래 게이트를 통과하는 일은 불가능합니다. Claude가 판정도 실행 로그도 남기지 않은 경우, 상세는 `action_invocation_failed` 뒤에 원인을 알 수 있을 때 그 원인을 붙입니다(AT-2276): `rejected -- actor not in allowed_bots`(액션의 비인간 액터 가드가 트리거한 봇을 거부함, `CLAUDE_ALLOWED_BOTS` 참고), `timeout -- step time limit reached`(`claude-timeout-minutes`가 발동함), `action_error -- action failed before producing a log`. 원인을 모르면 그대로 `action_invocation_failed`만 남습니다. 페이로드는 분류를 `error_cause`에 싣고, 어느 경우든 `error: action_invocation_failed`는 유지합니다. Gemini와 Codex의 그물도 같은 방식으로 원인 하나를 붙입니다(AT-2603): 스텝이 10분 상한에 잘렸으면 상세는 `script_invocation_failed: timeout -- step time limit reached`(Gemini) 또는 `cli_invocation_failed: timeout -- step time limit reached`(Codex)이고, 그 밖의 죽음은 종류만 남습니다. | 아니오 |
+| `failed: <상세>` | 리뷰어 페이로드에서 가져온 리뷰어 자신의 실패 상세. `failed: ` 접두사는 무조건 붙고 정상 사유 중에는 이 접두사로 시작하는 것이 없으므로, PR 내용을 바탕으로 LLM이 쓴 페이로드 텍스트가 정상 사유를 통째로 흉내 내 아래 게이트를 통과하는 일은 불가능합니다. Claude가 판정도 실행 로그도 남기지 않은 경우, 상세는 `action_invocation_failed` 뒤에 원인을 알 수 있을 때 그 원인을 붙입니다(AT-2276): `rejected -- actor not in allowed_bots`(액션의 비인간 액터 가드가 트리거한 봇을 거부함, `CLAUDE_ALLOWED_BOTS` 참고), `timeout -- step time limit reached`(`claude-timeout-minutes`가 발동함), `action_error -- action failed before producing a log`. 원인을 모르면 그대로 `action_invocation_failed`만 남습니다. 페이로드는 분류를 `error_cause`에 싣고, 어느 경우든 `error: action_invocation_failed`는 유지합니다. Gemini와 Codex의 그물도 같은 방식으로 원인 하나를 붙입니다(AT-2603): Gemini가 스텝 상한 10분에 도달하거나 Codex가 전체 스텝 상한 21분에 도달하면 상세는 `script_invocation_failed: timeout -- step time limit reached`(Gemini) 또는 `cli_invocation_failed: timeout -- step time limit reached`(Codex)입니다. Codex는 각 시도의 별도 10분 제한 명령이 124로 종료되면 `error_cause: attempt_timeout` (`attempt_timeout -- per-attempt time limit reached`)을 기록하며, 종료 코드 137만으로는 시간 초과라고 판정하지 않습니다. Codex 토큰의 쿼터 소진이 확인됐으나 API 대체 수단이 없으면 `error_cause: quota_exhausted` (`quota_exhausted -- token quota exhausted and API fallback unavailable`)를 기록하며, 리뷰는 실패로 남고 대체 인증 기간은 생성하지 않습니다. 그 밖에 원인을 알 수 없는 실패는 종류만 남습니다. | 아니오 |
 
 게이트 예시 — 정상 사유가 아닌 이유로 리뷰어가 빠졌을 때, 또는 지적이 코멘트로 접혀 스레드가 아닐 때 머지를 막습니다:
 

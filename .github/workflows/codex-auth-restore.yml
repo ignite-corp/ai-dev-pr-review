@@ -1,0 +1,43 @@
+name: codex-auth-restore
+
+# AT-3117: return to access-token preference after the central quota window.
+# The reviewer also ignores expired state without waiting for this cron.
+# A five-hour window without provider reset metadata is a probe interval,
+# not a claim about the workspace's quota-reset schedule.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-auth-restore
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Mint corp App token
+        id: token_corp
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+
+      # Unlike Claude's best-effort restore helper, Codex control-plane
+      # failures intentionally exit nonzero so the scheduled run is red.
+      - name: Restore Codex auth if due
+        env:
+          GH_TOKEN: ${{ steps.token_corp.outputs.token }}
+        run: python3 .github/scripts/codex_review_auth.py restore

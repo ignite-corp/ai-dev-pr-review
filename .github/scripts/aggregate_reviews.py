@@ -98,14 +98,18 @@ ERROR_CAUSE_TEXT: dict[str, str] = {
     "rejected": "rejected -- actor not in allowed_bots",
     "timeout": "timeout -- step time limit reached",
     "action_error": "action_error -- action failed before producing a log",
+    "quota_exhausted": "quota_exhausted -- token quota exhausted and API fallback unavailable",
+    "attempt_timeout": "attempt_timeout -- per-attempt time limit reached",
 }
 # Which causes each net's kind may carry. A cause on any other kind, or one
 # that kind's net never emits, would name the wrong cause, so it is not
 # rendered.
 ERROR_CAUSES_BY_KIND: dict[str, frozenset[str]] = {
-    "action_invocation_failed": frozenset(ERROR_CAUSE_TEXT),
+    "action_invocation_failed": frozenset({"rejected", "timeout", "action_error"}),
     "script_invocation_failed": frozenset({"timeout"}),
-    "cli_invocation_failed": frozenset({"timeout"}),
+    "cli_invocation_failed": frozenset(
+        {"timeout", "quota_exhausted", "attempt_timeout"}
+    ),
 }
 MIN_REVIEWERS_FOR_VERDICT = 2
 # Bullet icon of a major an earlier round's thread disposes of (AT-2843).

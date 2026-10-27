@@ -60,11 +60,17 @@ _JOB_INPUT = "review-job-timeout-minutes"
 _CONSUMER_STEP_MINUTES = 10
 _CONSUMER_JOB_MINUTES = 15
 
-# The other two reviewer steps were not part of the ticket and keep their
-# literal cap. It coincides with the claude default today, but it is a
+# Gemini keeps its original literal cap. Codex now has a bounded
+# two-attempt budget (AT-3117). It coincides with the claude default today, but it is a
 # separate value: moving the claude default must not move this.
-_OTHER_REVIEWER_STEPS = ("Run Gemini review", "Run Codex review")
+_OTHER_REVIEWER_STEPS = ("Run Gemini review",)
 _OTHER_REVIEWER_STEP_MINUTES = 10
+_CODEX_STEP_MINUTES = 21
+_CODEX_JOB_MINUTES = 26
+_JOB_EXPRESSION = (
+    "${{ (inputs.reviewer == 'codex' && inputs.review-job-timeout-minutes < %d) && %d || inputs.review-job-timeout-minutes }}"
+    % (_CODEX_JOB_MINUTES, _CODEX_JOB_MINUTES)
+)
 
 # The fail-fast guard in single.yml's review job: runs for every reviewer
 # before any checkout, picks the running reviewer's step cap (the claude
@@ -76,6 +82,7 @@ _GUARD_REVIEWER_ENV = "REVIEWER"
 _GUARD_JOB_ENV = "JOB_MINUTES"
 _GUARD_CLAUDE_STEP_ENV = "CLAUDE_STEP_MINUTES"
 _GUARD_OTHER_STEP_ENV = "OTHER_STEP_MINUTES"
+_GUARD_CODEX_STEP_ENV = "CODEX_STEP_MINUTES"
 _GUARD_HEADROOM_ENV = "MIN_HEADROOM_MINUTES"
 # The guard's MIN_HEADROOM_MINUTES, a value of its own: the defaults 10/15
 # happen to encode the same gap (pinned once, explicitly, below), but moving
@@ -181,7 +188,7 @@ def test_timeout_guard_reads_the_inputs_and_the_literals_it_compares() -> None:
     the inputs, the other reviewers' cap must be the literal their steps
     carry, and the headroom must be the guard's own value -- otherwise the
     executed tests below would prove nothing about the workflow. The block
-    must hold exactly these keys: a sixth ``${{ }}``-valued key that
+    must hold exactly these keys: an additional ``${{ }}``-valued key that
     ``_run_guard`` does not substitute would reach the script as literal
     expression text, and every executed test would keep passing on it."""
     env = dict(_single_steps()[_GUARD_STEP]["env"])
@@ -190,12 +197,14 @@ def test_timeout_guard_reads_the_inputs_and_the_literals_it_compares() -> None:
         _GUARD_JOB_ENV,
         _GUARD_CLAUDE_STEP_ENV,
         _GUARD_OTHER_STEP_ENV,
+        _GUARD_CODEX_STEP_ENV,
         _GUARD_HEADROOM_ENV,
     }, sorted(env)
     assert env[_GUARD_REVIEWER_ENV] == "${{ inputs.reviewer }}"
-    assert env[_GUARD_JOB_ENV] == "${{ inputs.%s }}" % _JOB_INPUT
+    assert env[_GUARD_JOB_ENV] == _JOB_EXPRESSION
     assert env[_GUARD_CLAUDE_STEP_ENV] == "${{ inputs.%s }}" % _STEP_INPUT
     assert env[_GUARD_OTHER_STEP_ENV] == _OTHER_REVIEWER_STEP_MINUTES
+    assert env[_GUARD_CODEX_STEP_ENV] == _CODEX_STEP_MINUTES
     assert env[_GUARD_HEADROOM_ENV] == _MIN_JOB_HEADROOM_MINUTES
 
 
@@ -300,7 +309,7 @@ def test_timeout_guard_passes_every_configuration_that_actually_runs() -> None:
         ("claude", default_step, default_job),
         ("claude", str(raised[_STEP_INPUT]), str(raised[_JOB_INPUT])),
         ("gemini", default_step, default_job),
-        ("codex", default_step, default_job),
+        ("codex", default_step, str(_CODEX_JOB_MINUTES)),
     ):
         result = _run_guard(reviewer, claude_step_minutes, job_minutes)
         assert result.returncode == 0, (
@@ -348,7 +357,7 @@ def test_claude_step_and_job_caps_read_the_inputs() -> None:
     """The literal caps are gone: both keys are the input expressions, so a
     caller's value is what the runner enforces."""
     review_job = _load("base-ai-review-single.yml")["jobs"]["review"]
-    assert review_job["timeout-minutes"] == "${{ inputs.%s }}" % _JOB_INPUT
+    assert review_job["timeout-minutes"] == _JOB_EXPRESSION
     claude = _single_steps()["Run Claude review"]
     assert claude["timeout-minutes"] == "${{ inputs.%s }}" % _STEP_INPUT
 
@@ -359,7 +368,7 @@ def test_other_reviewer_step_caps_are_unchanged() -> None:
         assert steps[name]["timeout-minutes"] == _OTHER_REVIEWER_STEP_MINUTES, name
 
 
-def test_orchestrator_forwards_the_inputs_to_exactly_the_claude_jobs() -> None:
+def test_orchestrator_forwards_step_to_claude_and_job_to_claude_and_codex() -> None:
     jobs = _load("base-ai-review-orchestrator.yml")["jobs"]
     # Positive control: a renamed or dropped claude job would otherwise send
     # every job down the else branch and the forwarding would go unchecked.
@@ -368,6 +377,9 @@ def test_orchestrator_forwards_the_inputs_to_exactly_the_claude_jobs() -> None:
         passed = dict(job.get("with") or {})
         if job_name in _CLAUDE_JOBS:
             assert passed.get(_STEP_INPUT) == "${{ inputs.%s }}" % _STEP_INPUT, job_name
+            assert passed.get(_JOB_INPUT) == "${{ inputs.%s }}" % _JOB_INPUT, job_name
+        elif job_name in {"review-codex-p", "review-codex-s"}:
+            assert _STEP_INPUT not in passed, job_name
             assert passed.get(_JOB_INPUT) == "${{ inputs.%s }}" % _JOB_INPUT, job_name
         else:
             assert _STEP_INPUT not in passed, job_name
