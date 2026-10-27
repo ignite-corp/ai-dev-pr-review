@@ -73,6 +73,11 @@ from github_pr_support import (
     normalize_severity as _normalize_severity,
 )
 
+# The posting step's own thread matcher (stdlib-only, like this script): a
+# re-raised major is the same finding a thread holds exactly when the
+# posting step would have deduplicated it against that thread (AT-2843).
+from post_inline_comments import _is_duplicate, _normalize_body
+
 logger = logging.getLogger(__name__)
 
 REVIEWERS: dict[str, str] = {name: f"review-{name}.json" for name in REVIEWER_NAMES}
@@ -101,6 +106,8 @@ ERROR_CAUSES_BY_KIND: dict[str, frozenset[str]] = {
     "cli_invocation_failed": frozenset({"timeout"}),
 }
 MIN_REVIEWERS_FOR_VERDICT = 2
+# Bullet icon of a major an earlier round's thread disposes of (AT-2843).
+DISPOSITIONED_ICON = "="
 _DISMISS_MESSAGE = "Superseded by new review"
 _REVIEW_MODE_SEQUENTIAL = "sequential"
 _REVIEW_MODE_PARALLEL = "parallel"
@@ -877,8 +884,15 @@ def format_policy_skip_summary(paths: list[str]) -> str:
 
 def apply_verdict_rules(
     reviews: Mapping[str, dict[str, Any] | None],
+    dispositioned: Mapping[tuple[str, int], str] | None = None,
 ) -> tuple[str, str, dict[str, dict[str, Any]]]:
-    """Apply severity-based verdict rules. Returns (verdict, reason, available)."""
+    """Apply severity-based verdict rules. Returns (verdict, reason, available).
+
+    A major ``dispositioned`` names (``_dispositioned_majors``) is left out
+    of the rules entirely, so it cannot reach major consensus either: a
+    dispositioned major counts nowhere (AT-2843, the leader's extension of
+    the user's 2026-10-27 decision).
+    """
     available = _get_available(reviews)
     total = len(REVIEWERS)
 
@@ -886,14 +900,18 @@ def apply_verdict_rules(
     if result:
         return (*result, available)
 
+    skip = dispositioned or {}
     all_issues: list[dict[str, Any]] = []
     for name, review in available.items():
-        for issue in review.get("issues", []):
-            all_issues.append({**issue, "reviewer": name})
+        for index, issue in enumerate(review.get("issues", [])):
+            if (name, index) not in skip:
+                all_issues.append({**issue, "reviewer": name})
 
     if not all_issues:
         n = len(available)
-        return "approve", f"{n}/{total} LLM responses -- no issues", available
+        # "standing" when the skip emptied the list: issues were raised.
+        none = "no issues standing" if skip else "no issues"
+        return "approve", f"{n}/{total} LLM responses -- {none}", available
 
     result = _check_criticals(all_issues)
     if result:
@@ -918,33 +936,251 @@ def apply_verdict_rules(
     return "approve", reason, available
 
 
-def _count_unreviewed_majors(available: dict[str, dict[str, Any]]) -> int:
+def _count_unreviewed_majors(
+    available: dict[str, dict[str, Any]],
+    dispositioned: Mapping[tuple[str, int], str] | None = None,
+) -> int:
     """Count major issues in this round that no disposition has closed.
 
-    "Unreviewed" is the headline's own word for them: the aggregate knows
-    only that a reviewer raised a major and that the round ended with it
-    still standing -- it cannot see a reply, a fix or a Won't fix, so every
-    major it can see is one nobody has dispositioned here yet.
+    "Unreviewed" is the headline's own word for them: a major counts
+    unless ``dispositioned`` names it -- (reviewer, issue index) pairs
+    ``_dispositioned_majors`` matched to a resolved thread an earlier round
+    opened and a human answered (AT-2843). Omitting it counts every major,
+    which is the side that withholds.
 
     One computation, two readers: main() calls this once and passes the
     value to both ``format_summary``, which renders it, and
     ``post_verdict``, which gates the formal approval on it -- so the
     comment can never say "2 unreviewed major issue(s)" over a posted
     APPROVED review (AT-2823). Neither reader recounts; the value is a
-    parameter on both, the way ``approve_quorum`` is.
+    parameter on both, the way ``approve_quorum`` is. ``format_summary``
+    is handed the same ``dispositioned`` map, so the body's major lines
+    are the headline's N.
     """
+    skip = dispositioned or {}
     return sum(
         1
-        for review in available.values()
-        for issue in review.get("issues", [])
-        if issue.get("severity") == "major"
+        for name, review in available.items()
+        for index, issue in enumerate(review.get("issues", []))
+        if issue.get("severity") == "major" and (name, index) not in skip
     )
 
 
-def _format_issue_line(issue: dict[str, Any]) -> str:
-    """Format a single issue as a markdown list item."""
+# The Resolve Policy closes (AGENTS.md) that stand across rounds, as the
+# reply that closes a thread opens with them. Not "Fixed:": it claims the
+# code changed, so a reviewer raising the finding again is evidence the fix
+# did not hold, and a real fix needs no suppression -- the reviewers stop
+# raising it. Not "Handled in thread" (a Duplicate close): it asserts
+# nothing itself and points at a thread this does not read; the canonical
+# thread, same text on the same file, matches on its own close. Outdated is
+# not one either: it minimizes and carries no reply.
+_DISPOSITION_PREFIXES = (
+    "By design:",
+    "Deferred to",
+    "Won't fix",
+)
+# Who may dispose of a major: GitHub's authorAssociation -- the repository's
+# owner, a member of the owning org, or an invited collaborator. Association,
+# not permission: a read-only org member passes too. It keeps out accounts
+# with no standing on the repository at all, which is the cheap half. The PR
+# author is not excluded, by decision: here the author is normally a member
+# and disposes of majors on their own PR, as the merge ruleset already lets
+# them resolve threads. So with auto-approve on, the formal approval that
+# follows is author-clearable; a repository that needs an independent
+# approval must require a human one.
+_DISPOSING_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+# The first comment's rendered first line, as post_inline_comments writes
+# it for a major: `+ **major** (<reviewer>): <description>`.
+_POSTED_MAJOR_RE = re.compile(
+    rf"^{re.escape(SEVERITY_ICONS['major'])} \*\*major\*\* "
+    rf"\((?:{'|'.join(re.escape(r) for r in REVIEWER_NAMES)})\): \S"
+)
+# Newest comments read per thread. A disposition followed by more than this
+# many comments falls out of the window and the major withholds again --
+# the safe side.
+_DISPOSITION_TAIL_COMMENTS = 20
+# `head` is the thread's opening comment; `tail` its newest replies, read
+# separately so a long thread cannot push either out of one window.
+_DISPOSITION_THREADS_QUERY = f"""
+query($owner: String!, $name: String!, $pr: Int!,
+      $first: Int!, $after: String) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $pr) {{
+      reviewThreads(first: $first, after: $after) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{
+          isResolved
+          path
+          line
+          head: comments(first: 1) {{
+            nodes {{ author {{ login __typename }} authorAssociation body }}
+          }}
+          tail: comments(last: {_DISPOSITION_TAIL_COMMENTS}) {{
+            nodes {{ author {{ login __typename }} authorAssociation body }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+_DISPOSITION_PAGE_SIZE = 50
+
+
+def _comment_fields(node: dict[str, Any]) -> dict[str, Any]:
+    author = node.get("author") or {}
+    return {
+        "login": author.get("login") or "",
+        "author_type": author.get("__typename") or "",
+        "association": node.get("authorAssociation") or "",
+        "body": node.get("body") or "",
+    }
+
+
+def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The resolved threads that close a posted major, in ``_is_duplicate``'s shape.
+
+    Narrow on purpose, because a match lets a reply neutralize a
+    reviewer's major. A thread qualifies only when all hold:
+
+    * it is resolved;
+    * its first comment is the posting step's -- authored by
+      ``INLINE_BOT_LOGIN`` (``trusted_post_author``, the identity the PR
+      cannot post under) and rendered as a major, so a thread a person
+      opened, or one a minor opened, disposes of nothing;
+    * its newest reply from a person (a non-Bot account that still exists)
+      opens with a standing disposition prefix -- a silent resolve, a bare
+      "thanks", or a later reply that withdraws the disposition does not
+      count -- and that person is the repository's OWNER, MEMBER or
+      COLLABORATOR, so an outside account cannot clear a major (anyone's
+      later reply can still withdraw one: the failure side withholds).
+
+    Each kept thread carries the disposition and who gave it, for the body
+    to show.
+    """
+    kept: list[dict[str, Any]] = []
+    for node in nodes:
+        if node.get("isResolved") is not True:
+            continue
+        head = ((node.get("head") or {}).get("nodes")) or []
+        if not head:
+            continue
+        first = _comment_fields(head[0])
+        if not trusted_post_author(first, INLINE_BOT_LOGIN):
+            continue
+        envelope = inline_post_envelope(first["body"])
+        posted = envelope[3] if envelope else first["body"]
+        if not _POSTED_MAJOR_RE.match(posted.partition("\n")[0]):
+            continue
+        tail = [
+            _comment_fields(c) for c in ((node.get("tail") or {}).get("nodes")) or []
+        ]
+        # The opening comment is in the window only on a short thread; on
+        # the local driver it is a User's, so it is excluded by identity.
+        human = [
+            c
+            for c in tail
+            if c["login"] and c["author_type"] not in ("", "Bot") and c != first
+        ]
+        if not human or human[-1]["association"] not in _DISPOSING_ASSOCIATIONS:
+            continue
+        reply = human[-1]["body"].lstrip()
+        prefix = next((p for p in _DISPOSITION_PREFIXES if reply.startswith(p)), None)
+        if prefix is None:
+            continue
+        kept.append(
+            {
+                "path": node.get("path") or "",
+                # `line` alone, as _parse_thread_nodes reads it: GitHub nulls
+                # it on an outdated thread, and both readers must then skip
+                # the window alike.
+                "line": node.get("line"),
+                # The whole posted body, as _parse_thread_nodes normalizes it
+                # for the posting step's own dedup, so both score alike.
+                "body": _normalize_body(posted),
+                # In backticks, not a bare @login: the verdict is reposted
+                # every round, and a mention would re-notify each time.
+                "disposition": f"{prefix.rstrip(':')} by `{human[-1]['login']}`",
+            }
+        )
+    return kept
+
+
+def _fetch_disposition_threads(repo: str, pr_number: str) -> list[dict[str, Any]]:
+    """The PR's dispositioned major threads; [] on failure, which withholds."""
+    parts = repo.split("/", 1)
+    if len(parts) != 2:
+        return []
+    owner, name = parts
+    return fetch_paginated_nodes(
+        _DISPOSITION_THREADS_QUERY,
+        "reviewThreads",
+        owner,
+        name,
+        pr_number,
+        page_size=_DISPOSITION_PAGE_SIZE,
+        transform=_parse_disposition_threads,
+    )
+
+
+def _dispositioned_majors(
+    available: dict[str, dict[str, Any]], threads: list[dict[str, Any]]
+) -> dict[tuple[str, int], str]:
+    """This round's majors an earlier round's thread already disposes of (AT-2843).
+
+    A major matches a thread when the posting step would deduplicate it
+    against that thread -- ``post_inline_comments._is_duplicate``, same
+    file and near-identical text, line distance ignored at the strong
+    threshold because a rebase moves lines -- which is also why a re-raised
+    major opens no new thread: the old one is the only place its
+    disposition can be. A major with no file has no thread and stays
+    counted. Keyed (reviewer, issue index) into ``available``.
+
+    Read everywhere a major counts: the verdict rules (so two reviewers
+    re-raising a dispositioned major reach no consensus), the approve
+    withhold, the headline and the body -- the user's 2026-10-27 decision
+    as the leader extended it to the consensus rule.
+    """
+    out: dict[tuple[str, int], str] = {}
+    for name, review in available.items():
+        for index, issue in enumerate(review.get("issues", [])):
+            if issue.get("severity") != "major" or not issue.get("file"):
+                continue
+            try:
+                line = int(issue["line"]) if issue.get("line") is not None else None
+            except (TypeError, ValueError):
+                line = None
+            for thread in threads:
+                if _is_duplicate(
+                    issue["file"], issue.get("description"), [thread], line=line
+                ):
+                    out[(name, index)] = thread["disposition"]
+                    break
+    return out
+
+
+def _read_dispositions(
+    available: dict[str, dict[str, Any]], repo: str, pr_number: str
+) -> dict[tuple[str, int], str]:
+    """``_dispositioned_majors`` over the PR's threads, read only when a major is there."""
+    if not any(
+        issue.get("severity") == "major"
+        for review in available.values()
+        for issue in review.get("issues", [])
+    ):
+        return {}
+    return _dispositioned_majors(available, _fetch_disposition_threads(repo, pr_number))
+
+
+def _format_issue_line(issue: dict[str, Any], *, icon: str | None = None) -> str:
+    """Format a single issue as a markdown list item.
+
+    ``icon`` overrides the severity's: a dispositioned major is rendered
+    with ``DISPOSITIONED_ICON`` so it is not a ``- + **major**`` line, the
+    shape the merge gate counts against the headline's N (AT-2843).
+    """
     sev = issue.get("severity", "suggestion")
-    icon = SEVERITY_ICONS.get(sev, "*")
+    icon = icon or SEVERITY_ICONS.get(sev, "*")
     file_part = ""
     if issue.get("file"):
         file_part = f" `{issue['file']}"
@@ -1521,6 +1757,7 @@ def format_summary(  # noqa: PLR0915
     unreviewed_majors: int,
     sequential_bypass: bool = False,
     folded: dict[str, int | None] | None = None,
+    dispositioned: Mapping[tuple[str, int], str] | None = None,
 ) -> str:
     """Build the headline as three independent axes (AT-2240).
 
@@ -1553,8 +1790,16 @@ def format_summary(  # noqa: PLR0915
     round this is. Without it a sequential early-exit round says
     "skipped" on the comment about the same reviewers the roster is at
     that moment reporting as gated off by that exit (AT-2511).
+
+    ``dispositioned`` is the map ``unreviewed_majors`` was counted without
+    (AT-2843): those majors leave their reviewer's list and are listed in a
+    section of their own, so the body's ``- + **major**`` lines are the
+    headline's N -- the equality the pr-response-cycle merge gate (c)
+    checks. Omitted, every major is listed as unreviewed.
     """
     total = len(REVIEWERS)
+    skip = dispositioned or {}
+    disposed_lines: list[str] = []
     n_available = len(available)
     coverage = f"{n_available}/{total} reviewers"
 
@@ -1708,11 +1953,55 @@ def format_summary(  # noqa: PLR0915
             header = f"### {name.title()} -- {len(issues)} issue(s)"
             if review.get("error"):
                 header += f" [!] (partial: {review['error'][:ERROR_TRUNCATE_LEN]})"
-        lines += ["", header, summary]
-        for issue in issues:
-            lines.append(_format_issue_line(issue))
+        listed, disposed = _split_reviewer_issues(name, issues, skip)
+        if disposed:
+            header += f" ({len(disposed)} dispositioned earlier, listed below)"
+        lines += ["", header, summary, *listed]
+        disposed_lines += disposed
 
-    return "\n".join(lines)
+    return "\n".join(lines + _dispositioned_section(disposed_lines))
+
+
+def _split_reviewer_issues(
+    name: str, issues: list[dict[str, Any]], skip: Mapping[tuple[str, int], str]
+) -> tuple[list[str], list[str]]:
+    """One reviewer's issue lines: (listed in its section, dispositioned).
+
+    A dispositioned major's note goes between the item and its suggestion:
+    after the ``> ?`` line it would read as a lazy continuation of that
+    quote.
+    """
+    listed: list[str] = []
+    disposed: list[str] = []
+    for index, issue in enumerate(issues):
+        disposition = skip.get((name, index))
+        if not disposition:
+            listed.append(_format_issue_line(issue))
+            continue
+        line = _format_issue_line(
+            {**issue, "suggestion": None}, icon=DISPOSITIONED_ICON
+        )
+        line += f"\n  {name}: thread answered {disposition}, and resolved"
+        if issue.get("suggestion"):
+            line += f"\n  > ? {issue['suggestion']}"
+        disposed.append(line)
+    return listed, disposed
+
+
+def _dispositioned_section(disposed_lines: list[str]) -> list[str]:
+    """The closing section for majors an earlier round's thread disposes of."""
+    if not disposed_lines:
+        return []
+    return [
+        "",
+        "### Dispositioned in an earlier round --"
+        f" {len(disposed_lines)} major issue(s), not counted above",
+        "Raised again this round; each matches a resolved thread the review"
+        " opened as a major, whose newest human reply, from the repository's"
+        " owner, an org member or a collaborator, carries a standing Resolve"
+        " Policy disposition.",
+        *disposed_lines,
+    ]
 
 
 def _post_comment(pr_number: str, repo: str, body: str) -> bool:
@@ -2034,13 +2323,13 @@ def _approval_withhold(
     The majors reason carries how it clears, because the reader it
     reaches is the one it blocks. There is no key to hold: the aggregate
     re-decides every round from that round's payloads, so the approval
-    posts as soon as a round ends with no major standing. What the
-    aggregate cannot do is see a disposition -- a reply, a fix or a
-    Won't fix on a thread reaches the reviewers (prepare hands them the
-    unresolved threads as context) but never this function, so the reason
-    says a reply may stop a reviewer raising it again rather than
-    promising that a reply clears the withhold. AT-2843 is the channel
-    that would make a resolved thread clear its own major.
+    posts as soon as a round ends with no major standing. A major raised
+    again over a resolved thread whose reply carries a Resolve Policy
+    disposition is not in the count (AT-2843, ``_dispositioned_majors``),
+    so the reason names that route; a major with no thread -- outside the
+    diff, or with no file -- has none, and the human approval below is
+    its way through. The same route lifts a consensus major too: the verdict
+    rules read the same map, so a dispositioned major requests no changes.
 
     The human path is named too: a human approving the PR satisfies a
     required-approving-review rule on its own, independently of anything
@@ -2063,10 +2352,12 @@ def _approval_withhold(
         return _Withhold(
             f"{unreviewed_majors} major issue(s) raised this round are not"
             " dispositioned. The next round decides again: push a fix, or"
-            " reply on the thread so the reviewers see it, then re-run the"
-            " review (push a commit, or re-run the workflow) -- the approval"
-            " posts once a round ends with no major raised. A human approving"
-            " this PR satisfies a required-review rule on its own",
+            " reply on the thread with a Resolve Policy disposition"
+            f" ({', '.join(_DISPOSITION_PREFIXES)}) and"
+            " resolve it, then re-run the review (push a commit, or re-run"
+            " the workflow) -- the approval posts once a round ends with no"
+            " major standing that such a thread does not answer. A human"
+            " approving this PR satisfies a required-review rule on its own",
             False,
         )
     return None
@@ -2438,7 +2729,19 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
     reviews = load_reviews()
     conclusions = load_reviewer_conclusions()
     partial_names = _emit_partial_observability(reviews, conclusions)
-    verdict, reason, available = apply_verdict_rules(reviews)
+    dispositioned = _read_dispositions(
+        _get_available(reviews),
+        os.environ.get("GITHUB_REPOSITORY", ""),
+        os.environ.get("PR_NUMBER", ""),
+    )
+    verdict, reason, available = apply_verdict_rules(reviews, dispositioned)
+    if dispositioned:
+        # The rules counted only the live majors; name the rest, so the
+        # reason and the body account for every major raised.
+        reason += (
+            f" -- plus {len(dispositioned)} major issue(s) dispositioned"
+            " in an earlier round"
+        )
 
     # Downgrade CHANGES_REQUESTED -> COMMENTED when at most one reviewer
     # produced a non-partial response. A single survivor is not enough
@@ -2463,8 +2766,10 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
     # about whether every configured reviewer produced a verdict (AT-2240).
     approve_quorum = _has_full_reviewer_coverage(available)
     # The same contract for the other thing that withholds an approval: one
-    # count, passed to the headline and to the posted event (AT-2823).
-    unreviewed_majors = _count_unreviewed_majors(available)
+    # count, passed to the headline and to the posted event (AT-2823). A
+    # major an earlier round's thread already disposes of is not in it
+    # (AT-2843), nor in the verdict rules above.
+    unreviewed_majors = _count_unreviewed_majors(available, dispositioned)
     result.update(
         reason="reviewed" if not partial_names else "partial_responses",
         responded=[name for name in REVIEWERS if name in available],
@@ -2508,6 +2813,7 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
         unreviewed_majors=unreviewed_majors,
         sequential_bypass=sequential_bypass,
         folded=folded,
+        dispositioned=dispositioned,
     )
     _post_recorded_verdict(
         result,

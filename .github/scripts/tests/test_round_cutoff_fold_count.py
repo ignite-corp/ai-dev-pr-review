@@ -315,6 +315,10 @@ def _run_aggregate(
         "_fetch_inline_posts",
         inline_fetcher or (lambda repo, pr_number: list(pr.inline)),
     )
+    # No earlier thread disposes of anything here (AT-2843).
+    monkeypatch.setattr(
+        aggregate_reviews, "_fetch_disposition_threads", lambda repo, pr_number: []
+    )
     # _head_is_stale compares HEAD_SHA with the live head; the fake PR's is HEAD_SHA.
     monkeypatch.setattr(aggregate_reviews, "_head_is_stale", lambda: False)
     with patch("aggregate_reviews.post_verdict") as post_verdict:

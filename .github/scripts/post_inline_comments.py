@@ -58,6 +58,7 @@ from github_pr_support import (
     fetch_round_count,
     trusted_post_author,
     fold_count_line,
+    float_env,
     fold_envelope,
     get_pr_head_sha,
     int_env,
@@ -92,9 +93,9 @@ _CUTOFF_LEAD = (
 # tunable at runtime via the JACCARD_THRESHOLD environment variable
 # (typically 0.5-0.8: lower dedups more aggressively, higher is stricter).
 _DEFAULT_JACCARD_THRESHOLD = 0.6
-_JACCARD_THRESHOLD = float(
-    os.environ.get("JACCARD_THRESHOLD", _DEFAULT_JACCARD_THRESHOLD)
-)
+# Tolerant: the aggregate imports this module too (AT-2843), and a malformed
+# value must not stop it before it posts a verdict.
+_JACCARD_THRESHOLD = float_env("JACCARD_THRESHOLD", _DEFAULT_JACCARD_THRESHOLD)
 DEDUP_LINE_WINDOW = 5
 # When similarity is at least this strong, the line-distance check is
 # skipped entirely: force-push/rebase shifts line numbers far beyond any
@@ -102,9 +103,7 @@ DEDUP_LINE_WINDOW = 5
 # the same file is a duplicate no matter how far it moved. Tunable at
 # runtime via the DEDUP_STRONG_JACCARD environment variable.
 _DEFAULT_STRONG_JACCARD = 0.8
-DEDUP_STRONG_JACCARD = float(
-    os.environ.get("DEDUP_STRONG_JACCARD", _DEFAULT_STRONG_JACCARD)
-)
+DEDUP_STRONG_JACCARD = float_env("DEDUP_STRONG_JACCARD", _DEFAULT_STRONG_JACCARD)
 
 # Severity precedence for batch-internal dedup (higher rank wins when the
 # same finding is emitted at two severities in one round). Order matches

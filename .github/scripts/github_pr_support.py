@@ -323,6 +323,16 @@ def int_env(name: str, default: int) -> int:
         return default
 
 
+def float_env(name: str, default: float) -> float:
+    """Read a float env var, falling back to default on missing/invalid."""
+    raw = os.environ.get(name, str(default))
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"Invalid {name}={raw!r}, using default {default}", file=sys.stderr)
+        return default
+
+
 SEVERITY_ICONS: dict[str, str] = {
     "critical": "!",
     "major": "+",
