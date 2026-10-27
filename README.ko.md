@@ -477,10 +477,7 @@ orchestrator는 `concurrency: { group: ai-review-<repository>-<pr-number>, cance
 
 ## 조직 간(cross-org) 사용
 
-`ignite-corp` 밖의 레포에 대해 지원되는 경로는 러너 [`ignite-corp/ai-dev-pr-review-runner`](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch)입니다. 러너는 `ignite-corp`에서 `target_repo`를 지정해 이 레포의 오케스트레이터를 호출하므로, 리뷰는 `ignite-corp`의 Actions 시간과 `ignite-corp` 시크릿으로 실행됩니다. 대상 레포에 필요한 것은 두 가지입니다:
-
-1. 러너 allowlist(`.github/review-targets.txt`)의 항목 — 레포 단위 항목이거나, 소유자 단위 `owner/*` 레코드.
-2. 대상 레포에 설치된 리뷰어 App(`ignite-ai-review-approver`). App이 설치되어 있으면 pull request 이벤트가 러너로 자동 디스패치됩니다.
+`ignite-corp` 밖의 레포에 대해 지원되는 경로는 러너 [`ignite-corp/ai-dev-pr-review-runner`](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch)입니다. 러너는 `ignite-corp`에서 `target_repo`를 지정해 이 레포의 오케스트레이터를 호출하므로, 리뷰는 `ignite-corp`의 Actions 시간과 `ignite-corp` 시크릿으로 실행됩니다. `ignite-pilot-org` 레포는 이 방식으로 리뷰됩니다: 레포가 등록되면(러너 allowlist에 있고 리뷰어 App이 설치되면) pull request가 자동으로 디스패치됩니다. 이전에 쓰던 파일럿 래퍼는 은퇴했고 아카이브되었습니다(AT-3036). 레포를 등록하는 방법은 러너가 정합니다: 러너 README의 [Targets](https://github.com/ignite-corp/ai-dev-pr-review-runner#targets)와 [Automatic dispatch](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch)를 보세요. 이 README는 그 내용을 다시 적지 않습니다.
 
 대상 레포에는 시크릿도 리뷰 워크플로우도 필요 없습니다. 프롬프트 파일은 대상의 base 브랜치에서 읽고, 없으면 러너의 기본값을 씁니다([소비자 레포별 프롬프트 재정의](#소비자-레포별-프롬프트-재정의) 참조).
 
