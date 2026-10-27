@@ -680,7 +680,8 @@ def test_net_written_timeout_after_normalize_renders_its_cause(
 # recorded by 'Drop symlinked codex artifacts before upload', the always()
 # step right after it, and the net measures against that.
 _DROP_STEP = "Drop symlinked codex artifacts before upload"
-_RUN_ENDED_AT_SECONDS = 510
+_CODEX_CAP_SECONDS = int(_step(_CODEX_NET)["env"]["STEP_CAP_MINUTES"]) * 60
+_RUN_ENDED_AT_SECONDS = _CODEX_CAP_SECONDS - 90
 _SLOW_UPLOAD_SECONDS = 50
 
 
@@ -714,8 +715,8 @@ def test_codex_failure_under_the_cap_then_slow_upload_is_not_a_timeout(
     tmp_path: Path,
 ) -> None:
     # Red before AT-2603 round 7: the net measured to its own "now", so a
-    # failure at 510s on a 600s cap plus a 50s upload read as 560s, past
-    # the 540s threshold.
+    # failure 90s before the cap plus a 50s upload crosses the net
+    # threshold (60s before the cap) if upload latency is mischarged.
     started = _RUN_ENDED_AT_SECONDS + _SLOW_UPLOAD_SECONDS
     env = _timed_env(tmp_path, _CODEX_NET, "failure", started)
     env["END_MARKER"] = str(_end_marker(tmp_path, _SLOW_UPLOAD_SECONDS))
@@ -729,7 +730,7 @@ def test_codex_failure_under_the_cap_then_slow_upload_is_not_a_timeout(
 def test_codex_cut_at_the_cap_then_slow_upload_is_still_a_timeout(
     tmp_path: Path,
 ) -> None:
-    started = 600 + _SLOW_UPLOAD_SECONDS
+    started = _CODEX_CAP_SECONDS + _SLOW_UPLOAD_SECONDS
     env = _timed_env(tmp_path, _CODEX_NET, "failure", started)
     env["END_MARKER"] = str(_end_marker(tmp_path, _SLOW_UPLOAD_SECONDS))
     result = _run(tmp_path, _CODEX_NET, env)

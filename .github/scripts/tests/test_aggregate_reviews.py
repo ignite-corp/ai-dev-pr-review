@@ -2106,13 +2106,27 @@ class _CodexStepHarness:
         if stalls:
             body += "sleep 5\n"
         else:
+            # A real --json CLI captures its final response separately from
+            # event output. The stub's log stands in for that final message.
+            body += (
+                'if [ -f "$RUNNER_TEMP/codex-final.txt" ]; then\n'
+                f"printf '%s\\n' {shlex.quote(log)} "
+                '> "$RUNNER_TEMP/codex-final.txt"\nfi\n'
+            )
             body += f"printf '%s\\n' {json.dumps(log)}\nexit {exit_code}\n"
+        # The review step now consumes metadata written by its preceding
+        # trusted auth step. Keep this harness on the API path without any
+        # real credentials or reads of the operator's auth directory.
+        home = workdir / "test-home"
+        (home / ".codex").mkdir(parents=True, exist_ok=True)
+        (home / ".codex/review-auth.json").write_text('{"mode":"api-key"}')
         bin_dir = cls._stub_codex(workdir, body)
         result = subprocess.run(
             _RUNNER_SHELL + [_step_script(_CODEX_RUN_STEP)],
             cwd=workdir,
             env={
                 "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "HOME": str(home),
                 "RUNNER_TEMP": str(runner_temp),
                 "GITHUB_OUTPUT": str(workdir / "github-output"),
                 "CODEX_MODEL": "stub-model",
@@ -3090,8 +3104,13 @@ class TestCodexPromptStaysOutOfArgv(_CodexStepHarness):
             "exec",
             "-c",
             'default_permissions="review"',
+            "-c",
+            'cli_auth_credentials_store="file"',
             "--model",
             "stub-model",
+            "--json",
+            "--output-last-message",
+            str(tmp_path / "runner-temp/codex-final.txt"),
             "-",
         ]
 

@@ -35,6 +35,7 @@ jobs:
         id: probe
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_TOKEN_PRESENT: ${{ secrets.CODEX_ACCESS_TOKEN != '' }}
           GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
@@ -44,6 +45,8 @@ jobs:
           ANTHROPIC_API_VERSION="2023-06-01"
           flagged_lines=()
           warn_count=0
+          unprobed_count=0
+          if [ "${CODEX_TOKEN_PRESENT:-false}" = true ]; then unprobed_count=1; fi
 
           # classify <http_code> [extra flag codes...]
           # 200 -> ok; 401/403 (+ per-provider extras) -> flag (credential
@@ -109,9 +112,20 @@ jobs:
           # 429/5xx/timeouts warn instead of flag: rate limits and provider
           # outages are not credential problems, and alarming on them would
           # teach humans to ignore the alert.
-          probe OPENAI_API_KEY "${OPENAI_API_KEY:-}" "" \
-            https://api.openai.com/v1/models \
-            "Authorization: Bearer ${OPENAI_API_KEY:-}"
+          if [ -n "${OPENAI_API_KEY:-}" ] || [ "${CODEX_TOKEN_PRESENT:-false}" != true ]; then
+            probe OPENAI_API_KEY "${OPENAI_API_KEY:-}" "" \
+              https://api.openai.com/v1/models \
+              "Authorization: Bearer ${OPENAI_API_KEY:-}"
+          fi
+          if [ "$unprobed_count" -gt 0 ]; then
+            API_FALLBACK_NOTE=""
+            if [ -z "${OPENAI_API_KEY:-}" ]; then API_FALLBACK_NOTE="; API fallback is unavailable"; fi
+            echo "::notice::CODEX_ACCESS_TOKEN intentionally unprobed; token validity is not established by this probe${API_FALLBACK_NOTE}"
+          fi
+          # Never probe CODEX_ACCESS_TOKEN as a Platform API key. The Codex
+          # login/review path verifies it; error-streak monitoring below still
+          # detects repeated access-token authentication failures.
+
 
           probe GOOGLE_AI_API_KEY "${GOOGLE_AI_API_KEY:-}" "400" \
             "https://generativelanguage.googleapis.com/v1beta/models" \
@@ -135,9 +149,9 @@ jobs:
           if [ "${#flagged_lines[@]}" -gt 0 ]; then
             flagged=1
           fi
-          # all_ok=1 only when every probe classified ok: a warn is a check
-          # that was NOT performed to completion, so it must not count as a
-          # confirmed recovery (never report success for a check not done).
+          # all_ok means applicable API-key probes all returned 200. An
+          # intentionally unprobed token is separate from a transient failed
+          # API-key probe, which must still block confirmed API-key recovery.
           all_ok=0
           if [ "$flagged" = "0" ] && [ "$warn_count" -eq 0 ]; then
             all_ok=1
@@ -148,6 +162,8 @@ jobs:
           {
             echo "flagged=${flagged}"
             echo "all_ok=${all_ok}"
+            echo "warn_count=${warn_count}"
+            echo "unprobed_count=${unprobed_count}"
             echo "summary<<PROBE_EOF"
             if [ "$flagged" = "1" ]; then
               printf -- '- %s\n' "${flagged_lines[@]}"
@@ -193,6 +209,7 @@ jobs:
         if: steps.probe.outputs.all_ok == '1'
         env:
           GH_TOKEN: ${{ github.token }}
+          UNPROBED_COUNT: ${{ steps.probe.outputs.unprobed_count }}
         run: |
           set -u
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -201,8 +218,12 @@ jobs:
             --search 'credential-probe in:title' --json number,title \
             --jq 'map(select(.title | startswith("[credential-probe]"))) | .[0].number // empty')
           if [ -n "$number" ]; then
+            RECOVERY_DETAIL="Applicable API-key probes returned HTTP 200 at ${NOW} ([run](${RUN_URL})). Recovered."
+            if [ "${UNPROBED_COUNT:-0}" != "0" ]; then
+              RECOVERY_DETAIL="${RECOVERY_DETAIL} Codex access token was not validated; its validity remains unknown."
+            fi
             gh issue close "$number" --repo "$GITHUB_REPOSITORY" \
-              --comment "All credential probes returned HTTP 200 at ${NOW} ([run](${RUN_URL})). Recovered."
+              --comment "$RECOVERY_DETAIL"
           else
             echo "No open credential-probe issue; nothing to close."
           fi
@@ -695,6 +716,14 @@ jobs:
               fi
 
               echo "  ${key}: actions=${actions_ok} dependabot=${dependabot_ok}"
+              if [ "$key" = OPENAI_API_KEY ] && [ "$actions_ok" -ne 1 ]; then
+                if check_org_secret_grants_repo actions CODEX_ACCESS_TOKEN "$name" || \
+                    check_repo_secret actions CODEX_ACCESS_TOKEN "$slug"; then
+                  echo "  [WARN] entry ${i}/${total}: Codex access token available; API fallback missing (token validity not probed)"
+                  consumer_scan_error=1
+                  continue
+                fi
+              fi
               if [ "$actions_ok" -ne 1 ]; then
                 echo "  [FLAG] entry ${i}/${total}: ${key} missing on actions scope"
                 consumer_flags=$((consumer_flags + 1))
