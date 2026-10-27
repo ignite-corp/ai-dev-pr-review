@@ -138,12 +138,40 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
   immediately after the pin-bump merge**. Until it exists, `self-review.yml`'s
   `guard` job skips the pin-bump PR's own review (with a `::notice::` naming
   the pin) instead of failing on the missing ref.
-- **After publishing the tag, dispatch self-review at the release PR** -
-  `gh workflow run self-review.yml -f pr_number=<release PR>`. Script changes
-  are exercised by no PR check until they ship in a tag (see the
-  `self-review.yml` header), so this single step both restores review coverage
-  for the release PR and verifies the new scripts actually run. Confirm the
-  checked-out ref in the aggregate job log.
+
+### Release PR: merge without a verdict, review after the tag (AT-2542)
+
+A release PR cannot get its own verdict before merge: the pins it bumps name a
+tag that only exists once the PR has merged. Decided 2026-10-27: no pre-merge
+verdict path is built for it. Instead:
+
+- **Eligible PRs.** A PR qualifies only when its diff is limited to the `ref:`
+  pins of the script checkouts and the version notes (version references in
+  docs and release notes). Anything else in the diff - a script, a workflow
+  step, a prompt - is an ordinary PR and goes through the normal review first.
+- **Merge gate.** An eligible release PR merges on `test` + `guard` alone.
+  Those two are this repository's own required checks on `main` (ruleset,
+  measured 2026-10-27); the `Aggregate & Verdict` gate under "Required check"
+  below is the consumers' gate, and here `guard` skips the release PR's
+  review job.
+- **Required step after tagging.** Publish the tag right after the merge, then
+  dispatch self-review at the release PR. This is a required step of the
+  release, not an optional follow-up; the release is not done until the run
+  has posted its verdict:
+
+  ```bash
+  RELEASE_PR=123  # the merged release PR
+  gh workflow run self-review.yml --ref main -f pr_number="$RELEASE_PR"
+  ```
+
+  Script changes are exercised by no PR check until they ship in a tag (see
+  the `self-review.yml` header), so this one run both reviews the release PR
+  and verifies the new scripts actually run. Confirm the checked-out ref in
+  the aggregate job log.
+- **If the verdict finds something**, fix it in a follow-up PR and ship it in
+  the next release. Never re-tag: consumers pin release SHAs and `v1` has
+  already floated to the tag, so moving it rewrites what they run without a
+  release of its own.
 
 ## Standalone workflows = SSOT, not drift
 
