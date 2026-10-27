@@ -26,10 +26,19 @@ from __future__ import annotations
 import json
 import sys
 from collections import Counter, defaultdict
+from typing import TypeGuard
 
 # Label for a document that is a bare scalar or empty container at the top.
 _ROOT = "(root)"
 _ARRAY = "[]"
+
+
+def _is_object(node: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(node, dict)
+
+
+def _is_array(node: object) -> TypeGuard[list[object]]:
+    return isinstance(node, list)
 
 
 def _child(path: str, key: str) -> str:
@@ -43,10 +52,10 @@ def _flatten(node: object, path: str, out: dict[str, Counter[str]]) -> None:
     array) is a leaf recorded under its own path. Leaf values are counted, not
     emitted -- they never leave this module.
     """
-    if isinstance(node, dict) and node:
+    if _is_object(node) and node:
         for key, value in node.items():
             _flatten(value, _child(path, str(key)), out)
-    elif isinstance(node, list) and node:
+    elif _is_array(node) and node:
         for item in node:
             _flatten(item, f"{path}{_ARRAY}", out)
     else:
