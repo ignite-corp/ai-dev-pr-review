@@ -489,10 +489,7 @@ The orchestrator sets `concurrency: { group: ai-review-<repository>-<pr-number>,
 
 ## Cross-org usage
 
-For a repository outside `ignite-corp`, the supported path is the runner, [`ignite-corp/ai-dev-pr-review-runner`](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch). It calls this repo's orchestrator from `ignite-corp` with `target_repo` set, so the review runs on `ignite-corp` minutes under `ignite-corp` secrets. A target needs two things:
-
-1. An entry in the runner's allowlist (`.github/review-targets.txt`), either for the repository or as an `owner/*` record for its owner.
-2. The reviewer App (`ignite-ai-review-approver`) installed on the repository. With the App installed, a pull request event is dispatched to the runner automatically.
+For a repository outside `ignite-corp`, the supported path is the runner, [`ignite-corp/ai-dev-pr-review-runner`](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch). It calls this repo's orchestrator from `ignite-corp` with `target_repo` set, so the review runs on `ignite-corp` minutes under `ignite-corp` secrets. `ignite-pilot-org` repositories are reviewed this way: once a repository is enrolled (on the runner's allowlist, with the reviewer App installed), its pull requests are dispatched automatically; the pilot wrapper they used before is retired and archived (AT-3036). How a repository is enrolled is the runner's to say: see its README, [Targets](https://github.com/ignite-corp/ai-dev-pr-review-runner#targets) and [Automatic dispatch](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch). This README does not restate it.
 
 The target holds no secrets and no review workflow. Its prompt files are read from its base branch and fall back to the runner's defaults (see [Overriding prompts per consumer repo](#overriding-prompts-per-consumer-repo)).
 

@@ -156,12 +156,12 @@ Same delete/add/keep lists as `ai-dev-cab`. Note: this repo is the architectural
 
 ---
 
-## Consumer: generic new repo (e.g., ignite-pilot-org/<repo>)
+## Consumer: generic new repo (e.g., `<org>/<repo>`)
 
-Repo: any cross-org consumer that does NOT currently have the workflows.
+Repo: any cross-org consumer that does NOT currently have the workflows and will run reviews on its own org's Actions minutes. An `ignite-pilot-org` repo does not take this path: it is reviewed by the runner, with no workflow of its own (see [Cross-org usage](README.md#cross-org-usage)).
 
 **Prerequisites:**
-1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` as org-level secrets in `ignite-pilot-org` (or the target org). Grant the consumer repo access.
+1. Org admin: configure `OPENAI_API_KEY`, `GOOGLE_AI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` as org-level secrets in the target org. Grant the consumer repo access.
 2. Org admin: Settings -> Actions -> General -> Allow `ignite-corp/ai-dev-pr-review` in the actions allowlist. Permit the underlying actions listed in `examples/consumer-thin-trigger.yml` Variant 2.
 3. Org admin: confirm the repo allows the `pull-requests: write` permission for `GITHUB_TOKEN` so the workflow can post review comments.
 

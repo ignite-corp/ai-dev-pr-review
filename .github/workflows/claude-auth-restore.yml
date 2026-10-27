@@ -10,8 +10,11 @@ name: claude-auth-restore
 # the next limited review re-triggers the switch.
 #
 # Scope is a single pair of ignite-corp org vars (no repo-list input, no
-# pilot fan-out -- pilot has no org vars and keeps its manual empty-secret
-# toggle). Logs carry no repo/org identifiers.
+# pilot fan-out -- the pilot org holds no auth org vars, and since AT-3036
+# pilot repos run no review workflow of their own: the runner reviews them
+# from ignite-corp, and their manual empty-secret toggle went with the
+# repo-level review secrets deleted under that ticket). Logs carry no
+# repo/org identifiers.
 
 on:
   schedule:

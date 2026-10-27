@@ -3,8 +3,10 @@
 #
 # Two variants below:
 #   1. SAME-ORG (ignite-corp consumers): cab, qayak, t2a, infra-common
-#   2. CROSS-ORG (ignite-pilot-org consumers): same shape, identical
-#      explicit-secret block. `secrets: inherit` does NOT work cross-org.
+#   2. CROSS-ORG (an org that runs reviews on its own Actions minutes):
+#      same shape, identical explicit-secret block. `secrets: inherit`
+#      does NOT work cross-org. ignite-pilot-org repos use neither variant:
+#      the runner reviews them (README.md, "Cross-org usage").
 #
 # Pick ONE variant and delete the other before committing.
 # Both pin to @v1 (floating major tag) -- DO NOT use @main in production.
@@ -88,7 +90,7 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-# --- Variant 2: cross-org (ignite-pilot-org and any external org) ---
+# --- Variant 2: cross-org (any external org on its own minutes) ---
 #
 # Prerequisites for cross-org:
 #   1. Org admin grants the consumer repo access to org-level secrets

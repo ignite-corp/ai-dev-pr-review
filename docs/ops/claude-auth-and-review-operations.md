@@ -101,29 +101,28 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
     approval as the last-standing approving review with no human approving
     review at all. Most recent: `ai-dev-infra-common#743`, approved
     2026-08-24T02:37:21Z at `2/3 LLM responses` and merged two minutes later.
-  - Pilot exposure at the float when this was written is **six repos**:
+  - Pilot exposure at the float when this was written was **six repos**:
     `aws-simple-deploy`, `ig-config-manager`, `mg_wrap`, `wesource`,
-    `wesource-be`, `wesource-fe`. Do not trust that list - re-measure it. A
-    repo is exposed when it has `ALLOW_AUTO_APPROVE=true` AND `REVIEWER_APP_ID`
-    set AND is on `wrapper.yml@v1`.
-  - **Repo-level Actions variables read with a plain `repo` scope** - only
-    *org*-level variables need `admin:org` - so the list is measurable from an
-    ordinary token:
-
-    ```bash
-    for r in $(gh api orgs/ignite-pilot-org/repos --paginate --jq '.[].name'); do
-      gh api --paginate "repos/ignite-pilot-org/$r/actions/variables" --jq \
-        '[.variables[]|select((.name=="ALLOW_AUTO_APPROVE" and .value=="true")
-           or .name=="REVIEWER_APP_ID")]|length' 2>/dev/null | grep -qx 2 || continue
-      gh api "repos/ignite-pilot-org/$r/contents/.github/workflows/ai-review.yml" \
-        --jq .content 2>/dev/null | base64 -d | grep -q 'wrapper.yml@v1' && echo "$r"
-    done
-    ```
-
-    Runs under a plain `repo` scope; echoes repository names only, never
-    variable values.
-
-    Adjust the workflow filename for any consumer not using `ai-review.yml`.
+    `wesource-be`, `wesource-fe`, each with `ALLOW_AUTO_APPROVE=true` AND
+    `REVIEWER_APP_ID` set AND on `wrapper.yml@v1`. That path is gone: the
+    pilot repos deleted their `ai-review.yml` under AT-3036 (the ticket's
+    2026-10-27 sweep of the non-archived org repos found no workflow calling
+    the wrapper or this repo's workflows), so nothing is left on
+    `wrapper.yml@v1` to re-measure.
+  - **Under the runner, exposure is no longer a per-repo opt-in.** A repo
+    reviewed by the runner takes `ALLOW_AUTO_APPROVE` from the runner, which
+    is the caller (see "Model selection" above for where `vars.*` resolve), so
+    the pilot repo's own variables do not count. Measured 2026-10-27: the
+    runner holds no repo-level `ALLOW_AUTO_APPROVE` (its only repo variable is
+    `CLAUDE_ALLOWED_BOTS`), so it inherits the ignite-corp org value, and the
+    reviewer App did post a formal `APPROVED` on a runner-reviewed pilot PR
+    (`ignite-pilot-org/aws-simple-deploy#59`, 2026-10-22). Exposure is
+    therefore every repo the runner may review: its allowlist (see the runner
+    README, Targets) intersected with the reviewer App's installations. To
+    re-measure the runner's own override:
+    `gh api repos/ignite-corp/ai-dev-pr-review-runner/actions/variables`.
+    Repo-level Actions variables read with a plain `repo` scope; only
+    *org*-level variables need `admin:org`.
 - There is no base <-> wrapper release lockstep any more: the pilot wrapper is
   retired (AT-3036), so a base change is not ported anywhere and no wrapper
   release is cut. See `docs/pilot-usage.md`.
@@ -316,8 +315,10 @@ before anything is removed.
 ## Op hazard - pilot consumer onboarding must set CODEX_MODEL and CLAUDE_MODEL repo vars
 
 This applies to a pilot repo that calls the orchestrator from its own thin
-trigger. A repo reviewed by the runner takes its model variables from the
-runner, which is the caller (see "Model selection" above).
+trigger. Since AT-3036 none does: pilot repos are enrolled in the runner
+instead, and a repo reviewed by the runner takes its model variables from the
+runner, which is the caller (see "Model selection" above). The rest of this
+section stands for a repo that takes the thin-trigger path again.
 
 `ignite-pilot-org` has no org-level `CODEX_MODEL` or `CLAUDE_MODEL`: its org
 variable list holds only `PR_SIZE_LIMIT` and `REVIEW_MODE` (measured
