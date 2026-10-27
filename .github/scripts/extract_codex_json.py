@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
+from github_pr_support import is_json_object
 from review_status import stamp_model_status, write_verdict_json
 
 
@@ -42,7 +44,7 @@ def _find_balanced_blocks(text: str) -> list[str]:
 REQUIRED = {"summary", "early_exit", "issues"}
 
 
-def extract(log_text: str) -> dict | None:
+def extract(log_text: str) -> dict[str, Any] | None:
     """Return the LAST JSON object containing summary/early_exit/issues."""
     candidates = _find_balanced_blocks(log_text)
     # Prefer the LAST valid candidate -- assistant's final response.
@@ -51,7 +53,7 @@ def extract(log_text: str) -> dict | None:
             obj = json.loads(block)
         except json.JSONDecodeError:
             continue
-        if isinstance(obj, dict) and REQUIRED.issubset(obj.keys()):
+        if is_json_object(obj) and REQUIRED.issubset(obj.keys()):
             return obj
     return None
 
