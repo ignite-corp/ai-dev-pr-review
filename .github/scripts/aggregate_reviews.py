@@ -2168,7 +2168,8 @@ def _fold_prior_round_items(pr_number: str, repo: str, *, head_sha: str) -> list
     comment saying the approval was withheld. A request_changes verdict
     downgraded by comment_only is folded the same way, for the same reason
     (AT-2889). The carve-out is for rounds that found nothing wrong and
-    could not say so.
+    could not say so -- the prepare-failure and size-skip exits among them,
+    whose request_changes means no review ran (retires_approval=False).
 
     A CHANGES_REQUESTED of this head goes up front all the same:
     the required check's exit code carries its block for as long as the
@@ -2263,7 +2264,8 @@ def _dismiss_replaced_approvals(review_ids: list[str]) -> None:
     """Fold the same-head approvals _fold_prior_round_items left standing.
 
     Called once this round's own verdict is on the PR -- either a review
-    that `gh pr review` returned 0 for, or the comment that deliberately
+    that `gh pr review` returned 0 for, unless the caller passed
+    retires_approval=False, or the comment that deliberately
     replaces one -- on AT-2823's majors withhold, or on a request_changes
     verdict the comment_only downgrade posted (AT-2889). They differ in
     kind: the review path replaces the approval, so something still
@@ -2275,7 +2277,9 @@ def _dismiss_replaced_approvals(review_ids: list[str]) -> None:
 
     The other comment-and-no-review paths -- the approve-quorum withhold,
     the comment_only downgrade of an approve verdict that nothing
-    withheld, the fallback after a failed review -- do NOT call this: see
+    withheld, the fallback after a failed review -- do NOT call this, and
+    neither do the prepare-failure and size-skip exits, which pass
+    retires_approval=False because no review ran (AT-2889): see
     _fold_prior_round_items for why a transient round must leave a
     same-head approval alone.
 
@@ -2437,8 +2441,18 @@ def post_verdict(
     comment_only: bool,
     unreviewed_majors: int,
     approve_quorum: bool = True,
+    retires_approval: bool = True,
 ) -> bool:
-    """Post the verdict; return whether a review or fallback comment landed."""
+    """Post the verdict; return whether a review or fallback comment landed.
+
+    ``retires_approval=False`` keeps a same-head approval standing after
+    a request_changes verdict lands (an approve verdict's withhold retires
+    it on its own non-transient rule): the prepare-failure and size-skip
+    exits post
+    request_changes because no review ran, not because anything was
+    found on this head, which is the transient case
+    _fold_prior_round_items carves out (AT-2889).
+    """
     pr_number = os.environ.get("PR_NUMBER", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not pr_number or not pr_number.isdigit():
@@ -2479,11 +2493,9 @@ def post_verdict(
         # that found a major on this head must not leave a prior APPROVED
         # of this head standing to satisfy the required-review rule.
         # request_changes folds here exactly as its posted review does on
-        # the killswitch-on path (AT-2889) -- every request_changes, the
-        # prepare-failure and size-skip exits included, since that path
-        # folds after any review it posts. Whether those exits should keep
-        # a same-head approval is a question for both settings at once.
-        if verdict == "request_changes" or (
+        # the killswitch-on path (AT-2889), except from the no-review exits,
+        # which pass retires_approval=False on both settings alike.
+        if (verdict == "request_changes" and retires_approval) or (
             withhold is not None and not withhold.transient
         ):
             _dismiss_replaced_approvals(standing)
@@ -2570,7 +2582,8 @@ def post_verdict(
                 print("Both review and fallback comment failed", file=sys.stderr)
                 sys.exit(1)
             return True
-        _dismiss_replaced_approvals(standing)
+        if retires_approval:
+            _dismiss_replaced_approvals(standing)
     else:
         if not _post_comment(pr_number, repo, comment):
             print("Failed to post comment", file=sys.stderr)
@@ -2600,6 +2613,7 @@ def _post_recorded_verdict(
     comment_only: bool,
     unreviewed_majors: int,
     approve_quorum: bool = True,
+    retires_approval: bool = True,
 ) -> None:
     result["verdict"] = verdict
     result["unreviewed_majors"] = unreviewed_majors
@@ -2609,6 +2623,7 @@ def _post_recorded_verdict(
         comment_only=comment_only,
         unreviewed_majors=unreviewed_majors,
         approve_quorum=approve_quorum,
+        retires_approval=retires_approval,
     )
     # A successful API call with an arbitrary body is not a verdict the
     # merge gate can identify. All normal formatters lead with this marker.
@@ -2717,6 +2732,7 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
             "request_changes",
             comment_only=_is_comment_only(),
             unreviewed_majors=0,
+            retires_approval=False,
         )
         print(f"Final verdict: request_changes -- prepare reported {prepare_failure}")
         # No review happened at all; passing would newly permit unreviewed
@@ -2733,6 +2749,7 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
             "request_changes",
             comment_only=_is_comment_only(),
             unreviewed_majors=0,
+            retires_approval=False,
         )
         print(
             "Final verdict: request_changes -- review skipped,"

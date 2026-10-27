@@ -5309,6 +5309,7 @@ def _post_verdict_over(
     unreviewed_majors: int = 0,
     review_rc: int = 0,
     live_head: str | None | object = _NOT_LOOKED_UP,
+    retires_approval: bool = True,
 ) -> tuple[list[list[str]], list[tuple[str, str]], int]:
     """Run ``post_verdict`` with the stale fold live over ``reviews``.
 
@@ -5363,6 +5364,7 @@ def _post_verdict_over(
             comment_only=comment_only,
             approve_quorum=approve_quorum,
             unreviewed_majors=unreviewed_majors,
+            retires_approval=retires_approval,
         )
     return commands, issued, fetches
 
@@ -5383,7 +5385,8 @@ class TestSameHeadApprovalStandsUntilReplaced:
     once its comment is up; left standing, the withhold would do nothing
     on the same-head re-run its own note asks the reader to make.
     A request_changes verdict is a finding too, so the ``comment_only``
-    downgrade folds it the way its posted review would (AT-2889).
+    downgrade folds it the way its posted review would (AT-2889) -- except
+    the prepare-failure and size-skip exits, where no review ran.
     An approval of a superseded head is different: no
     review has seen the current head, so it goes up front whatever the
     round then does (AT-2599's invariant), and so does a CHANGES_REQUESTED
@@ -5503,6 +5506,81 @@ class TestSameHeadApprovalStandsUntilReplaced:
             comment_only=comment_only,
         )
         assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+
+    @pytest.mark.parametrize(
+        "comment_only", [False, True], ids=["killswitch-on", "killswitch-off"]
+    )
+    @pytest.mark.parametrize(
+        "exit_env",
+        [
+            {"PREPARE_RESULT": "failure", "RUN_URL": "https://x/y"},
+            {"SIZE_SKIPPED": "true", "SIZE_TOTAL": "4200", "SIZE_LIMIT": "3000"},
+        ],
+        ids=["prepare-failure", "size-skip"],
+    )
+    def test_a_no_review_exit_leaves_the_same_head_approval(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        exit_env: dict[str, str],
+        comment_only: bool,
+    ) -> None:
+        """AT-2889 re-check of #245: the prepare-failure and size-skip
+        exits post request_changes because no review ran, not because
+        anything was found on this head -- the transient case the
+        carve-out exists for. With the killswitch off the next clean
+        re-run only comments, so a fold here would retire the approval
+        for good. The exit code still fails the check either way.
+        """
+        for name, value in exit_env.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setenv("ALLOW_AUTO_APPROVE", "false" if comment_only else "true")
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+        issued: list[tuple[str, str]] = []
+        commands: list[list[str]] = []
+
+        def record(query: str, node_id: str, label: str) -> None:
+            issued.append((node_id, label))
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            commands.append(cmd)
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+        monkeypatch.setenv("PR_NUMBER", "42")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+        monkeypatch.setenv("HEAD_SHA", "")
+        with (
+            patch(
+                "aggregate_reviews.fetch_paginated_nodes",
+                side_effect=_stale_pages([], [self._SAME, self._OLD]),
+            ),
+            patch("aggregate_reviews._run_gql_mutation", side_effect=record),
+            patch("aggregate_reviews._current_pr_head", return_value=_HEAD),
+            patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        assert issued == self._OLD_FOLDED
+        # The verdict landed, through the branch each setting takes.
+        posted_review = any("--request-changes" in cmd for cmd in commands)
+        assert posted_review is not comment_only
+        assert comment_only is any("comment" in cmd for cmd in commands)
+
+    @pytest.mark.parametrize(
+        "comment_only", [False, True], ids=["killswitch-on", "killswitch-off"]
+    )
+    def test_request_changes_that_retires_nothing_leaves_the_same_head_approval(
+        self, monkeypatch: pytest.MonkeyPatch, comment_only: bool
+    ) -> None:
+        # The flag the two exits pass; the superseded approval still goes.
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME, self._OLD],
+            "request_changes",
+            comment_only=comment_only,
+            retires_approval=False,
+        )
+        assert issued == self._OLD_FOLDED
 
     def test_the_majors_withhold_folds_against_the_live_head_too(
         self, monkeypatch: pytest.MonkeyPatch
