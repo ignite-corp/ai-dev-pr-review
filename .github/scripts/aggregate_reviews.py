@@ -1857,14 +1857,16 @@ def _fold_prior_round_items(pr_number: str, repo: str, *, head_sha: str) -> list
     green on this head into one blocked by a transient failure of the
     re-run.
 
-    The AT-2823 withhold also posts a comment and no review, and is the
-    one such path that is NOT carved out: an undispositioned major is a
-    finding about this head rather than a flake of the re-run, so
-    post_verdict dismisses the standing approval itself once its comment
-    is up (see _Withhold.transient). Left standing it would keep the PR
-    green on precisely the same-head re-run the withhold note asks for,
-    with the comment saying the approval was withheld. The carve-out is
-    for rounds that found nothing wrong and could not say so.
+    The AT-2823 withhold also posts a comment and no review, and is NOT
+    carved out: an undispositioned major is a finding about this head
+    rather than a flake of the re-run, so post_verdict dismisses the
+    standing approval itself once its comment is up (see
+    _Withhold.transient). Left standing it would keep the PR green on
+    precisely the same-head re-run the withhold note asks for, with the
+    comment saying the approval was withheld. A request_changes verdict
+    downgraded by comment_only is folded the same way, for the same reason
+    (AT-2889). The carve-out is for rounds that found nothing wrong and
+    could not say so.
 
     A CHANGES_REQUESTED of this head goes up front all the same:
     the required check's exit code carries its block for as long as the
@@ -1959,19 +1961,21 @@ def _dismiss_replaced_approvals(review_ids: list[str]) -> None:
     """Fold the same-head approvals _fold_prior_round_items left standing.
 
     Called once this round's own verdict is on the PR -- either a review
-    that `gh pr review` returned 0 for, or, on AT-2823's majors withhold,
-    the comment that deliberately replaces one. Those are the two callers
-    and they differ in kind: the review path replaces the approval, so
-    something still vouches for the head; the withhold path removes it
-    and puts nothing back, which is the point, because a major was found
-    on this head and the PR must not stay green on a prior round's say-so.
+    that `gh pr review` returned 0 for, or the comment that deliberately
+    replaces one -- on AT-2823's majors withhold, or on a request_changes
+    verdict the comment_only downgrade posted (AT-2889). They differ in
+    kind: the review path replaces the approval, so something still
+    vouches for the head; the comment paths remove it and put nothing
+    back, which is the point, because something was found on this head
+    and the PR must not stay green on a prior round's say-so.
     What both guarantee is that the page already explains itself before
     the old approval goes.
 
     The other comment-and-no-review paths -- the approve-quorum withhold,
-    the comment_only downgrade, the fallback after a failed review -- do
-    NOT call this: see _fold_prior_round_items for why a transient round
-    must leave a same-head approval alone.
+    the comment_only downgrade of an approve verdict that nothing
+    withheld, the fallback after a failed review -- do NOT call this: see
+    _fold_prior_round_items for why a transient round must leave a
+    same-head approval alone.
 
     The ids come from the fold's own read of the page, not a fresh one: a
     re-read now would find this round's review, which opens with the
@@ -2156,7 +2160,14 @@ def post_verdict(
         # suppresses the second explanation, not the consequence: a round
         # that found a major on this head must not leave a prior APPROVED
         # of this head standing to satisfy the required-review rule.
-        if withhold is not None and not withhold.transient:
+        # request_changes folds here exactly as its posted review does on
+        # the killswitch-on path (AT-2889) -- every request_changes, the
+        # prepare-failure and size-skip exits included, since that path
+        # folds after any review it posts. Whether those exits should keep
+        # a same-head approval is a question for both settings at once.
+        if verdict == "request_changes" or (
+            withhold is not None and not withhold.transient
+        ):
             _dismiss_replaced_approvals(standing)
         return True
 

@@ -5293,6 +5293,8 @@ class TestSameHeadApprovalStandsUntilReplaced:
     about this head rather than a flake, so it folds the approval itself
     once its comment is up; left standing, the withhold would do nothing
     on the same-head re-run its own note asks the reader to make.
+    A request_changes verdict is a finding too, so the ``comment_only``
+    downgrade folds it the way its posted review would (AT-2889).
     An approval of a superseded head is different: no
     review has seen the current head, so it goes up front whatever the
     round then does (AT-2599's invariant), and so does a CHANGES_REQUESTED
@@ -5388,6 +5390,28 @@ class TestSameHeadApprovalStandsUntilReplaced:
             "approve",
             comment_only=True,
             unreviewed_majors=2,
+        )
+        assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
+
+    @pytest.mark.parametrize(
+        "comment_only", [False, True], ids=["killswitch-on", "killswitch-off"]
+    )
+    def test_changes_requested_folds_alike_on_either_killswitch_setting(
+        self, monkeypatch: pytest.MonkeyPatch, comment_only: bool
+    ) -> None:
+        """AT-2889: the killswitch decides how the verdict is posted, not
+        whether a finding on this head retires the approval of it.
+
+        Measured on ignite-corp/ai-dev-pr-review#196, 2026-10-16: with the
+        killswitch on, a request_changes round folded both approvals; with
+        it off, only the superseded one, because the off path keyed its
+        fold on the approve-only withhold.
+        """
+        _, issued, _ = _post_verdict_over(
+            monkeypatch,
+            [self._SAME, self._OLD],
+            "request_changes",
+            comment_only=comment_only,
         )
         assert issued == [*self._OLD_FOLDED, *self._SAME_FOLDED]
 
