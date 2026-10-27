@@ -898,8 +898,8 @@ jobs:
       # step, so the verdict is recorded on that path too.
       #
       # The same net claude has, for the same reason (the note above 'Emit
-      # Claude error verdict'): a failed verdict reaches the aggregate,
-      # which names gemini on the headline and in the roster. Not
+      # Claude error verdict (no verdict file)'): a failed verdict reaches
+      # the aggregate, which names gemini on the headline and in the roster. Not
       # continue-on-error: if we cannot even record the failure, the job
       # must not report success. A step killed mid-write leaves a non-empty
       # file that is not JSON, which the aggregate would drop as malformed
