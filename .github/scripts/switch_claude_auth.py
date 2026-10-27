@@ -49,6 +49,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
 _API_BASE = "https://api.github.com"
 _API_TIMEOUT_SEC = 30
@@ -88,7 +89,7 @@ def _api(
     body: dict[str, str] | None = None,
     *,
     label: str,
-) -> tuple[int, dict]:
+) -> tuple[int, dict[str, Any]]:
     """Call the GitHub REST API. Returns (status, parsed_json_or_empty).
 
     `label` is used for logging instead of `path` to keep output free of any

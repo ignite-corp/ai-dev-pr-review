@@ -81,6 +81,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TypeGuard
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _VERSION_RE = re.compile(r"^v(\d+)\.(\d+)(?:\.(\d+))?$")
@@ -95,6 +96,10 @@ Version = tuple[int, int, int]
 # One entry of the tags listing; values arrive from JSON, so only the keys are
 # known to be strings.
 TagEntry = Mapping[str, object]
+
+
+def _is_entry(item: object) -> TypeGuard[TagEntry]:
+    return isinstance(item, dict)
 
 
 def parse_version(tag: str) -> Version | None:
@@ -160,9 +165,8 @@ def load_entries(raw: str) -> list[TagEntry]:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         parsed = [json.loads(line) for line in text.splitlines() if line.strip()]
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    return [item for item in parsed if isinstance(item, dict)]
+    items: list[object] = [parsed] if isinstance(parsed, dict) else parsed
+    return [item for item in items if _is_entry(item)]
 
 
 def _format(version: Version) -> str:

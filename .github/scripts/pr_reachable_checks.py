@@ -22,6 +22,8 @@ from __future__ import annotations
 import glob
 import os
 import sys
+from collections.abc import Mapping
+from typing import Any, TypeGuard
 
 import yaml
 
@@ -32,13 +34,26 @@ _PR_EVENTS = {"pull_request", "pull_request_target"}
 _CALLABLE = _PR_EVENTS | {"workflow_call"}
 
 
+# A YAML mapping's keys are not all strings -- PyYAML reads a bare ``on``
+# key as True, which _classify relies on -- so the key type stays open.
+_YamlMapping = Mapping[Any, object]
+
+
+def _is_mapping(value: object) -> TypeGuard[_YamlMapping]:
+    return isinstance(value, dict)
+
+
+def _is_sequence(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
 def _event_set(on: object) -> set[str]:
     """Normalise a workflow ``on:`` trigger into a set of event names."""
     if isinstance(on, str):
         return {on}
-    if isinstance(on, list):
+    if _is_sequence(on):
         return {e for e in on if isinstance(e, str)}
-    if isinstance(on, dict):
+    if _is_mapping(on):
         return {str(k) for k in on}
     return set()
 
@@ -50,14 +65,14 @@ def job_context(job_id: object, body: object) -> str:
     conservative purpose below, so a caller that needs the single context a
     job really reports -- a required-check name, say -- must ask here.
     """
-    if isinstance(body, dict):
+    if _is_mapping(body):
         name = body.get("name")
         if isinstance(name, str):
             return name.strip()
     return str(job_id).strip()
 
 
-def _names(doc: dict) -> set[str]:
+def _names(doc: _YamlMapping) -> set[str]:
     """Collect the status-check context names a workflow can produce.
 
     Each job contributes both its id and the context it reports under, so a
@@ -70,7 +85,7 @@ def _names(doc: dict) -> set[str]:
     if isinstance(wf_name, str):
         out.add(wf_name.strip())
     jobs = doc.get("jobs")
-    if isinstance(jobs, dict):
+    if _is_mapping(jobs):
         for job_id, body in jobs.items():
             out.add(str(job_id).strip())
             out.add(job_context(job_id, body))
@@ -90,7 +105,7 @@ def _classify(wf_dir: str) -> tuple[set[str], set[str]]:
                 doc = yaml.safe_load(fh)
         except (OSError, yaml.YAMLError):
             continue
-        if not isinstance(doc, dict):
+        if not _is_mapping(doc):
             continue
         # PyYAML parses the bare key ``on`` as the boolean True (YAML 1.1).
         events = _event_set(doc.get(True, doc.get("on")))
