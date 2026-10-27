@@ -25,8 +25,8 @@ import pytest
 
 import post_inline_comments
 from post_inline_comments import (
-    _is_duplicate,
-    _normalize_body,
+    is_duplicate,
+    normalize_body,
     build_comments,
     fetch_round_count,
     post_cutoff_summary,
@@ -65,7 +65,7 @@ def _cutoff_findings(
 
 def _thread(path: str, body: str, line: int | None = None) -> dict[str, Any]:
     """Build a thread dict matching fetch_existing_threads output."""
-    return {"path": path, "line": line, "body": _normalize_body(body)}
+    return {"path": path, "line": line, "body": normalize_body(body)}
 
 
 def _issue(
@@ -83,7 +83,7 @@ def _issue(
 class TestIsDuplicate:
     def test_exact_match_dedups(self) -> None:
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert _is_duplicate(
+        assert is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,
@@ -99,7 +99,7 @@ class TestIsDuplicate:
                 line=10,
             )
         ]
-        assert _is_duplicate(
+        assert is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,
@@ -109,7 +109,7 @@ class TestIsDuplicate:
 
     def test_different_paths_no_dedup(self) -> None:
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert not _is_duplicate(
+        assert not is_duplicate(
             "b.py",
             "Missing input validation on user_id",
             existing,
@@ -120,7 +120,7 @@ class TestIsDuplicate:
         # Force-push/rebase shifts lines far beyond the window; identical
         # text (Jaccard 1.0 >= strong threshold) must dedup regardless.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert _is_duplicate(
+        assert is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,
@@ -131,7 +131,7 @@ class TestIsDuplicate:
         # Real-world case: the same finding moved from line 271 to 162
         # (delta 109) after a force-push and was reposted 8 times.
         existing = [_thread("tf/sg.tf", "Egress open to 0.0.0.0/0", line=271)]
-        assert _is_duplicate(
+        assert is_duplicate(
             "tf/sg.tf",
             "Egress open to 0.0.0.0/0",
             existing,
@@ -142,7 +142,7 @@ class TestIsDuplicate:
         # Jaccard 4/6 = 0.67 sits in the moderate band (0.6-0.8), which
         # still requires the line window -- distant lines must NOT dedup.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert not _is_duplicate(
+        assert not is_duplicate(
             "a.py",
             "Missing input validation user_id parameter",
             existing,
@@ -152,7 +152,7 @@ class TestIsDuplicate:
     def test_moderate_similarity_within_window_dedups(self) -> None:
         # Same moderate-band pair (Jaccard 0.67) within +/-5 lines dedups.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert _is_duplicate(
+        assert is_duplicate(
             "a.py",
             "Missing input validation user_id parameter",
             existing,
@@ -163,7 +163,7 @@ class TestIsDuplicate:
         # The strong-similarity path skips the line window but never the
         # path check.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert not _is_duplicate(
+        assert not is_duplicate(
             "b.py",
             "Missing input validation on user_id",
             existing,
@@ -173,7 +173,7 @@ class TestIsDuplicate:
     def test_empty_tokens_no_dedup(self) -> None:
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
         # Body that normalises to no tokens must not dedup.
-        assert not _is_duplicate("a.py", "   ", existing, line=10)
+        assert not is_duplicate("a.py", "   ", existing, line=10)
 
     def test_resolved_thread_still_dedups(self) -> None:
         # Threads are passed in with no isResolved field at this layer --
@@ -181,7 +181,7 @@ class TestIsDuplicate:
         # This guards against regressions where the caller starts filtering
         # by status before passing in.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert _is_duplicate(
+        assert is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,
@@ -191,7 +191,7 @@ class TestIsDuplicate:
     def test_no_line_param_backward_compat(self) -> None:
         # Old callers that don't pass `line` still get content-based dedup.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert _is_duplicate(
+        assert is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,
@@ -200,12 +200,12 @@ class TestIsDuplicate:
     def test_none_description_does_not_raise(self) -> None:
         # An issue payload with description=None must not crash dedup.
         existing = [_thread("a.py", "Missing input validation on user_id", line=10)]
-        assert not _is_duplicate("a.py", None, existing, line=10)
+        assert not is_duplicate("a.py", None, existing, line=10)
 
     def test_none_thread_body_does_not_raise(self) -> None:
         # A thread fetched with body=None (explicit null) must not crash dedup.
         existing = [{"path": "a.py", "line": 10, "body": None}]
-        assert not _is_duplicate(
+        assert not is_duplicate(
             "a.py",
             "Missing input validation on user_id",
             existing,

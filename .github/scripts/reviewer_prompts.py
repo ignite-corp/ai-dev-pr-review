@@ -27,6 +27,8 @@ import json
 import sys
 from typing import Any
 
+from github_pr_support import is_json_array, is_json_object
+
 # Cap the thread list and each body so the prompt stays within the
 # $GITHUB_ENV limit the YAML step writes through; review_gemini.py caps
 # the same two numbers for the same reason.
@@ -120,7 +122,7 @@ def _truncate(threads: list[Any]) -> str:
     """
     capped: list[Any] = []
     for thread in threads[:MAX_EXISTING_THREADS]:
-        body = thread.get("body") if isinstance(thread, dict) else None
+        body = thread.get("body") if is_json_object(thread) else None
         if isinstance(body, str) and len(body) > MAX_THREAD_BODY_CHARS:
             thread = {**thread, "body": body[:MAX_THREAD_BODY_CHARS] + "..."}
         capped.append(thread)
@@ -154,7 +156,7 @@ def existing_threads_block(thread_count: str, existing_comments: str) -> str:
             file=sys.stderr,
         )
         return ""
-    if not isinstance(threads, list):
+    if not is_json_array(threads):
         print(
             "WARNING: existing-thread data is not a list; the prompt will"
             " carry no prior threads",

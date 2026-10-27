@@ -22,6 +22,8 @@ from github_pr_support import (
     fetch_paginated_nodes,
     normalize_bot_login,
     inline_post_envelope,
+    is_json_array,
+    object_field,
 )
 
 BODY_TRUNCATE_LEN = 500
@@ -95,7 +97,7 @@ def _trusted_bot_authors() -> set[str]:
 
 
 def _is_bot_author(comment: dict[str, Any], trusted: set[str]) -> bool:
-    login = (comment.get("author") or {}).get("login", "")
+    login = object_field(comment, "author").get("login", "")
     return bool(login) and normalize_bot_login(login) in trusted
 
 
@@ -161,9 +163,9 @@ def _format_prior_threads(repo: str, pr_number: str) -> str:
         # is rejected to limit prompt-injection surface via a crafted
         # "Ignore prior instructions..." reply.
         responses = [
-            # `or {}`: a deleted account is `author: null`, which .get's
-            # default does not replace.
-            f"[{(c.get('author') or {}).get('login', '')}] {_sanitize(c.get('body', ''))}"
+            # object_field: a deleted account is `author: null`, which
+            # .get's default does not replace.
+            f"[{object_field(c, 'author').get('login', '')}] {_sanitize(c.get('body', ''))}"
             for c in comments[1:]
             if _is_trusted_reply(c, trusted)
         ]
@@ -206,7 +208,7 @@ def _format_bydesign_comments(repo: str, pr_number: str) -> str:
     while pos < len(raw):
         try:
             obj, end = decoder.raw_decode(raw, pos)
-            if isinstance(obj, list):
+            if is_json_array(obj):
                 comments.extend(obj)
             pos = end
             while pos < len(raw) and raw[pos] in " \t\n\r":
@@ -222,7 +224,7 @@ def _format_bydesign_comments(repo: str, pr_number: str) -> str:
         body = comment.get("body", "")
         if not _QUOTE_RE.search(body) or not _BYDESIGN_RE.search(body):
             continue
-        author = (comment.get("user") or {}).get("login", "")
+        author = object_field(comment, "user").get("login", "")
         body = _sanitize(body)
         lines.append("<prior-comment>")
         lines.append(f"<body>{body}</body>")
