@@ -1894,7 +1894,7 @@ def _fold_prior_round_items(pr_number: str, repo: str, *, head_sha: str) -> list
     _is_prior_round); who wrote it is not read. The marker is this
     pipeline's own HTML comment, and the
     verdicts that carry it are posted under whichever identity a path has
-    -- github-actions[bot], the reviewer App for an approval, the operator's
+    -- github-actions[bot], the reviewer App for a review, the operator's
     own login on the local driver (review_pr_local.py) -- so any author
     filter folds one path's history and leaves another's standing. Folding
     is housekeeping, not trust: a consumer's merge gate decides whether to
@@ -2114,6 +2114,20 @@ def _post_withheld_verdict(
         _dismiss_replaced_approvals(standing)
 
 
+def _submit_review(
+    args: list[str], comment: str, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run one `gh pr review` call; TimeoutExpired propagates to the caller."""
+    return subprocess.run(
+        args,
+        input=comment,
+        capture_output=True,
+        text=True,
+        timeout=GH_TIMEOUT_SEC,
+        env=env,
+    )
+
+
 def post_verdict(
     comment: str,
     verdict: str,
@@ -2178,13 +2192,16 @@ def post_verdict(
         if repo:
             base_args += ["--repo", repo]
         flag = "--approve" if verdict == "approve" else "--request-changes"
-        # github-actions[bot] is forbidden from approving PRs. When a dedicated
-        # reviewer App token is provided, use it ONLY for the approve call so a
-        # real APPROVED review is posted. All other gh calls keep the default
-        # GH_TOKEN. Missing/empty token falls through to the existing behavior.
+        # When a dedicated reviewer App token is provided, the App posts every
+        # formal verdict, approve and request_changes alike, so one identity
+        # carries both on a repository with the App (AT-2597).
+        # github-actions[bot] cannot approve, which is why the App exists.
+        # Only this review call uses it; fold, dismiss and comment calls keep
+        # GH_TOKEN. A missing or empty token falls back to GH_TOKEN, which
+        # repositories without the App rely on.
         review_env = os.environ.copy()
         reviewer_token = os.environ.get("REVIEWER_TOKEN", "").strip()
-        if verdict == "approve" and reviewer_token:
+        if reviewer_token:
             review_env["GH_TOKEN"] = reviewer_token
         elif verdict == "approve":
             # The mint step is skipped or continue-on-error, so an absent
@@ -2197,15 +2214,38 @@ def post_verdict(
                 f" as a comment marked '{_REASON_REVIEW_FAILED}'",
                 file=sys.stderr,
             )
-        try:
-            result = subprocess.run(
-                base_args + [flag],
-                input=comment,
-                capture_output=True,
-                text=True,
-                timeout=GH_TIMEOUT_SEC,
-                env=review_env,
+        else:
+            # GH_TOKEN may request changes, so only the identity differs.
+            print(
+                "::notice::No reviewer App token; request_changes will be"
+                " attempted under GH_TOKEN, not the reviewer App identity",
+                file=sys.stderr,
             )
+        try:
+            result = _submit_review(base_args + [flag], comment, review_env)
+            # gh reads GH_TOKEN, then GITHUB_TOKEN; the retry runs under that.
+            ambient_token = (
+                os.environ.get("GH_TOKEN", "").strip()
+                or os.environ.get("GITHUB_TOKEN", "").strip()
+            )
+            if (
+                result.returncode != 0
+                and reviewer_token
+                and reviewer_token != ambient_token
+                and verdict != "approve"
+            ):
+                # A bad or expired App token must not cost a blocking
+                # review that GH_TOKEN can post. Approve gains nothing from
+                # this: github-actions[bot] cannot approve. A cross run sets
+                # both to the target's App token, where a retry would only
+                # repeat the same call under the same identity.
+                print(
+                    "::warning::Post review under the reviewer App token"
+                    " failed, retrying under GH_TOKEN: "
+                    + _annotation_value(result.stderr),
+                    file=sys.stderr,
+                )
+                result = _submit_review(base_args + [flag], comment, os.environ.copy())
         except subprocess.TimeoutExpired:
             print(
                 "::warning::Post review timed out, falling back to comment",

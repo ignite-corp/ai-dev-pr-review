@@ -382,8 +382,9 @@ jobs:
 
       # Optional dedicated reviewer App token. github-actions[bot] cannot post
       # an APPROVED review, so when REVIEWER_APP_ID is configured we mint an App
-      # installation token and hand it to the aggregate script for the approve
-      # call only. Cross runs already have a required target-scoped App token;
+      # installation token and hand it to the aggregate script, which posts
+      # every formal review verdict (approve and request_changes) under it
+      # (AT-2597). Cross runs already have a required target-scoped App token;
       # never mint a second, caller-scoped approving token for those runs.
       # Skipped entirely when the var is unset (backward compatible).
       #

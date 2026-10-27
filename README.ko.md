@@ -43,7 +43,7 @@ Actions·로컬·cross-repo 경로 사이의 경계는 [`docs/tasks/AT-2564/desi
 | `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
-| `REVIEWER_APP_PRIVATE_KEY` | 아니오 | 취합 승인 | 전용 리뷰어 GitHub App의 프라이빗 키. `REVIEWER_APP_ID` 변수와 함께 설정하면 `approve` 판정 시 실제 APPROVED 리뷰가 게시됨. 미설정 시(또는 변수 미설정 시) `approve`는 일반 코멘트로 게시됨 — 현재 기본 동작. |
+| `REVIEWER_APP_PRIVATE_KEY` | 아니오 | 취합 승인 | 전용 리뷰어 GitHub App의 프라이빗 키. `REVIEWER_APP_ID` 변수와 함께 설정하면 `approve` 판정 시 실제 APPROVED 리뷰가 게시되고, AT-2597 을 포함한 첫 릴리스부터(해당 릴리스 노트 참고) `request_changes` 리뷰도 같은 App 신원으로 게시됨. 단, App 의 `request_changes` 게시가 거부되면 기본 토큰으로 재시도되어 `github-actions[bot]` 신원으로 게시되므로, 게이트는 두 로그인을 모두 받아야 함. 기본 토큰이 곧 App 토큰인 경우(cross-repo 런)에는 재시도하지 않고, 판정이 `Intended verdict` 주석이 붙은 이슈 코멘트로 폴백됨. 미설정 시(또는 변수 미설정 시) `approve`는 일반 코멘트로 게시되고(현재 기본 동작), `request_changes` 리뷰는 `github-actions[bot]` 신원으로 게시됨. |
 
 ### Claude 리뷰어 인증: OAuth 토큰 vs API 키
 
@@ -418,7 +418,7 @@ dist/**
 | `ALLOW_AUTO_APPROVE` 꺼짐(기본값), 모든 판정 | 이슈 코멘트. `approve`나 `request_changes` 헤드라인에 `posted as comment (auto-approve off)`가 붙음 | `github-actions[bot]` |
 | 켜짐, `approve`, 리뷰어 App 토큰 있음 | 리뷰, `APPROVED` | 리뷰어 App의 봇 계정 |
 | 켜짐, `approve`, 리뷰어 App 토큰 없음(민트 스텝이 건너뛰어졌거나 실패) | `GITHUB_TOKEN`으로 리뷰를 시도하고, 실행 로그에 `::notice::No reviewer App token` 줄을 남김. GitHub는 레포가 Actions의 PR 승인을 허용할 때만 이를 받아들이며(이 README는 그 설정을 꺼 두라고 안내함), 그렇지 않으면 `review API failed` 행으로 끝남 | `github-actions[bot]` |
-| 켜짐, `request_changes`(prepare 실패와 크기 스킵 판정 포함) | 리뷰, `CHANGES_REQUESTED` | `github-actions[bot]`. 리뷰어 App 토큰은 `approve`에만 쓰임 |
+| 켜짐, `request_changes`(prepare 실패와 크기 스킵 판정 포함) | 리뷰, `CHANGES_REQUESTED` | AT-2597 을 포함한 첫 릴리스부터(해당 릴리스 노트 참고), 리뷰어 App 토큰이 있으면 리뷰어 App의 봇 계정. 그 게시가 실패하면 기본 토큰(`GITHUB_TOKEN`)으로 한 번 재시도되어 `github-actions[bot]`으로 게시되므로, 게이트는 두 로그인을 모두 받아야 함. 리뷰어 App 토큰이 없으면 `github-actions[bot]`이며, 실행 로그에 `::notice::No reviewer App token` 줄을 남김. 그 이전 릴리스는 알림 없이 `github-actions[bot]`으로 게시함 |
 | 켜짐, `approve` 보류(응답하지 않은 리뷰어가 있거나, 리뷰되지 않은 major가 있음) | `> [!] Auto-approve withheld, posted as comment: <reason>.`로 끝나는 이슈 코멘트 | `github-actions[bot]` |
 | `comment` 판정(정책 스킵 판정 포함) | 이슈 코멘트, 주석 없음 | `github-actions[bot]` |
 | 리뷰 호출 실패 | `> [!] Intended verdict: **<verdict>** (review API failed, posted as comment)`로 끝나는 이슈 코멘트, 실행 로그에 `::warning::` | `github-actions[bot]` |

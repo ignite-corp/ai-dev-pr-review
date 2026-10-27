@@ -122,15 +122,19 @@ def test_review_fallback_is_a_warning(
 
 
 def test_multiline_review_error_stays_inside_one_annotation(
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A workflow command ends at the first newline; gh's error text has
     # several, so an unescaped one would strand the rest as bare log lines.
+    # An approve under the App token emits no notice and is not retried,
+    # so the fallback warning is the only line.
+    monkeypatch.setenv("REVIEWER_TOKEN", "app-token")
+
     def fail_multiline(*_args: Any, **_kwargs: Any) -> Any:
         stderr = "HTTP 422: Unprocessable\nValidation failed\n"
         return type("R", (), {"returncode": 1, "stderr": stderr, "stdout": ""})()
 
-    _post("request_changes", fail_multiline)
+    _post("approve", fail_multiline)
     lines = capsys.readouterr().err.splitlines()
     assert len(lines) == 1
     assert lines[0].startswith("::warning::Post review failed, falling back to")
@@ -145,12 +149,15 @@ def test_approve_with_app_token_emits_no_annotation(
     assert _annotations(capsys.readouterr().err) == []
 
 
-def test_request_changes_without_app_token_emits_no_annotation(
+def test_request_changes_without_app_token_is_a_notice(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # request_changes never uses the App identity, so nothing falls back.
+    # request_changes uses the App identity when present, so its absence is
+    # noted the same way as for approve.
     _post("request_changes", _ok)
-    assert _annotations(capsys.readouterr().err) == []
+    notes = _annotations(capsys.readouterr().err)
+    assert len(notes) == 1
+    assert notes[0].startswith("::notice::")
 
 
 def test_comment_only_approve_without_app_token_emits_no_annotation(
