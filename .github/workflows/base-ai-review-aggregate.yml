@@ -486,6 +486,10 @@ jobs:
           # Killswitch: set repo var ALLOW_AUTO_APPROVE=true to enable auto-approve.
           # Default false -- operators can flip without editing workflow YAML.
           ALLOW_AUTO_APPROVE: ${{ vars.ALLOW_AUTO_APPROVE || 'false' }}
+          # Merge block: set BLOCK_MERGE_ON_VERDICT=true (org var, a repo var
+          # overrides it) to fail this job, after the verdict is posted, on
+          # Changes Requested or an approval withheld (AT-3114). Default false.
+          BLOCK_MERGE_ON_VERDICT: ${{ vars.BLOCK_MERGE_ON_VERDICT || 'false' }}
         run: |
           export GITHUB_REPOSITORY="${LENS_TARGET_REPOSITORY:?missing resolved target repository}"
           python .ai-dev-pr-review/.github/scripts/aggregate_reviews.py
