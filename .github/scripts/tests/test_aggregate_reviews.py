@@ -1966,21 +1966,30 @@ def _unguarded_destructive_commands(text: str) -> list[str]:
 
     Arguments stop at the next shell separator, so a marker belonging
     to a neighbour cannot vouch for a command that has none. The
-    shapes it is known to handle -- caught and not-flagged alike --
-    are the parametrized cases of TestTheDestructiveCommandScan; the
-    KNOWN LIMITS below are the shapes outside that catalogue.
+    shapes whose outcome is known -- right and wrong alike -- are the
+    parametrized cases of TestTheDestructiveCommandScan; the KNOWN
+    LIMITS below are the ones it gets wrong. `find -exec rm` and
+    `xargs rm` are not among them: the catalogue holds both caught and
+    guarded. Nor is `eval` or `sh -c` as such: `eval rm -rf $x` is
+    caught. What the scan misses is a command word right after a quote,
+    or one replaced by a variable -- see SILENT.
 
-    KNOWN LIMITS. Each below was established by running the scan, and
-    they are sorted by the direction they fail in. The list is not
-    exhaustive, and absence from it is not a clearance: run an
+    KNOWN LIMITS. They are sorted by the direction they fail in, and
+    each is re-asserted on every run: SILENT by
+    test_the_scan_still_misses_these_known_shapes, NOISY by
+    test_the_scan_still_reports_these_known_false_positives. The list
+    is not exhaustive, and absence from it is not a clearance: run an
     uncatalogued shape against the scan rather than assuming the scan
     handles it.
 
-    SILENT -- a real call goes unreported: one reached through `eval`
-    or a variable (`$CMD -rf "$x"`), and one standing after a
-    whitespace-preceded `#` in a string, which blanks the rest of the
-    line (`echo "a # b"; rm -rf "$x"` yields nothing). Tolerated rather
-    than chased: the scan is a backstop, and require_verdict_name
+    SILENT -- a real call goes unreported, for three separate causes.
+    A command word right after a quote: the separator class has no
+    `'` or `"`, so `eval "rm -rf $x"` and
+    `find . -exec sh -c 'rm -rf "$1"' _ {} \\;` yield nothing. A
+    command word replaced by a variable (`$CMD -rf "$x"`). And one
+    standing after a whitespace-preceded `#` in a string, which blanks
+    the rest of the line (`echo "a # b"; rm -rf "$x"`). Tolerated
+    rather than chased: the scan is a backstop, and require_verdict_name
     refuses a bad name before any destructive call runs.
 
     NOISY -- the suite goes red with no unguarded call in the script.
@@ -3400,10 +3409,11 @@ class TestTheDestructiveCommandScan:
     whole script on a machine that lacks jq, and say only "skipped".
 
     The parametrized cases below are the catalogue the helper's
-    docstring points here for: the shapes the scan must catch, and the
-    ones it must not flag. They run on every suite execution, so a
-    shape listed here is one the scan is known to handle and not one it
-    is merely meant to.
+    docstring points here for: the shapes the scan must catch, the
+    ones it must not flag, and its KNOWN LIMITS in both directions --
+    the real calls it misses and the harmless lines it flags. They run
+    on every suite execution, so a shape listed here is one whose
+    outcome is known, not merely intended.
     """
 
     @pytest.mark.parametrize(
@@ -3420,6 +3430,9 @@ class TestTheDestructiveCommandScan:
             '[ "$x" = "#" ] && rm -rf "$x"',
             'rm -rf \\\n    "$name"',
             'rm -rf -- "$x"  # note \\\n    rm -rf "$y"',
+            "find . -exec rm -rf {} \\;",
+            "find . -print0 | xargs -0 rm -rf",
+            "eval rm -rf $x",
         ],
         ids=[
             "bare-rm",
@@ -3433,10 +3446,71 @@ class TestTheDestructiveCommandScan:
             "after-a-quoted-hash-in-a-test",
             "split-over-a-line-continuation",
             "after-a-comment-ending-in-a-backslash",
+            "reached-through-find-exec",
+            "reached-through-xargs",
+            "reached-through-an-unquoted-eval",
         ],
     )
     def test_the_scan_catches_an_unguarded_command(self, line: str) -> None:
         assert _unguarded_destructive_commands(line)
+
+    @pytest.mark.parametrize(
+        ("line", "offenders"),
+        [
+            ('rm -rf "a;b" -- "$x"', ['1: rm -rf "a']),
+            ('rm -rf "a|b" -- "$x"', ['1: rm -rf "a']),
+            ("cat <<EOF\nrm -rf x\nEOF", ["2: rm -rf x"]),
+            ('echo "will rm -rf the file"', ['1: rm -rf the file"']),
+            ('echo "will mv the file"', ['1: mv the file"']),
+            ('echo "::notice::could not rm -rf $x"', ['1: rm -rf $x"']),
+        ],
+        ids=[
+            "a-semicolon-inside-an-operand",
+            "a-pipe-inside-an-operand",
+            "a-here-doc-body",
+            "a-command-word-inside-a-string",
+            "a-mv-command-word-inside-a-string",
+            "a-command-word-after-a-notice-prefix",
+        ],
+    )
+    def test_the_scan_still_reports_these_known_false_positives(
+        self, line: str, offenders: list[str]
+    ) -> None:
+        """Pins the NOISY limits in the helper's docstring; it does not bless them.
+
+        None of these lines runs an unguarded command, and a better scan
+        would pass them. They are asserted so the documented direction is
+        re-checked on every run rather than measured once: when one goes
+        red, the scan has changed, and the KNOWN LIMITS entry for it must
+        change with this case in the same commit. The exact offender is
+        asserted, not just its presence, so a different artefact on the
+        same line cannot keep a stale entry green.
+        """
+        assert _unguarded_destructive_commands(line) == offenders
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            '$CMD -rf "$x"',
+            'eval "rm -rf $x"',
+            "find . -exec sh -c 'rm -rf \"$1\"' _ {} \\;",
+            'echo "a # b"; rm -rf "$x"',
+        ],
+        ids=[
+            "a-command-word-replaced-by-a-variable",
+            "a-command-word-after-a-quote-in-eval",
+            "a-command-word-after-a-quote-in-sh-c",
+            "after-a-spaced-hash-in-a-string",
+        ],
+    )
+    def test_the_scan_still_misses_these_known_shapes(self, line: str) -> None:
+        """Pins the SILENT limits in the helper's docstring; it does not bless them.
+
+        Each line runs an unguarded command the scan does not report. When
+        one goes red, the scan has learned the shape, and its KNOWN LIMITS
+        entry must go in the same commit.
+        """
+        assert not _unguarded_destructive_commands(line)
 
     @pytest.mark.parametrize(
         "line",
@@ -3449,6 +3523,8 @@ class TestTheDestructiveCommandScan:
             'rm -rf -- "$name"  # rm -rf without a marker, in prose',
             'rm -rf -- "${name#./}"',
             'rm -rf -- \\\n    "$name"',
+            "find . -exec rm -rf -- {} \\;",
+            "find . -print0 | xargs -0 rm -rf --",
         ],
         ids=[
             "guarded-rm",
@@ -3459,6 +3535,8 @@ class TestTheDestructiveCommandScan:
             "prose-after-the-code",
             "a-hash-inside-an-expansion",
             "guarded-over-a-line-continuation",
+            "guarded-through-find-exec",
+            "guarded-through-xargs",
         ],
     )
     def test_the_scan_does_not_cry_wolf(self, line: str) -> None:
