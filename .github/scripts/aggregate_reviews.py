@@ -117,6 +117,17 @@ def _is_comment_only() -> bool:
     return os.environ.get("ALLOW_AUTO_APPROVE", "false").lower() != "true"
 
 
+def _blocks_merge_on_verdict() -> bool:
+    """BLOCK_MERGE_ON_VERDICT: fail the job on a verdict that does not pass (AT-3114).
+
+    Separate from ALLOW_AUTO_APPROVE, which decides what is posted; this
+    decides only the job's conclusion, so a repository that keeps
+    approvals off can still make the verdict a required check. Off unless
+    exactly "true" (any case), like the killswitch.
+    """
+    return os.environ.get("BLOCK_MERGE_ON_VERDICT", "false").lower() == "true"
+
+
 _PR_AUTHOR = os.environ.get("PR_AUTHOR", "")
 
 
@@ -2604,8 +2615,53 @@ def _post_recorded_verdict(
     result["posted"] = posted is True and comment.startswith(REVIEW_MARKER)
 
 
-# 53 statements, none of them this branch's: the gate PLR0915 is being
-# switched on here catches a function AT-2553 and AT-3023 grew. Splitting
+def _exit_if_verdict_blocks_merge(
+    verdict: str,
+    approve_quorum: bool,
+    unreviewed_majors: int,
+    *,
+    posted: bool,
+    sequential_bypass: bool,
+) -> None:
+    """Fail the job on a verdict that does not pass, when BLOCK_MERGE_ON_VERDICT is on.
+
+    Called after the post, never before it: the red check's explanation is
+    the verdict on the PR (AT-1975's "block visibly"). The withhold is the
+    one post_verdict computed from the same three values, so the job fails
+    exactly when the headline shows [!] Approved or Changes Requested -- with
+    one exception: a sequential early exit is sub-quorum by design
+    (``sequential_bypass``, which the sub-quorum exit already lets through),
+    so its short roster is not a withhold this acts on; its majors still are.
+    A post that did not land (review timed out, fallback comment failed)
+    still fails -- the verdict still does not pass -- but the annotation
+    then says so instead of pointing at a comment that is not there.
+    """
+    if not _blocks_merge_on_verdict():
+        return
+    quorum = approve_quorum or sequential_bypass
+    if (
+        verdict != "request_changes"
+        and _approval_withhold(verdict, quorum, unreviewed_majors) is None
+    ):
+        return
+    where = (
+        "see the verdict comment"
+        if posted
+        else "the verdict was not posted to the PR; see this run's log"
+    )
+    print(
+        "::error title=Aggregate::BLOCK_MERGE_ON_VERDICT is on and the"
+        f" verdict does not pass ({verdict}"
+        f"{', approval withheld' if verdict == 'approve' else ''}) --"
+        f" failing the check so it blocks the merge; {where}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+# 54 statements: the gate PLR0915 is being switched on here catches a
+# function AT-2553 and AT-3023 grew, and AT-3114 added the merge-block call
+# (its body is _exit_if_verdict_blocks_merge). Splitting
 # it belongs with a change to this module, as for format_summary above
 # (AT-2420).
 def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
@@ -2828,6 +2884,16 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
     if len(available) < MIN_REVIEWERS_FOR_VERDICT and not sequential_bypass:
         print("ERROR: Insufficient LLM responses -- failing CI", file=sys.stderr)
         sys.exit(1)
+
+    # After the sub-quorum exit, which already fails with the more specific
+    # message.
+    _exit_if_verdict_blocks_merge(
+        verdict,
+        approve_quorum,
+        unreviewed_majors,
+        posted=result["posted"],
+        sequential_bypass=sequential_bypass,
+    )
 
 
 def main() -> None:

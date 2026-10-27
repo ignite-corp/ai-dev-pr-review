@@ -23,6 +23,14 @@
 # repo-level var ALLOW_AUTO_APPROVE=false to override it. This repo is the
 # review tool itself; letting the pipeline approve its own PRs would defeat
 # review integrity, so verdicts here are posted as plain comments only.
+#
+# Merge block: the org var BLOCK_MERGE_ON_VERDICT is `false`, and a repo-level
+# var overrides it the same way. When it is `true`, the aggregate job fails on
+# Changes Requested or a withheld approval, after posting the verdict, so the
+# verdict blocks a merge wherever `Aggregate & Verdict` is a required check --
+# without the pipeline ever approving its own PRs (AT-3114). Like the scripts
+# above, the aggregate's handling of it reaches this workflow only once a
+# release tag carries it.
 name: AI Code Review (self)
 
 on:
