@@ -45,6 +45,7 @@ jobs:
           app-id: ${{ vars.REVIEWER_APP_ID }}
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
           owner: ignite-corp
+          repositories: ai-dev-pr-review
 
       - name: Restore Claude auth if due
         env:

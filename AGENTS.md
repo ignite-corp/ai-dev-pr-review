@@ -98,15 +98,20 @@ like something else.
   of this file.
 
 **Review pipeline -- `ignite-ai-review-approver` (app_id=4196135).**
-- Used by `base-ai-review-aggregate.yml` (submit a real APPROVED review),
-  `base-ai-review-single.yml` and `claude-auth-restore.yml` (flip the
-  ignite-corp Claude auth org vars).
-  `base-ai-review-orchestrator.yml` forwards its key to the `review-claude-p`,
-  `review-claude-s` and `aggregate` jobs, and `self-review.yml` forwards it
-  into the orchestrator.
-- Credentials are a var/secret pair, not two secrets: org var `REVIEWER_APP_ID`
-  (visibility=all) plus org secret `REVIEWER_APP_PRIVATE_KEY`
-  (visibility=selected, with this repo on the selected list).
+- Used by `base-ai-review-aggregate.yml` for PR reviews, and by the Claude
+  and Codex auth-control steps in `base-ai-review-single.yml` plus the auth
+  restore workflows for ignite-corp auth org variables.
+- Org var `REVIEWER_APP_ID` (visibility=all) identifies the App; org secret
+  `REVIEWER_APP_PRIVATE_KEY` (visibility=selected, including this repo) supplies
+  its key. The orchestrator accepts an
+  optional `AUTH_APP_PRIVATE_KEY` alias for auth control, preferring it over
+  the reviewer key and forwarding it only to Claude/Codex jobs in both modes.
+  Prepare and aggregate receive only the reviewer key, preserving target
+  reporting and approval behavior. A same-repository caller can map its
+  existing key to the auth alias alone without enabling App approval.
+- Auth-control installation tokens are scoped to the `ai-dev-pr-review`
+  repository, while the organization-variable permission remains org-wide.
+  Raw keys are action inputs, not reviewer model environment variables.
 - Installed on **both ignite-corp and ignite-pilot-org**. This bullet gives the
   permissions the cross-org question turns on, not the full grant: it holds
   `pull_requests: write` on each, so it is the only one of the two that can act

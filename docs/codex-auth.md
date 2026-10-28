@@ -27,11 +27,29 @@ not combine subscription quotas, rotate identities, or switch models.
      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
    ```
 
-4. Forward the reviewer App private key and configure the existing reviewer App
-   ID when central persistent switching is needed. Its installation must read and
-   write Actions organization variables in `ignite-corp`. The auth step reads
-   these centrally with the App token; it does not read caller-scoped `vars` and
-   assume they belong to the base organization.
+4. For central persistent switching, forward an auth-only key and configure
+   the existing `REVIEWER_APP_ID` variable. The same existing App installation
+   must read and write Actions organization variables in `ignite-corp`:
+
+   ```yaml
+   secrets:
+     AUTH_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+   ```
+
+   This is a reusable-workflow secret alias, not a new App or stored secret.
+   Auth prefers `AUTH_APP_PRIVATE_KEY`, falling back to `REVIEWER_APP_PRIVATE_KEY`
+   for existing callers. Both Claude and Codex use this choice. The auth token
+   is restricted to the `ai-dev-pr-review` repository; its organization-variable
+   grant remains organization-wide. The auth step reads state centrally rather
+   than assuming caller-scoped `vars` belong to the base organization.
+
+   For same-repository callers that need auth control without App approval,
+   pass only `AUTH_APP_PRIVATE_KEY` and omit `REVIEWER_APP_PRIVATE_KEY`. The auth
+   alias never reaches prepare or aggregate and cannot supply an aggregate App
+   approval token, regardless of `ALLOW_AUTO_APPROVE`. This does not change the
+   caller's approval policy or disable posting with its existing `GITHUB_TOKEN`.
+   Cross-repository reporting still requires `REVIEWER_APP_PRIVATE_KEY` for the
+   target token; the auth alias is not a replacement for that credential.
 
 Feature YAML and its trusted helper must come from a compatible release. The base
 repository's self-review executes new workflow YAML against released scripts.

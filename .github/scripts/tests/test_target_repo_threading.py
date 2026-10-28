@@ -314,11 +314,11 @@ class TestDefaultIsTodaysBehaviour:
         # workspace the reviewers walk (round 6).
         assert helpers[0]["with"]["persist-credentials"] is False
 
-    def test_auth_switch_mint_is_untouched(self) -> None:
+    def test_auth_switch_mint_stays_on_corp_control_repository(self) -> None:
         mint = _step(SINGLE, "Mint corp App token (auth switch)")
         assert mint["uses"] == AUTH_SWITCH_PIN
         assert mint["with"]["owner"] == "ignite-corp"
-        assert "repositories" not in mint["with"]
+        assert mint["with"]["repositories"] == "ai-dev-pr-review"
 
 
 class TestAggregatePostingIdentity:
