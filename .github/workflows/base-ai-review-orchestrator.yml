@@ -73,6 +73,8 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
+      AUTH_APP_PRIVATE_KEY:
+        required: false
       REVIEWER_APP_PRIVATE_KEY:
         required: false
     # The aggregate declares these too, but this is the workflow consumers
@@ -166,8 +168,9 @@ jobs:
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Read only when target_repo names another repository (AT-2520).
+      # Reviewer key remains for cross-repo access and auth fallback.
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
 
   review-claude-p:
     if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
@@ -185,8 +188,9 @@ jobs:
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Needed by the claude job's usage-limit auth-switch post-step (AT-1606).
+      # Reviewer key remains for cross-repo access and auth fallback.
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
 
   # --- Sequential mode (Claude -> Codex -> Gemini) ---
   review-claude-s:
@@ -205,8 +209,9 @@ jobs:
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Needed by the claude job's usage-limit auth-switch post-step (AT-1606).
+      # Reviewer key remains for cross-repo access and auth fallback.
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
 
   # Sequential gating (AT-2125). Each downstream reviewer job:
   #   - `!cancelled()` rather than the implicit success(): a reviewer that
@@ -255,8 +260,9 @@ jobs:
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Read only when target_repo names another repository (AT-2520).
+      # Reviewer key remains for cross-repo access and auth fallback.
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
 
   # Same shape as review-codex-s above, one clause per upstream reviewer.
   # Until AT-2125 the claude clause was `result == 'success'`, so a failed

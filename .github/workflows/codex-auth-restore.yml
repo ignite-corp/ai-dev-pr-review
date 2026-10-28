@@ -34,6 +34,7 @@ jobs:
           app-id: ${{ vars.REVIEWER_APP_ID }}
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
           owner: ignite-corp
+          repositories: ai-dev-pr-review
 
       # Unlike Claude's best-effort restore helper, Codex control-plane
       # failures intentionally exit nonzero so the scheduled run is red.

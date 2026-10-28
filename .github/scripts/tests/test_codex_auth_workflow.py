@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -18,6 +20,7 @@ from aggregate_reviews import (
     _failed_status_detail,
     _payload_failure_reason,
     format_summary,
+    post_verdict,
 )
 from review_status import stamp_model_status
 
@@ -557,3 +560,206 @@ def test_only_completed_agent_messages_can_recover_a_nonfinal_verdict(
     assert (tmp_path / "attempt-count").read_text() == (
         "2" if scenario == "retry-agent-leak" else "1"
     )
+
+
+# Resolve only the secret expressions used by these call boundaries. Unknown
+# syntax fails rather than silently pretending it forwards an empty credential.
+def _secret_value(expression: str, supplied: dict[str, str]) -> str:
+    match = re.fullmatch(
+        r"\$\{\{ (secrets\.[A-Z_]+(?: \|\| secrets\.[A-Z_]+)*) \}\}", expression
+    )
+    assert match, expression
+    return next(
+        (
+            supplied.get(name.removeprefix("secrets."), "")
+            for name in match[1].split(" || ")
+            if supplied.get(name.removeprefix("secrets."), "")
+        ),
+        "",
+    )
+
+
+def test_auth_alias_is_confined_to_four_auth_review_jobs() -> None:
+    orchestrator = yaml.safe_load(
+        (ROOT / ".github/workflows/base-ai-review-orchestrator.yml").read_text()
+    )
+    declaration = orchestrator[True]["workflow_call"]["secrets"]
+    assert declaration["AUTH_APP_PRIVATE_KEY"]["required"] is False
+    single = yaml.safe_load(SINGLE.read_text())
+    assert (
+        single[True]["workflow_call"]["secrets"]["AUTH_APP_PRIVATE_KEY"]["required"]
+        is False
+    )
+    jobs = orchestrator["jobs"]
+    auth_jobs = {
+        "review-claude-p",
+        "review-claude-s",
+        "review-codex-p",
+        "review-codex-s",
+    }
+    assert {
+        name for name, job in jobs.items() if "AUTH_APP_PRIVATE_KEY" in json.dumps(job)
+    } == auth_jobs
+    for name in auth_jobs:
+        assert (
+            jobs[name]["secrets"]["AUTH_APP_PRIVATE_KEY"]
+            == "${{ secrets.AUTH_APP_PRIVATE_KEY }}"
+        )
+    for filename in ["base-ai-review-prepare.yml", "base-ai-review-aggregate.yml"]:
+        assert (
+            "AUTH_APP_PRIVATE_KEY"
+            not in (ROOT / ".github/workflows" / filename).read_text()
+        )
+
+
+@pytest.mark.parametrize(
+    ("supplied", "selected", "approval_present"),
+    [
+        ({}, "", False),
+        ({"AUTH_APP_PRIVATE_KEY": "auth-only"}, "auth-only", False),
+        ({"REVIEWER_APP_PRIVATE_KEY": "legacy-reviewer"}, "legacy-reviewer", True),
+        (
+            {
+                "AUTH_APP_PRIVATE_KEY": "auth-only",
+                "REVIEWER_APP_PRIVATE_KEY": "reviewer",
+            },
+            "auth-only",
+            True,
+        ),
+    ],
+)
+def test_auth_selection_and_actual_approval_presence_shell(
+    tmp_path: Path,
+    supplied: dict[str, str],
+    selected: str,
+    approval_present: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = yaml.safe_load(
+        (ROOT / ".github/workflows/base-ai-review-orchestrator.yml").read_text()
+    )
+    jobs = orchestrator["jobs"]
+    mint = _step("Mint corp App token (auth switch)")
+    assert mint["with"]["owner"] == "ignite-corp"
+    assert mint["with"]["repositories"] == "ai-dev-pr-review"
+    assert mint["with"]["app-id"] == "${{ vars.REVIEWER_APP_ID }}"
+    assert (
+        mint["uses"]
+        == "actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547"
+    )
+    assert "steps.auth_key.outputs.present == 'true'" in mint["if"]
+    check = _step("Check auth App key present (auth switch)")
+    # Match the boolean presence expression to the actual mint selection.
+    assert check["env"]["AUTH_APP_KEY_PRESENT"] == (
+        "${{ (" + mint["with"]["private-key"][4:-3] + ") != '' }}"
+    )
+    for name in [
+        "review-codex-p",
+        "review-codex-s",
+        "review-claude-p",
+        "review-claude-s",
+    ]:
+        forwarded = {
+            key: _secret_value(value, supplied)
+            for key, value in jobs[name]["secrets"].items()
+        }
+        key = _secret_value(mint["with"]["private-key"], forwarded)
+        assert key == selected
+        output = tmp_path / (name + ".out")
+        result = subprocess.run(
+            ["bash", "-e", "-c", check["run"]],
+            env={
+                "GITHUB_OUTPUT": str(output),
+                "AUTH_APP_KEY_PRESENT": str(bool(key)).lower(),
+            },
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert output.read_text() == f"present={str(bool(selected)).lower()}\n"
+    # Exercise the unchanged aggregate check with secrets as actually forwarded.
+    # The reviewer-only and dual-key cases are positive controls: approval
+    # identity is still available where the caller explicitly supplied it.
+    aggregate = yaml.safe_load(
+        (ROOT / ".github/workflows/base-ai-review-aggregate.yml").read_text()
+    )
+    aggregate_steps = aggregate["jobs"]["aggregate"]["steps"]
+    approval_check = next(
+        step for step in aggregate_steps if step.get("id") == "reviewer_key"
+    )
+    forwarded = {
+        key: _secret_value(value, supplied)
+        for key, value in jobs["aggregate"]["secrets"].items()
+    }
+    env = {
+        key: _secret_value(value, forwarded)
+        for key, value in approval_check["env"].items()
+    }
+    output = tmp_path / "approval.out"
+    result = subprocess.run(
+        ["bash", "-e", "-c", approval_check["run"]],
+        env={**env, "GITHUB_OUTPUT": str(output), "ALLOW_AUTO_APPROVE": "true"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == f"present={str(approval_present).lower()}\n"
+    approval_mint = next(
+        step for step in aggregate_steps if step.get("id") == "reviewer_token"
+    )
+    assert "steps.reviewer_key.outputs.present == 'true'" in approval_mint["if"]
+    assert _secret_value(
+        approval_mint["with"]["private-key"], forwarded
+    ) == supplied.get("REVIEWER_APP_PRIVATE_KEY", "")
+
+    aggregate_run = next(
+        step
+        for step in aggregate_steps
+        if step.get("name") == "Aggregate and post verdict"
+    )
+    assert aggregate_run["env"]["REVIEWER_TOKEN"] == (
+        "${{ steps.target_token.outputs.token || steps.reviewer_token.outputs.token }}"
+    )
+    # Execute the real posting function. An auth-only caller adds no App
+    # identity, but its default token retains exactly its existing privileges.
+    monkeypatch.setenv("PR_NUMBER", "42")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/caller")
+    monkeypatch.setenv("GH_TOKEN", "existing-default-token")
+    monkeypatch.setenv("ALLOW_AUTO_APPROVE", "true")
+    monkeypatch.setenv(
+        "REVIEWER_TOKEN", "reviewer-app-token" if approval_present else ""
+    )
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_run(args: list[str], **kwargs: Any) -> Any:
+        calls.append((args, kwargs["env"]["GH_TOKEN"]))
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    with (
+        patch("aggregate_reviews._fold_prior_round_items", return_value=[]),
+        patch("aggregate_reviews._post_comment", return_value=True),
+        patch("aggregate_reviews.subprocess.run", side_effect=fake_run),
+    ):
+        post_verdict("review", "approve", comment_only=False, unreviewed_majors=0)
+    assert [(args[:3], token) for args, token in calls if "--approve" in args] == [
+        (
+            ["gh", "pr", "review"],
+            "reviewer-app-token" if approval_present else "existing-default-token",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "filename", ["claude-auth-restore.yml", "codex-auth-restore.yml"]
+)
+def test_restore_auth_tokens_share_control_repository_scope(filename: str) -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+    mint = next(
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("id") == "token_corp"
+    )
+    assert mint["with"]["owner"] == "ignite-corp"
+    assert mint["with"]["repositories"] == "ai-dev-pr-review"
+    assert mint["with"]["private-key"] == "${{ secrets.REVIEWER_APP_PRIVATE_KEY }}"

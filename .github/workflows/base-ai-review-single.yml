@@ -44,6 +44,8 @@ on:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
+      AUTH_APP_PRIVATE_KEY:
+        required: false
       REVIEWER_APP_PRIVATE_KEY:
         required: false
     outputs:
@@ -747,14 +749,16 @@ jobs:
       # to the subscription. Fail-safe: skipped silently when the App key is
       # not forwarded, and the script itself never fails the review job.
       # Secrets cannot be read in an `if:` condition, so the key's presence
-      # is surfaced via a step output (mirrors base-ai-review-aggregate.yml).
-      - name: Check reviewer App key present (auth switch)
+      # is surfaced via a boolean output, never a raw key in a shell env.
+      # AUTH_APP_PRIVATE_KEY is auth-only; the reviewer key is a legacy fallback.
+      # Neither this selection nor this token reaches the aggregate.
+      - name: Check auth App key present (auth switch)
         id: auth_key
         if: (inputs.reviewer == 'claude' || inputs.reviewer == 'codex') && always()
         env:
-          REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          AUTH_APP_KEY_PRESENT: ${{ (secrets.AUTH_APP_PRIVATE_KEY || secrets.REVIEWER_APP_PRIVATE_KEY) != '' }}
         run: |
-          if [ -n "$REVIEWER_APP_PRIVATE_KEY" ]; then
+          if [ "$AUTH_APP_KEY_PRESENT" = "true" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -770,8 +774,11 @@ jobs:
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
         with:
           app-id: ${{ vars.REVIEWER_APP_ID }}
-          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          private-key: ${{ secrets.AUTH_APP_PRIVATE_KEY || secrets.REVIEWER_APP_PRIVATE_KEY }}
           owner: ignite-corp
+          # Org-variable grants remain organization-wide. Limit the token
+          # to the control repository, excluding other consumer repositories.
+          repositories: ai-dev-pr-review
 
       - name: Switch Claude auth on usage limit
         if: >-

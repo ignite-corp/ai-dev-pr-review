@@ -44,6 +44,7 @@ Actions·로컬·cross-repo 경로 사이의 경계는 [`docs/tasks/AT-2564/desi
 | `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
+| `AUTH_APP_PRIVATE_KEY` | no | Claude/Codex auth control | Optional alias for the existing App key, with `REVIEWER_APP_ID`; preferred over `REVIEWER_APP_PRIVATE_KEY` for central auth switching. Never forwarded to prepare or aggregate. Same-repository callers may pass only this alias to keep auth control separate from App approval; see [credential boundaries](docs/codex-auth.md#configuration-and-availability). Cross-repository reporting still requires the reviewer key. |
 | `REVIEWER_APP_PRIVATE_KEY` | 아니오 | 취합 승인 | 전용 리뷰어 GitHub App의 프라이빗 키. `REVIEWER_APP_ID` 변수와 함께 설정하면 `approve` 판정 시 실제 APPROVED 리뷰가 게시되고, AT-2597 을 포함한 첫 릴리스부터(해당 릴리스 노트 참고) `request_changes` 리뷰도 같은 App 신원으로 게시됨. 단, App 의 `request_changes` 게시가 거부되면 기본 토큰으로 재시도되어 `github-actions[bot]` 신원으로 게시되므로, 게이트는 두 로그인을 모두 받아야 함. 기본 토큰이 곧 App 토큰인 경우(cross-repo 런)에는 재시도하지 않고, 판정이 `Intended verdict` 주석이 붙은 이슈 코멘트로 폴백됨. 미설정 시(또는 변수 미설정 시) `approve`는 일반 코멘트로 게시되고(현재 기본 동작), `request_changes` 리뷰는 `github-actions[bot]` 신원으로 게시됨. |
 
 ### Claude 리뷰어 인증: OAuth 토큰 vs API 키
