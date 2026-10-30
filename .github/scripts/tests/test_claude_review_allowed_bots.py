@@ -11,7 +11,7 @@ This module does not import production code -- there is none for this axis,
 ``allowed_bots`` is pure YAML configuration -- so it instead:
 
 1. Mirrors the comparison the pinned action actually performs
-   (``is_allowed_bot`` below), verified against
+   (``tests_support.is_allowed_bot``), verified against
    ``anthropics/claude-code-action@e5ad3c7725bc2459721893f88879fef9dbcf97b0``
    (the SHA pinned in ``action.yml``), file
    ``src/github/validation/actor.ts``, function ``isAllowedBot``:
@@ -68,30 +68,15 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests_support import (
+    is_allowed_bot,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ACTION_YML = REPO_ROOT / ".github" / "actions" / "claude-review" / "action.yml"
 SINGLE_YML = REPO_ROOT / ".github" / "workflows" / "base-ai-review-single.yml"
 README_MD = REPO_ROOT / "README.md"
 README_KO_MD = REPO_ROOT / "README.ko.md"
-
-_BOT_SUFFIX_RE = re.compile(r"\[bot\]$")
-
-
-def is_allowed_bot(actor: str, allowed_bots: str) -> bool:
-    """Port of the pinned action's ``isAllowedBot`` (see module docstring)."""
-    trimmed = allowed_bots.strip()
-    if trimmed == "*":
-        return True
-    if not trimmed:
-        return False
-
-    allowed_list = [
-        _BOT_SUFFIX_RE.sub("", bot.strip().lower()) for bot in trimmed.split(",")
-    ]
-    allowed_list = [bot for bot in allowed_list if bot]
-
-    normalized_actor = _BOT_SUFFIX_RE.sub("", actor.lower())
-    return normalized_actor in allowed_list
 
 
 class TestIsAllowedBotPort:

@@ -17,11 +17,9 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-import review_gemini  # noqa: E402
-from prompt_guidance import (  # noqa: E402
+import review_gemini
+from prompt_guidance import (
     CONGRUENCE,
     CONGRUENCE_BLOCK,
     CONSUMER_PROMPTS,
@@ -33,7 +31,9 @@ from prompt_guidance import (  # noqa: E402
     REVIEWER_INSTRUCTIONS,
     missing_items,
 )
-from reviewer_prompts import build_claude_prompt  # noqa: E402
+from reviewer_prompts import build_claude_prompt
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 REPO_ROOT = SCRIPT_DIR.parent.parent
 PROMPT_GUIDANCE = SCRIPT_DIR / "prompt_guidance.py"

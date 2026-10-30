@@ -33,7 +33,7 @@ from aggregate_reviews import (
 )
 from github_pr_support import inline_post_marker
 from post_inline_comments import DEDUP_STRONG_JACCARD, is_duplicate, normalize_body
-from test_gate_headline_drill import gate_function
+from tests_support import gate_function
 
 _REVIEWER = next(iter(REVIEWER_NAMES))
 _DESC = "Close the socket after the retry budget expires"

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -34,16 +33,22 @@ from typing import Any
 import pytest
 import yaml
 
+from github_pr_support import format_labels
+
+from tests_support import (
+    WORKFLOW,
+    _step,
+    _render,
+    _GIT_ENV,
+    _git,
+    _commit,
+)
+
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
-WORKFLOW = SCRIPT_DIR.parents[0] / "workflows" / "base-ai-review-prepare.yml"
 
-sys.path.insert(0, str(SCRIPT_DIR))
-
-from github_pr_support import format_labels  # noqa: E402
 
 requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
 
-_EXPRESSION = re.compile(r"\$\{\{(.+?)\}\}")
 
 # The same pull request in two representations. `user.login` and
 # `author.login` disagree because one is the API object and the other is a
@@ -76,35 +81,6 @@ _FORK_REST = {
     },
     "user": {"login": "someuser"},
 }
-
-
-def _steps() -> list[dict[str, Any]]:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return workflow["jobs"]["prepare"]["steps"]
-
-
-def _step(name: str) -> dict[str, Any]:
-    for step in _steps():
-        if step.get("name") == name:
-            return step
-    raise AssertionError(f"step not found in {WORKFLOW.name}: {name}")
-
-
-def _render(script: str, context: dict[str, str]) -> str:
-    """Substitute ``${{ ... }}`` expressions with the values a run would see.
-
-    Unmapped expressions raise: a test must state every context value it is
-    standing in for, so a new expression cannot be silently evaluated as an
-    empty string.
-    """
-
-    def replace(match: re.Match[str]) -> str:
-        expression = match.group(1).strip()
-        if expression not in context:
-            raise AssertionError(f"unmapped workflow expression: {expression}")
-        return context[expression]
-
-    return _EXPRESSION.sub(replace, script)
 
 
 def _write_gh_stub(tmp_path: Path) -> Path:
@@ -501,39 +477,6 @@ class TestLabels:
 # real (tiny, local) git repo, so the fence and the escaping are observed in
 # the actual file the reviewers open, not asserted about in isolation.
 # ---------------------------------------------------------------------------
-
-_GIT_ENV = {
-    **os.environ,
-    "GIT_AUTHOR_NAME": "fixture",
-    "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
-    "GIT_COMMITTER_NAME": "fixture",
-    "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
-    "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_NOSYSTEM": "1",
-}
-
-
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        env=_GIT_ENV,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
-def _commit(cwd: Path, message: str, files: dict[str, str]) -> str:
-    for name, content in files.items():
-        path = cwd / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-    _git(cwd, "add", "-A")
-    _git(cwd, "commit", "-q", "-m", message)
-    return _git(cwd, "rev-parse", "HEAD")
 
 
 _PROMPT_FILES = {

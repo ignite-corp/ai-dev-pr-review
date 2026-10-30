@@ -59,11 +59,14 @@ from collections.abc import Iterator
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from tests_support import (
+    FENCE,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENGLISH = REPO_ROOT / "README.md"
 KOREAN = REPO_ROOT / "README.ko.md"
 
-FENCE = re.compile(r"^\s*(?:```|~~~)")
 HEADING = re.compile(r"^(#{1,6})\s+(\S.*)$")
 # The escape hatch, and the looser pattern that recognises an attempt at it.
 IGNORE_MARKER = re.compile(

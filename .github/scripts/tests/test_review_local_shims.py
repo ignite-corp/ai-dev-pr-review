@@ -19,12 +19,10 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-import review_claude_local as claude  # noqa: E402
-import review_codex_local as codex  # noqa: E402
-from local_reviewer_support import (  # noqa: E402
+import review_claude_local as claude
+import review_codex_local as codex
+from local_reviewer_support import (
     DRIVER_ENV_MARKER,
     ERROR_CLI_FAILED,
     ERROR_UNPARSEABLE,
@@ -32,6 +30,8 @@ from local_reviewer_support import (  # noqa: E402
     EXIT_SPAWN_FAILED,
     EXIT_TIMED_OUT,
 )
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture

@@ -1,17 +1,16 @@
 import importlib
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-import review_gemini  # noqa: E402
+import review_gemini
+
+SCRIPT_DIR = Path(__file__).parent.parent
 
 
 def test_is_rate_limit_error_detects_429_in_message():

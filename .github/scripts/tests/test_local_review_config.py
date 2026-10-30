@@ -12,19 +12,15 @@ driver actually asks for are names the workflows declare a default for.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-from github_pr_support import (  # noqa: E402
+from github_pr_support import (
     SIZE_WARN_PERCENT_DEFAULT,
     SIZE_WARN_PERCENT_VAR,
 )
-from local_review_config import (  # noqa: E402
+from local_review_config import (
     ORCHESTRATOR_YML,
     WORKFLOW_DIR,
     ConfigError,

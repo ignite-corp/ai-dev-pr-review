@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from github_pr_support import REVIEW_MARKER
-from test_readme_translation_parity import FENCE
+from tests_support import FENCE
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 READMES = ("README.md", "README.ko.md")

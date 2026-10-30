@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-from extract_claude_review import extract_review, review_json_schema, stamp_model_status  # noqa: E402
+from extract_claude_review import extract_review, review_json_schema, stamp_model_status
 
 
 def test_stamp_status_derives_ok_when_missing() -> None:

@@ -20,20 +20,14 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-DRILL = SCRIPT_DIR / "gate_headline_drill.sh"
-# The one anchor for the plugin SKILL.md path; test_post_inline_comments imports it.
-SKILL = (
-    SCRIPT_DIR.parents[1]
-    / "plugins"
-    / "pr-response-cycle"
-    / "skills"
-    / "pr-response-cycle"
-    / "SKILL.md"
+from tests_support import (
+    SCRIPT_DIR,
+    DRILL,
+    SKILL,
+    gate_function,
 )
 
 # The gate functions the drill extracts from SKILL.md, read off the drill's
@@ -52,38 +46,6 @@ EXPECTED_GATE_FUNCTIONS = 14
 EXPECTED_CHECKS = 774
 
 RESULT_LINE = re.compile(r"^RESULT: (\d+) passed, (\d+) failed, (\d+) skipped$", re.M)
-
-# The drill's extract(), lifted from the drill by name: its definition line
-# to the first lone closing brace, the shape it extracts the gate functions
-# in. It is run as bash runs it, not transcribed, so there is one encoding
-# of how a gate function is carved out of SKILL.md and this is not it.
-_EXTRACT_FN = re.compile(r"^extract\(\) \{.*?^\}$", re.M | re.S)
-
-
-def gate_function(name: str) -> str:
-    """The function as gate_headline_drill.sh extracts it: the drill's own extract(), run."""
-    lifted = _EXTRACT_FN.search(DRILL.read_text(encoding="utf-8"))
-    assert lifted is not None, (
-        "the drill no longer defines extract() in the shape this lifts"
-    )
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            lifted.group(0) + '\nextract "$1" "$2"',
-            "bash",
-            str(SKILL),
-            name,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=60,
-    )
-    assert result.stdout.startswith(f"{name}() {{\n"), (
-        f"the drill's extract() finds no {name} in SKILL.md: {result.stderr}"
-    )
-    return result.stdout
 
 
 def test_drill_anchors_on_the_plugin_skill() -> None:

@@ -23,7 +23,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -31,12 +30,10 @@ from typing import Any
 import pytest
 import yaml
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-import filter_pr_diff  # noqa: E402
-from aggregate_reviews import POLICY_SKIP_MARKER  # noqa: E402
-from filter_pr_diff import (  # noqa: E402
+import filter_pr_diff
+from aggregate_reviews import POLICY_SKIP_MARKER
+from filter_pr_diff import (
     CONTEXT_SECTION_HEADING,
     DEFAULT_RULE_PATH,
     filter_diff,
@@ -44,7 +41,9 @@ from filter_pr_diff import (  # noqa: E402
     parse_rules,
     split_diff,
 )
-from github_pr_support import REVIEW_MARKER, display_path  # noqa: E402
+from github_pr_support import REVIEW_MARKER, display_path
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 SCRIPT = SCRIPT_DIR / "filter_pr_diff.py"
 WORKFLOWS = SCRIPT_DIR.parents[0] / "workflows"
