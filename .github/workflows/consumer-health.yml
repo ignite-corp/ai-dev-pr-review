@@ -299,18 +299,9 @@ jobs:
           fi
           echo "latest release: ${LATEST_RELEASE}"
 
-          # Reviewer prompt guidance (AT-2844). The items a consumer prompt
-          # must carry are listed once, in prompt_guidance.py, which this
-          # repo's own tests read too. A consumer reads its prompts from
-          # CONSUMER_PROMPT_DIR, the orchestrator's default paths; this repo's
-          # entry reads BASE_PROMPT_DIR, the pair self-review.yml passes. The
-          # runner's default prompts are what every runner target without
-          # its own is reviewed against (AT-2520); the runner's name is
-          # already public in both READMEs. The congruence questions are not
-          # read here: they live in the reviewers' own instructions, which
-          # travel with the pin, so whether they reach a consumer is its pin
-          # freshness (check 2) and whether they reach a runner target is the
-          # runner's pin, RUNNER_WORKFLOW's, checked after the loop.
+          # Shared SHA Pins and congruence instructions travel with the
+          # consumer/runner review pin (freshness checks below). Prompt files
+          # remain repository-owned and must still be available and readable.
           PROMPT_GUIDANCE="${GITHUB_WORKSPACE}/.github/scripts/prompt_guidance.py"
           CONSUMER_PROMPT_DIR=".github/prompts"
           BASE_PROMPT_DIR="examples/prompts"
@@ -424,10 +415,11 @@ jobs:
           }
 
           # check_prompt_guidance <slug> <ref> <system-path> <checklist-path> [--control]
-          # Reads the two prompt files from <slug> at <ref> (the default
+          # Reads one control file (empty checklist path) or two consumer
+          # prompt files from <slug> at <ref> (the default
           # branch when empty) and runs prompt_guidance.py over the pair,
           # which reads them together the way prepare concatenates them into
-          # context.md; --control requires every group, for the positive
+          # context.md; --control requires base instructions, for the positive
           # control. Prints the missing item ids, or for a 404 the path that
           # is absent. Returns 0 when nothing is missing, 1 when items are, 2
           # when a prompt file is absent (HTTP 404), 3 when a fetch failed
@@ -435,10 +427,11 @@ jobs:
           # performed, not verdicts; the positive control tells them apart.
           check_prompt_guidance() {
             local slug="$1" ref="$2" mode=("${@:5}")
-            local paths=("$3" "$4")
+            local paths=("$3")
+            [ -n "$4" ] && paths+=("$4")
             local work idx path resp b64 found rc
             work=$(mktemp -d)
-            for idx in 0 1; do
+            for idx in "${!paths[@]}"; do
               path="${paths[$idx]}"
               if ! resp=$(gh api "repos/${slug}/contents/${path}${ref:+?ref=${ref}}" 2>"${work}/err"); then
                 rc=3
@@ -453,14 +446,13 @@ jobs:
                 || ! base64 -d <<<"$b64" > "${work}/prompt-${idx}.md" 2>/dev/null \
                 || [ ! -s "${work}/prompt-${idx}.md" ]; then
                 # An empty file -- committed empty, or a file too large for
-                # the contents API to inline -- is not a verdict: the pin
-                # group is all-or-none, so it would read as complete.
+                # the contents API to inline -- is not a verdict.
                 # prepare fails on an empty prompt too.
                 rm -rf "$work"
                 return 3
               fi
             done
-            if found=$(python3 "$PROMPT_GUIDANCE" "${mode[@]}" "${work}/prompt-0.md" "${work}/prompt-1.md"); then
+            if found=$(python3 "$PROMPT_GUIDANCE" "${mode[@]}" "${work}"/prompt-*.md); then
               rc=0
             else
               rc=$?
@@ -482,21 +474,16 @@ jobs:
           # scan_errors and has its own notice.
           prompt_paths_unread=0
           plain_path_re='^[A-Za-z0-9._-][A-Za-z0-9._/-]*$'
-          # Positive control: this commit's examples/prompts, read through the
-          # same fetch and matcher as every consumer with every group
-          # required, must come back complete. Without it a fetch path that
-          # returned nothing would read as a clean fleet -- the pin group is
-          # all-or-none, so an empty prompt owes nothing. A control that
-          # comes back incomplete or absent, or that the matcher crashed on,
-          # proves the matcher path broken, which fails the run like an
-          # unresolvable release tag does. A control that could not be
-          # fetched proves nothing either way, so it skips this check alone
-          # -- like the consumer and runner fetches below -- and leaves every
-          # other check to run.
+          # Positive control: actual base Codex instructions at this commit,
+          # fetched and checked through the same path as consumer prompts.
+          # --control requires all base rules, never an empty consumer rule
+          # set. Tests hold Claude's executed shell/local mirror and Gemini's
+          # rendered prompt to the same exact blocks. A missing rule fails;
+          # a transient fetch cannot judge prompts and leaves other checks on.
           prompt_check=1
           control_result="complete"
           if pc_missing=$(check_prompt_guidance "$GITHUB_REPOSITORY" "$GITHUB_SHA" \
-            "${BASE_PROMPT_DIR}/code-review-system.md" "${BASE_PROMPT_DIR}/code-review-checklist.md" --control); then
+            ".github/scripts/review_prompt.md" "" --control); then
             echo "prompt guidance positive control: complete"
           else
             pc_rc=$?
@@ -510,9 +497,9 @@ jobs:
             fi
           fi
           {
-            echo "## Reviewer prompt guidance (AT-2844)"
+            echo "## Reviewer prompt availability and base guidance (AT-3159)"
             echo ""
-            echo "Items are listed in \`.github/scripts/prompt_guidance.py\`. Positive control (\`${BASE_PROMPT_DIR}\` at this commit): ${control_result}."
+            echo "Consumer and runner entries report prompt availability; shared rules travel with the review pin. Base guidance positive control (Codex instructions at this commit, matched against \`.github/scripts/prompt_guidance.py\`): ${control_result}."
             echo ""
             echo "| Entry | Result |"
             echo "|---|---|"
@@ -833,19 +820,10 @@ jobs:
               --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
             echo "  dependabot PRs (recent): ${dependabot_count}"
 
-            # 6. Reviewer prompt guidance (AT-2844). A consumer's prompts are
-            # its own files, changed only by a PR in the consumer, so a rule
-            # added to examples/prompts reaches nobody already onboarded
-            # (MIGRATION.md). Missing items flag like a stale pin: the
-            # consumer is reviewed against a contract that has moved on. The
-            # paths are the ones the consumer's review workflow passes the
-            # orchestrator (check 2 read it), else the orchestrator's
-            # defaults. A declared path comes from the consumer's file and
-            # goes into a URL the fleet App requests, so only a plain
-            # relative path -- no expression, no `..`, no query -- is used;
-            # any other is not evaluated rather than flagged. A declared path
-            # can name a product, so the public log prints a path only when
-            # it is one of the default files themselves.
+            # 6. Repository prompt availability. Shared rules arrive through
+            # the pin, not copies here. Read only plain declared relative
+            # paths, preserving absent/unreadable/not-evaluated signals and
+            # avoiding private custom path names in public logs.
             sys_path="${CONSUMER_PROMPT_DIR}/code-review-system.md"
             chk_path="${CONSUMER_PROMPT_DIR}/code-review-checklist.md"
             if [ "$is_base_repo" = 1 ]; then
@@ -864,8 +842,8 @@ jobs:
             done
             prompt_note=""
             if [ "$prompt_check" -eq 0 ]; then
-              echo "  prompt guidance: skipped (positive control not read)"
-              prompt_note=" (prompt guidance not evaluated: positive control not read)"
+              echo "  prompt availability: skipped (positive control not read)"
+              prompt_note=" (prompt availability not evaluated: positive control not read)"
               prompt_result="not evaluated (positive control not read)"
             elif [ "$is_base_repo" = 0 ] && [ "$wf_read" -eq 0 ]; then
               # The paths come from the workflow body, so without one the
@@ -878,16 +856,16 @@ jobs:
                 wf_state="review workflow could not be read"
                 consumer_scan_error=1
               fi
-              echo "  [WARN] entry ${i}/${total}: prompt guidance not evaluated (${wf_state})"
+              echo "  [WARN] entry ${i}/${total}: prompt availability not evaluated (${wf_state})"
               prompt_result="not evaluated (${wf_state})"
             elif [ "$plain_paths" -eq 0 ]; then
-              echo "  prompt guidance: not evaluated (declared prompt path is not a plain repository path)"
+              echo "  prompt availability: not evaluated (declared prompt path is not a plain repository path)"
               prompt_paths_unread=$((prompt_paths_unread + 1))
-              prompt_note=" (prompt guidance not evaluated: declared prompt path)"
+              prompt_note=" (prompt availability not evaluated: declared prompt path)"
               prompt_result="not evaluated (declared prompt path is not a plain repository path)"
             elif prompt_missing=$(check_prompt_guidance "$slug" "" "$sys_path" "$chk_path"); then
-              echo "  prompt guidance: complete"
-              prompt_result="complete"
+              echo "  prompt availability: readable"
+              prompt_result="readable"
             else
               case $? in
                 1)
@@ -939,12 +917,12 @@ jobs:
           runner_not_evaluated=0
           runner_flag=0
           if [ "$prompt_check" -eq 0 ]; then
-            echo "  prompt guidance: skipped (positive control not read)"
+            echo "  prompt availability: skipped (positive control not read)"
             prompt_result="not evaluated (positive control not read)"
           elif prompt_missing=$(check_prompt_guidance "$RUNNER_REPO" "" \
             "${RUNNER_PROMPT_DIR}/code-review-system.md" "${RUNNER_PROMPT_DIR}/code-review-checklist.md"); then
-            echo "  prompt guidance: complete"
-            prompt_result="complete"
+            echo "  prompt availability: readable"
+            prompt_result="readable"
           else
             case $? in
               1)
@@ -1023,7 +1001,7 @@ jobs:
             echo "::notice::recovery not confirmed -- ${scan_errors} consumer(s) could not be fetched or evaluated"
           fi
           if [ "$prompt_paths_unread" -gt 0 ]; then
-            echo "::notice::${prompt_paths_unread} consumer(s) declare a prompt path this check does not read -- prompt guidance not evaluated for them"
+            echo "::notice::${prompt_paths_unread} consumer(s) declare a prompt path this check does not read -- prompt availability not evaluated for them"
           fi
           if [ "$runner_not_evaluated" -ne 0 ]; then
             echo "::notice::runner default prompts or review pin could not be fetched -- not evaluated"

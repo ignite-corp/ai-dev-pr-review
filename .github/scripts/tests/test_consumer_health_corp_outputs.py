@@ -39,6 +39,7 @@ from aggregate_reviews import (
     apply_verdict_rules,
     format_summary,
 )
+from prompt_guidance import PIN
 from github_pr_support import REVIEW_MARKER
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -120,7 +121,7 @@ def _health_step_tail(workflow: Path) -> str:
 # Prompt fixtures the stubbed ``gh api .../contents/...`` serves. A request
 # carrying ``?ref=`` (the positive control, read at the run's own commit) is
 # served from REF_ROOT, any other from HEAD_ROOT, so a test can break the
-# base entry's prompt without breaking the control that reads the same path.
+# base entry's prompt without breaking the separate base-instructions control.
 REF_ROOT = "ref"
 HEAD_ROOT = "head"
 EXAMPLE_PROMPT_DIR = "examples/prompts"
@@ -153,6 +154,9 @@ def _default_prompt_fixtures() -> dict[str, str]:
         fixtures[f"{HEAD_ROOT}/{EXAMPLE_PROMPT_DIR}/{name}"] = text
         fixtures[f"{HEAD_ROOT}/{RUNNER_PROMPT_DIR}/{name}"] = text
     fixtures[f"{HEAD_ROOT}/{RUNNER_WORKFLOW}"] = _runner_workflow(LATEST_RELEASE)
+    fixtures[f"{REF_ROOT}/.github/scripts/review_prompt.md"] = (
+        REPO_ROOT / ".github/scripts/review_prompt.md"
+    ).read_text(encoding="utf-8")
     return fixtures
 
 
@@ -189,10 +193,11 @@ def run_health_tail(
 
     Only ``gh api graphql`` (the verdict fetch) returns ``gh_stdout`` with
     ``gh_exit``. ``gh api repos/<owner>/<repo>/contents/<path>`` answers from
-    the prompt fixtures: by default every prompt is this repo's own
-    examples/prompts, so the reviewer prompt check finds nothing to flag.
+    the fixtures: the base instructions control comes from REF_ROOT, while
+    consumer/runner prompt pairs come from HEAD_ROOT using examples/prompts.
     ``prompts`` overrides fixtures by key (``<root>/<path>``): a string
-    replaces the content, ``None`` makes it a 404, ``FETCH_FAILS`` makes the
+    replaces the content, bytes are served verbatim (including invalid UTF-8),
+    ``None`` makes it a 404, ``FETCH_FAILS`` makes the
     fetch fail otherwise, and ``FAILS_AFTER_FIRST`` serves the default
     review workflow body once and then fails like ``FETCH_FAILS``. Every other ``gh`` call answers an empty JSON list
     so the run-conclusion and Dependabot checks see nothing to flag.
@@ -220,6 +225,8 @@ def run_health_tail(
             target.with_name(target.name + ".once").touch()
         elif isinstance(value, str):
             target.write_text(value, encoding="utf-8")
+        elif isinstance(value, bytes):
+            target.write_bytes(value)
     release_tags = tmp_path / "release_tags"
     release_tags.write_text(
         "\n".join(
@@ -429,7 +436,7 @@ def _healthy_verdicts() -> str:
 
 
 _BASE_SYSTEM = f"{HEAD_ROOT}/{EXAMPLE_PROMPT_DIR}/code-review-system.md"
-_CONTROL_SYSTEM = f"{REF_ROOT}/{EXAMPLE_PROMPT_DIR}/code-review-system.md"
+_CONTROL_SYSTEM = f"{REF_ROOT}/.github/scripts/review_prompt.md"
 _RUNNER_SYSTEM = f"{HEAD_ROOT}/{RUNNER_PROMPT_DIR}/code-review-system.md"
 _RUNNER_WF = f"{HEAD_ROOT}/{RUNNER_WORKFLOW}"
 # The AT-2801 drift: a pin section that knows one 404 label and not the rest.
@@ -437,7 +444,6 @@ _PARTIAL_PINS = '# System\n\n- `error="repo-not-found"` -- suggestion\n'
 _NO_PIN_SECTION = "# System\n\nReview the diff.\n"
 # A prompt line the crashing matcher stub raises on.
 _CRASH_MARKER = "MATCHER-CRASH-MARKER"
-_PARTIAL_IDS = "pin-section pin-comment-matches-false pin-absent-comment-matches pin-repo-not-visible"
 
 
 @requires_jq
@@ -445,8 +451,8 @@ class TestPromptGuidanceCheck:
     """Check 6, the runner default prompts and the runner pin (AT-2844).
 
     The consumer under test is the base repo, whose prompts sit in
-    examples/prompts -- the same path the positive control reads, at the
-    run's own commit, from a separate fixture root.
+    examples/prompts; the positive control reads the actual base Codex
+    instructions at the run's own commit, from a separate fixture root.
     """
 
     def test_complete_prompts_are_ok_and_summarised_by_index(
@@ -459,11 +465,17 @@ class TestPromptGuidanceCheck:
         assert "prompt guidance positive control: complete" in log
         assert "Consumer 1/1: OK" in log
         assert "runner pin freshness:" in log
+        assert "prompt availability: readable" in log
+        assert "prompt guidance: complete" not in log
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert "Reviewer prompt availability and base guidance (AT-3159)" in summary
+        assert "Consumer and runner entries report prompt availability" in summary
+        assert "Base guidance positive control" in summary
+        assert "matched against" in summary
         # A consumer row names its entry by index only (public summary).
-        assert "| 1/1 | complete |" in summary.splitlines()
+        assert "| 1/1 | readable |" in summary.splitlines()
         assert (
-            "| ignite-corp/ai-dev-pr-review-runner `default-prompts/` | complete |"
+            "| ignite-corp/ai-dev-pr-review-runner `default-prompts/` | readable |"
             in summary
         )
         assert (
@@ -482,19 +494,16 @@ class TestPromptGuidanceCheck:
         assert code == 0
         assert "Consumer 1/1: OK" in log
 
-    def test_missing_items_flag_and_fail(self, tmp_path: Path) -> None:
+    def test_partial_consumer_copy_owes_no_shared_rules(self, tmp_path: Path) -> None:
         code, log = run_health_tail(
             CONSUMER_HEALTH,
             tmp_path,
             gh_stdout=_healthy_verdicts(),
             prompts={_BASE_SYSTEM: _PARTIAL_PINS},
         )
-        assert code == 1
-        assert f"[FLAG] entry 1/1: reviewer prompt lacks: {_PARTIAL_IDS}" in log
-        assert "Consumer 1/1: 1 flag(s)" in log
-        assert "::error::One or more consumers flagged" in log
-        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
-        assert f"| 1/1 | FLAG: lacks {_PARTIAL_IDS} |" in summary
+        assert code == 0
+        assert "Consumer 1/1: OK" in log
+        assert "reviewer prompt lacks" not in log
 
     def test_absent_prompt_flags_and_fails(self, tmp_path: Path) -> None:
         code, log = run_health_tail(
@@ -538,10 +547,10 @@ class TestPromptGuidanceCheck:
         assert code == 0
         assert "::notice::prompt guidance positive control could not be read" in log
         assert (
-            "Consumer 1/1: OK (prompt guidance not evaluated: positive control not read)"
+            "Consumer 1/1: OK (prompt availability not evaluated: positive control not read)"
             in log
         )
-        assert "prompt guidance: skipped (positive control not read)" in log
+        assert "prompt availability: skipped (positive control not read)" in log
         assert "::error::" not in log
 
     def test_fetch_failure_is_not_evaluated_not_ok(self, tmp_path: Path) -> None:
@@ -566,8 +575,7 @@ class TestPromptGuidanceCheck:
         self, tmp_path: Path, control: object
     ) -> None:
         """A zero needs a positive control: an empty fetch must not read
-        clean, and the all-or-none group must not let the control pass by
-        carrying none of it."""
+        clean, and a missing base policy must never let the control pass."""
         code, log = run_health_tail(
             CONSUMER_HEALTH,
             tmp_path,
@@ -578,21 +586,35 @@ class TestPromptGuidanceCheck:
         assert "::error::prompt guidance positive control failed" in log
         assert "Consumer 1/1" not in log
 
-    def test_runner_default_prompts_missing_items_flag_and_fail(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("dropped", list(PIN.items))
+    def test_real_base_control_rejects_each_omitted_pin_rule(
+        self, tmp_path: Path, dropped: str
     ) -> None:
+        text = (REPO_ROOT / ".github/scripts/review_prompt.md").read_text(
+            encoding="utf-8"
+        )
+        assert PIN.items[dropped] in text
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={_CONTROL_SYSTEM: text.replace(PIN.items[dropped], "")},
+        )
+        assert code == 1
+        assert "::error::prompt guidance positive control failed" in log
+        assert dropped in log
+        assert "Consumer 1/1" not in log
+
+    def test_runner_copy_owes_no_shared_rules(self, tmp_path: Path) -> None:
         code, log = run_health_tail(
             CONSUMER_HEALTH,
             tmp_path,
             gh_stdout=_healthy_verdicts(),
             prompts={_RUNNER_SYSTEM: _PARTIAL_PINS},
         )
-        assert code == 1
+        assert code == 0
         assert "Consumer 1/1: OK" in log
-        assert f"[FLAG] runner default prompts lack: {_PARTIAL_IDS}" in log
-        # The runner is not a consumer, and the error says which flagged.
-        assert "::error::Runner default prompts or review pin flagged" in log
-        assert "::error::One or more consumers flagged" not in log
+        assert "runner default prompts lack" not in log
 
     def test_runner_fetch_failure_is_a_notice_not_a_consumer_error(
         self, tmp_path: Path
@@ -675,7 +697,7 @@ class TestPromptGuidanceCheck:
             },
         )
         assert code == 0, log
-        assert "prompt guidance: complete" in log
+        assert "prompt availability: readable" in log
         assert "Consumer 1/1: OK" in log
 
     @pytest.mark.parametrize(
@@ -708,7 +730,7 @@ class TestPromptGuidanceCheck:
         )
         assert code == 0, log
         assert (
-            "prompt guidance: not evaluated (declared prompt path is not a plain repository path)"
+            "prompt availability: not evaluated (declared prompt path is not a plain repository path)"
             in log
         )
         assert (
@@ -772,7 +794,7 @@ class TestPromptGuidanceCheck:
         assert "[FLAG] entry 1/1: no review workflow found" in log
         assert "no reviewer prompt at" not in log
         assert (
-            "[WARN] entry 1/1: prompt guidance not evaluated (no review workflow found)"
+            "[WARN] entry 1/1: prompt availability not evaluated (no review workflow found)"
             in log
         )
         assert "recovery not confirmed" not in log
@@ -794,7 +816,7 @@ class TestPromptGuidanceCheck:
         assert "workflow=review-ai.yml" in log
         assert "no reviewer prompt at" not in log
         assert (
-            "[WARN] entry 1/1: prompt guidance not evaluated (review workflow could not be read)"
+            "[WARN] entry 1/1: prompt availability not evaluated (review workflow could not be read)"
             in log
         )
         assert NOT_EVALUATED_NOTICE in log, log
@@ -828,6 +850,26 @@ class TestPromptGuidanceCheck:
         assert "Consumer 1/1: not evaluated" in log
         assert NOT_EVALUATED_NOTICE in log
 
+    @pytest.mark.parametrize("name", PROMPT_FILES)
+    def test_each_decoded_consumer_file_reaches_the_real_matcher(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        # Invalid UTF-8 survives fetch/base64 decoding, but the real CLI must
+        # reject it regardless of which member of the pair carries it.
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            prompts={f"{HEAD_ROOT}/{EXAMPLE_PROMPT_DIR}/{name}": b"\xff"},
+        )
+        assert code == 0, log
+        assert "prompt guidance positive control: complete" in log
+        assert "cannot read prompt file: UnicodeDecodeError" in log
+        assert "[WARN] entry 1/1: could not read the reviewer prompt" in log
+        assert "Consumer 1/1: not evaluated" in log
+        assert "Consumer 1/1: OK" not in log
+        assert NOT_EVALUATED_NOTICE in log
+
     def test_a_matcher_crash_on_the_control_fails_the_run(self, tmp_path: Path) -> None:
         """Unlike a control that could not be fetched, a matcher that
         crashes on the control proves the matcher path broken; read as a
@@ -846,7 +888,7 @@ class TestPromptGuidanceCheck:
         assert "Consumer 1/1" not in log
 
     def test_an_empty_prompt_is_not_read_as_complete(self, tmp_path: Path) -> None:
-        """An empty pair owes no all-or-none group, so reading it as a
+        """An empty pair owes no shared rule, so reading it as a
         verdict would be a false clean; prepare fails on it too."""
         code, log = run_health_tail(
             CONSUMER_HEALTH,

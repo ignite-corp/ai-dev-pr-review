@@ -14,20 +14,19 @@ After `ignite-corp/ai-dev-pr-review` is created and tagged `v1.0.0`, open one PR
 
 ## Upgrading an already-onboarded consumer
 
-Bumping the reusable-workflow pin does **not** update a consumer's prompts. Precondition 3 above keeps `.github/prompts/code-review-system.md` and `.github/prompts/code-review-checklist.md` in the consumer repo, and the per-consumer **Keep** lists repeat it: those two files are consumer-owned and are only ever changed by a PR in the consumer. `examples/prompts/code-review-system.md` in this repo is the template for a *new* onboarding, so a change to it reaches nobody already onboarded. When a release changes what the reviewer is told, the consumer needs its own PR re-copying the changed rules out of the template.
+Repository-specific guidance stays in the consumer's `.github/prompts/` pair. Shared reviewer instructions travel with the reusable-workflow pin; a pin bump does not edit consumer-owned files or remove stale copies.
 
-A consumer whose prompt still predates a rule keeps obeying the old one, and the reviewer then has two contradictory instructions for the same input: the blurb this repo's `verify_action_shas.py` renders into `context.md` travels with the pin and is current, while the consumer's prompt is whatever was last copied.
+### Shared GitHub Actions SHA Pins guidance (AT-3159)
 
-### Action SHA pin 404 rules (AT-2801)
+The base source now carries the exact existing SHA Pins policy in all three reviewer instructions, alongside CONGRUENCE. The example prompt no longer carries a copy. A source merge alone does not publish or deploy the shared instructions or update a consumer or the runner.
 
-Re-copy **both** of these bullets from the `## GitHub Actions SHA Pins` section of [`examples/prompts/code-review-system.md`](examples/prompts/code-review-system.md) into the consumer's `.github/prompts/code-review-system.md`, replacing the single `repo-not-found` bullet that is there now:
+Rollout requires a compatible **MINOR release**. Update each consumer's review pin to that release before removing its `## GitHub Actions SHA Pins` section. For floating `v1`, verify that the tag resolves to the compatible release first. Remove only that shared section; retain the repository-specific prompt pair. A stale section can contradict the base instructions. Do not remove an existing copy while its workflow still uses an older release.
 
-- `status="unverified"` with `error="repo-not-found"`
-- `status="unverified"` with `error="repo-not-visible"` (new label)
+For a new onboarding from the updated examples, prefer a compatible MINOR release containing the base instructions. With v1.18.1, the prepare-time `verify_action_shas.py` still supplies SHA-pin guidance through its `context.md` blurb when action SHA pins are detected. That blurb covers verified/unmatched results, version-comment interpretation, and suggestion-only 404/verification-error rules. This fallback does not establish that the moved base instruction block is present; verify the actual release before relying on that delivery.
 
-**`error="repo-not-found"` no longer means the repository does not exist.** It now means only that the API answered 404 for a repository whose owner is not the owner of the repository under review, or the run's own owner could not be determined. GitHub answers 404 both for an absent repository and for a private one the run's token may not read, so the label asserts nothing about existence. Neither 404 bullet earns a `major` any more: both raise `suggestion` and ask the author to confirm the `owner/repo` spelling. A prompt left on the old bullet — "the upstream action repository does not exist … Raise as `major`" — produces a consensus `major` on every PR that pins a private repository, which is the AT-2801 defect itself.
+The runner needs the same sequence: update its review pin to the compatible release, then remove the shared section from `default-prompts/`. Its target repositories keep their own repository-specific prompts. These runner and consumer changes, release publication, and a scheduled health run confirming rollout are follow-up work under AT-3153. Existing per-repository SHA versus `v1` choices remain unchanged.
 
-A consumer whose prompt carries no `## GitHub Actions SHA Pins` section at all needs no change: it never had the old rule, and the rendered `context.md` blurb is its only guidance either way.
+Consumer health no longer requires SHA Pins labels in repository prompt copies. It still checks prompt availability and declared paths, and reports unreadable files as not evaluated. Base policy delivery is checked through review pin freshness, as CONGRUENCE is; the usual one-MINOR tolerance does not prove adoption of this particular release. Confirm the actual compatible pin for rollout. The positive control reads this commit's actual Codex base instructions and requires the full shared policy. Tests hold all three rendered reviewers and the Claude workflow/local mirror to the same exact text, including both uncertain 404 rules and their `suggestion` severity.
 
 ### Prompt files must be non-empty regular files (AT-2520)
 
@@ -50,13 +49,13 @@ No consumer action is needed. A consumer reviewed by the runner that wants its o
 
 ### Finding the release that changed a rule
 
-This change lowers the severity the prompt prescribes for a finding class, which the [version policy](README.md#tag-pinning) places in a MINOR (`v1.x.0`): it is consumer-visible behaviour, so **not** a patch, and it only ever relaxes, so it is not one of the breaking changes that would make it a MAJOR. Per the wrapper lockstep in that same section, the pilot wrapper cuts a matching MINOR. Release notes for such a tag must say which prompt rules changed and name this section, so a consumer reviewing a Dependabot pin bump can see that the bump alone is not the whole upgrade.
+Shared instruction changes are consumer-visible behaviour. This ownership move requires a MINOR release under the [version policy](README.md#tag-pinning); a source merge alone does not publish a release. Release notes must point to the rollout sequence above so a pin bump and stale-copy removal happen together.
 
 ### Congruence questions (AT-2844)
 
 **No prompt change.** The three congruence questions live in the reviewers' own instructions in this repository (the Claude prompt, `review_prompt.md`, `review_gemini.py`), not in `examples/prompts/`, so they reach a consumer with the pin bump alone and nothing is to be copied into `.github/prompts/`. A consumer whose pin is behind the release that ships them is not asked them; `consumer-health.yml` reads that as pin freshness, with its usual one-MINOR tolerance.
 
-The same daily check reads the consumer's prompts for one thing: a `## GitHub Actions SHA Pins` section that carries some of the pin items listed in `.github/scripts/prompt_guidance.py` but not all of them flags. Those items are the section heading and four labels -- the AT-2801 entry above names only the two 404 labels, so re-copy the whole section from [`examples/prompts/code-review-system.md`](examples/prompts/code-review-system.md), not just its two bullets. A prompt that carries neither the heading nor any of the labels owes none of them; one that carries any of them owes all of them, the labels inside the heading's section when the heading is there.
+The daily check still reads repository prompt pairs for availability, and validates the shared base instructions through its positive control. SHA Pins guidance has the same base ownership as these questions; see the AT-3159 rollout sequence above.
 
 ---
 

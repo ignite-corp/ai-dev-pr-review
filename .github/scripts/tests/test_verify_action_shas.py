@@ -21,7 +21,6 @@ from unittest.mock import patch
 
 import pytest
 
-from prompt_guidance import CONSUMER_PROMPTS, missing_items
 from verify_action_shas import (
     _SHA1_HEX_LEN,
     RawPin,
@@ -369,7 +368,7 @@ def _severity_rule_for(document: str, error_label: str) -> str:
     """Return the one prompt bullet in ``document`` governing a label.
 
     Both guidance surfaces -- the blurb ``main()`` writes into ``context.md``
-    and the consumer template ``examples/prompts/code-review-system.md`` --
+    and the base instructions ``review_prompt.md`` --
     are lists of one-line bullets; the reviewer reads the bullet carrying
     its pin's ``error="..."`` and obeys it. Asking for exactly one keeps a
     test from passing because no bullet matched.
@@ -388,8 +387,7 @@ def _severity_rule_for(document: str, error_label: str) -> str:
 
 # The premise each 404 label establishes -- no more -- worded so one
 # substring fits every surface that states it: the ``main()`` blurb, the
-# consumer template, and (for ``repo-not-found``) MIGRATION.md's
-# restatement. Each value carries no markdown emphasis and no dashes, so
+# base instructions. Each value carries no markdown emphasis and no dashes, so
 # the same bytes can appear in a Python string literal and in markdown.
 #
 # ``_classify_404`` compares owner strings and nothing else. It returns
@@ -427,7 +425,7 @@ def _assert_404_rule_is_honest(document: str, label: str) -> None:
     same label, and a bullet that only reassures leaves that pin to fail at
     runtime with no finding raised.
 
-    One contract, one home. The rendered blurb and the consumer template
+    One contract, one home. The rendered blurb and the base instructions
     carry the same guidance in two files, so they are held here by the same
     function: two copies of these assertions drifted apart once already,
     the looser one accepting a bullet worded "escalate beyond
@@ -436,10 +434,9 @@ def _assert_404_rule_is_honest(document: str, label: str) -> None:
     show the bullet confines the reviewer to it.
 
     Every label's bullet is also held to its own premise, from
-    ``_404_PREMISES``. Both bullet-carrying surfaces pass through here;
-    MIGRATION.md restates the ``repo-not-found`` premise outside a severity
-    bullet, so it is held to the same entry by
-    ``TestMigrationDocReachesOnboardedConsumers`` instead.
+    ``_404_PREMISES``. Both bullet-carrying surfaces pass through here.
+    Migration documentation describes release adoption and copy removal
+    without restating the policy.
     """
     rule = _severity_rule_for(document, label)
     assert "Raise only as `suggestion`." in rule
@@ -681,45 +678,32 @@ class TestRendered404Guidance:
         _assert_404_rule_is_honest(content, "repo-not-found")
 
 
-# The reviewer system prompt a consumer copies into its own repo. Read by
-# ``TestExamplePromptCovers404Labels`` and by ``_example_prompt_pin_section``,
-# so the path is spelled once -- the way ``_PROMPT_PATH`` below is spelled
-# once for the caller-repo prompt.
-_EXAMPLE_PROMPT_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "examples"
-    / "prompts"
-    / "code-review-system.md"
-)
+# Actual base Codex instructions, held byte-equal to all three reviewers
+# by test_prompt_guidance.py. No consumer copy is required (AT-3159).
+_BASE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "review_prompt.md"
 
 
-class TestExamplePromptCovers404Labels:
-    """The in-tree consumer template must describe both 404 labels.
+class TestBasePromptCovers404Labels:
+    """Both 404 rules in the base instructions remain honest and actionable."""
 
-    ``examples/prompts/code-review-system.md`` is what a consumer copies
-    into its own repo as the reviewer system prompt. A copy that knows only
-    ``repo-not-found`` reinstates the AT-2801 false ``major`` on every
-    consumer that onboarded from it.
-    """
+    _BASE_PROMPT = _BASE_PROMPT_PATH
 
-    _EXAMPLE_PROMPT = _EXAMPLE_PROMPT_PATH
-
-    def test_example_prompt_describes_repo_not_visible(self) -> None:
-        text = self._EXAMPLE_PROMPT.read_text(encoding="utf-8")
+    def test_base_prompt_describes_repo_not_visible(self) -> None:
+        text = self._BASE_PROMPT.read_text(encoding="utf-8")
         # Positive control: the label the template already carried.
         assert 'error="repo-not-found"' in text
         assert 'error="repo-not-visible"' in text, (
-            "Consumer prompt template must carry the repo-not-visible rule "
+            "Base reviewer instructions must carry the repo-not-visible rule "
             "the verifier now emits."
         )
 
     @pytest.mark.parametrize("label", ["repo-not-found", "repo-not-visible"])
-    def test_example_prompt_404_rules_are_honest(self, label: str) -> None:
+    def test_base_prompt_404_rules_are_honest(self, label: str) -> None:
         """Neither 404 bullet may escalate or assert absence, and both must
         stay actionable -- literally the same contract
         ``TestRendered404Guidance`` holds the rendered blurb to, applied by
-        the same function to the copy consumers take."""
-        text = self._EXAMPLE_PROMPT.read_text(encoding="utf-8")
+        the same function to the instructions consumers receive."""
+        text = self._BASE_PROMPT.read_text(encoding="utf-8")
         _assert_404_rule_is_honest(text, label)
 
 
@@ -771,7 +755,7 @@ def _guidance_labels(document: str) -> set[str]:
 def _rendered_pin_blurb(context_md: str) -> str:
     """Return the prose of the pin section ``main()`` appended.
 
-    The blurb-side counterpart of ``_example_prompt_pin_section``, scoped
+    The blurb-side counterpart of ``_base_prompt_pin_section``, scoped
     for the same reason: that side is narrowed to one heading so a
     ``severity="..."`` example under another is not compared as a pin
     label, and a blurb side read from all of ``context.md`` would put the
@@ -787,7 +771,7 @@ def _rendered_pin_blurb(context_md: str) -> str:
 
     ``rindex`` for the heading because ``main()`` appends -- the section
     under test is the last one -- and both lookups raise rather than fall
-    back, the choice ``_example_prompt_pin_section`` makes: a renamed
+    back, the choice ``_base_prompt_pin_section`` makes: a renamed
     heading or a renamed element must fail loudly instead of yielding an
     empty blurb that compares empty-to-empty and passes. The slice stops at
     the ``<verified-action-pins>`` element, so the pin rows are excluded
@@ -798,25 +782,26 @@ def _rendered_pin_blurb(context_md: str) -> str:
     return context_md[start:end]
 
 
-def _example_prompt_pin_section() -> str:
-    """Return the consumer template's pin-guidance section, heading excluded.
+def _base_prompt_pin_section() -> str:
+    """Return the base instructions' pin-guidance section, heading excluded.
 
-    Scoped to the one section because the rest of the template governs other
+    Scoped to the one section because the rest of the instructions govern other
     things: a ``severity="..."`` example written under another heading is not
     a pin label and must not be compared as one.
 
+    The named Output format heading closes this policy in review_prompt.md.
     ``str.index`` on purpose -- a renamed or deleted heading raises here
     instead of yielding an empty section, which would make the label sets
     below compare empty-to-empty and pass.
     """
-    text = _EXAMPLE_PROMPT_PATH.read_text(encoding="utf-8")
+    text = _BASE_PROMPT_PATH.read_text(encoding="utf-8")
     start = text.index(_PIN_GUIDANCE_HEADING) + len(_PIN_GUIDANCE_HEADING)
-    end = text.find("\n## ", start)
-    return text[start:] if end < 0 else text[start:end]
+    end = text.index("\n## Output format\n", start)
+    return text[start:end]
 
 
 class TestGuidanceSurfacesShareOneLabelSet:
-    """The blurb ``main()`` writes and the consumer template must name the
+    """The blurb ``main()`` writes and the base instructions must name the
     same labels -- not merely each carry the labels somebody listed.
 
     AT-2880: every check above holds ONE surface to ONE token it should
@@ -831,23 +816,11 @@ class TestGuidanceSurfacesShareOneLabelSet:
     same defect one level up: it would have to be edited by the person
     adding the label, which is exactly the person who just forgot.
 
-    Held against ``examples/prompts/code-review-system.md``, the template a
-    consumer copies, and NOT against ``_PROMPT_PATH``: that path is the
-    consumer's own ``.github/prompts/code-review-system.md``, which this
-    repo has never carried, so a check reading it would be skipped here and
-    unreached in a consumer -- dead on both counts, the way AT-2801's
-    ``repo-not-visible`` guard in ``TestPromptGuidance`` was. The template is
-    the furthest downstream copy any test in this repo can actually read.
-
-    Consequently this class carries no ``skipif`` and must never acquire
-    one. AT-2849 is the record of what the ``_PROMPT_PATH`` gate cost: a
-    test that claimed this very comparison sat behind it and had never
-    executed, and a skipped test reports as neither pass nor fail, so the
-    gap read as coverage for as long as nobody looked. If the template is
-    gone, ``read_text`` raises and this errors out loudly.
+    Held against the actual base Codex instructions. All three reviewer
+    renderers carry that same policy byte for byte (test_prompt_guidance.py).
     """
 
-    def test_blurb_and_example_prompt_name_the_same_labels(
+    def test_blurb_and_base_prompt_name_the_same_labels(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
@@ -863,10 +836,10 @@ class TestGuidanceSurfacesShareOneLabelSet:
             f"the rendered blurb; it found {sorted(blurb_labels)}"
         )
 
-        prompt_labels = _guidance_labels(_example_prompt_pin_section())
+        prompt_labels = _guidance_labels(_base_prompt_pin_section())
         assert blurb_labels == prompt_labels, (
-            "the blurb main() renders and examples/prompts/"
-            "code-review-system.md must name the same labels -- "
+            "the blurb main() renders and base review_prompt.md "
+            "must name the same labels -- "
             f"only in the blurb: {sorted(blurb_labels - prompt_labels)}; "
             f"only in the prompt: {sorted(prompt_labels - blurb_labels)}"
         )
@@ -914,6 +887,25 @@ class TestGuidanceSurfacesShareOneLabelSet:
             "that never mentions it"
         )
 
+    def test_output_examples_cannot_contaminate_the_pin_label_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        text = _BASE_PROMPT_PATH.read_text(encoding="utf-8")
+        expected = _guidance_labels(_base_prompt_pin_section())
+        output = "\n## Output format\n"
+        assert output in text
+        changed = text.replace(output, output + '\nExample: `severity="major"`.\n')
+        path = tmp_path / "review_prompt.md"
+        path.write_text(changed, encoding="utf-8")
+        monkeypatch.setitem(globals(), "_BASE_PROMPT_PATH", path)
+        assert 'severity="major"' in _guidance_labels(changed)
+        assert _guidance_labels(_base_prompt_pin_section()) == expected
+        path.write_text(
+            changed.replace(output, "\n## Renamed output\n"), encoding="utf-8"
+        )
+        with pytest.raises(ValueError):
+            _base_prompt_pin_section()
+
     def test_earlier_context_md_sections_stay_out_of_the_blurb_side(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -943,7 +935,7 @@ class TestGuidanceSurfacesShareOneLabelSet:
             "a token from a section main() did not write must not enter "
             f"the blurb's label set; it holds {sorted(blurb_labels)}"
         )
-        prompt_labels = _guidance_labels(_example_prompt_pin_section())
+        prompt_labels = _guidance_labels(_base_prompt_pin_section())
         assert blurb_labels == prompt_labels, (
             "with both sides scoped to their own pin section the labels "
             "must agree whatever context.md already carried -- "
@@ -953,41 +945,60 @@ class TestGuidanceSurfacesShareOneLabelSet:
 
 
 class TestMigrationDocReachesOnboardedConsumers:
-    """Updating the template is not enough to reach an onboarded consumer.
-
-    ``MIGRATION.md`` keeps ``.github/prompts/code-review-system.md`` in the
-    consumer repo and never deletes it, so a consumer that onboarded before
-    AT-2801 holds a prompt whose ``repo-not-found`` bullet still reads "does
-    not exist ... Raise as ``major``" -- the AT-2801 defect, on exactly the
-    repos this fix targets. A pin bump does not touch that file; only a PR
-    in the consumer does. The upgrade step has to be written down where a
-    consumer looks, which is ``MIGRATION.md``.
-    """
+    """Base-source preparation does not deploy a release or remove stale copies."""
 
     _MIGRATION = Path(__file__).resolve().parents[3] / "MIGRATION.md"
 
-    def test_migration_tells_consumers_to_recopy_both_404_rules(self) -> None:
+    def test_migration_sequences_release_before_copy_removal(self) -> None:
         text = self._MIGRATION.read_text(encoding="utf-8")
-        # Positive control: the precondition that CREATES the problem -- the
-        # prompt is consumer-owned. If this is gone the file was restructured
-        # and the assertions below are checking the wrong document.
-        assert "Do NOT delete" in text
-        assert 'error="repo-not-found"' in text
-        assert 'error="repo-not-visible"' in text, (
-            "MIGRATION.md must name the new label an onboarded consumer has "
-            "to add; the template alone reaches only new onboardings."
+        start = text.index("### Shared GitHub Actions SHA Pins guidance (AT-3159)\n")
+        end = text.index("\n### ", start + 1)
+        section = text[start:end]
+        assert "MINOR release" in section
+        assert (
+            "Update each consumer's review pin to that release before removing"
+            in section
         )
-        assert "no longer means the repository does not exist" in text, (
-            "MIGRATION.md must say repo-not-found changed meaning -- a "
-            "consumer re-copying bullets without being told that has no "
-            "reason to think the old one was wrong."
+        assert "source merge alone" in section
+        assert "does not publish or deploy" in section
+        assert (
+            "The runner needs the same sequence: update its review pin to the compatible release, "
+            "then remove the shared section from `default-prompts/`."
+        ) in section
+
+    @pytest.mark.parametrize("placement", ["removed", "moved"])
+    def test_runner_rollout_must_stay_in_the_shared_policy_section(
+        self, placement: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        text = self._MIGRATION.read_text(encoding="utf-8")
+        path = tmp_path / "MIGRATION.md"
+        path.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(self, "_MIGRATION", path)
+        self.test_migration_sequences_release_before_copy_removal()
+        (paragraph,) = [
+            p
+            for p in text.split("\n\n")
+            if p.startswith("The runner needs the same sequence:")
+        ]
+        changed = text.replace(paragraph + "\n\n", "")
+        if placement == "moved":
+            changed += "\n\n" + paragraph + "\n"
+        # The previous whole-document substring guard misses both mutations.
+        assert all(
+            phrase in changed
+            for phrase in (
+                "Do NOT delete",
+                "AT-3159",
+                "MINOR release",
+                "before removing",
+                "source merge alone",
+                "does not publish or deploy",
+                "runner",
+            )
         )
-        assert _404_PREMISES["repo-not-found"] in text, (
-            "MIGRATION.md's restatement is the third copy of the "
-            "repo-not-found premise; it must match the other two word for "
-            "word or a consumer re-copies a rule the classifier does not "
-            "support."
-        )
+        path.write_text(changed, encoding="utf-8")
+        with pytest.raises(AssertionError):
+            self.test_migration_sequences_release_before_copy_removal()
 
 
 # ---------------------------------------------------------------------------
@@ -1013,8 +1024,8 @@ class TestInlineBlurbLabels:
     Nothing here compares the blurb with the caller-repo prompt doc, and
     -- measured, not assumed -- no test in this repo does: the test left
     in ``TestPromptGuidance`` reads ``_PROMPT_PATH`` alone and never reads
-    what ``main()`` emits. The blurb IS compared against the consumer
-    template, which a test here can read, by
+    what ``main()`` emits. The blurb IS compared against the base
+    instructions, which a test here can read, by
     ``TestGuidanceSurfacesShareOneLabelSet`` above (AT-2880).
     """
 
@@ -1070,49 +1081,12 @@ class TestInlineBlurbLabels:
     reason="caller-repo prompt (code-review-system.md) absent in public reusable repo",
 )
 class TestPromptGuidance:
-    """Keep ``code-review-system.md`` and the inline blurb in ``main()`` in
-    sync with the status/error labels the verifier actually emits. A
-    mismatch between prompt guidance and script output produces systematic
-    false positives or false negatives in downstream review.
+    """Optional caller-repo prompt availability; no shared policy copy is owed."""
 
-    Nothing here runs anywhere today, so do not add a label guard to it.
-    ``_PROMPT_PATH`` is ``<checkout>/.github/prompts/code-review-system.md``,
-    which this repo has never carried and by design will not: those two
-    files are read from the CONSUMER repo (README, "Overriding prompts per
-    consumer repo"). A consumer does not run this class either -- the suite
-    is vendored at ``.ai-dev-pr-review/.github/scripts/tests/``, so the same
-    expression resolves inside the vendored copy of this repo rather than
-    the consumer's own prompt, and no consumer workflow runs pytest over it.
-    AT-2801 added a ``repo-not-visible`` guard here and it was measured
-    dead on both counts, so it was removed rather than left to look like
-    coverage.
-
-    Where that coverage lives instead: ``TestExamplePromptCovers404Labels``
-    holds the in-tree template, ``TestRendered404Guidance`` holds the blurb
-    ``main()`` renders, and ``MIGRATION.md`` tells an onboarded consumer to
-    re-copy the rules. The consumer-side copies are checked daily by
-    consumer-health.yml through ``prompt_guidance.py`` (AT-2844), whose
-    list this class reads rather than keeping a second one.
-
-    Every test left here reads ``_PROMPT_PATH`` and so genuinely needs the
-    skip. ``test_inline_blurb_matches_prompt_doc`` did not, and AT-2849
-    moved it out to ``TestInlineBlurbLabels`` above; do not move a test
-    back in unless it reads that file."""
-
-    _PROMPT_PATH = _PROMPT_PATH
-
-    def test_prompt_carries_the_required_guidance(self) -> None:
-        """The pin group is all-or-none (prompt_guidance.py): a prompt with
-        no ``## GitHub Actions SHA Pins`` section owes no label, as
-        MIGRATION.md says; one that has the section owes every label."""
-        text = self._PROMPT_PATH.read_text()
-        checklist = self._PROMPT_PATH.with_name("code-review-checklist.md")
-        if checklist.exists():
-            text += "\n" + checklist.read_text()
-        assert missing_items(text, CONSUMER_PROMPTS) == [], (
-            "Prompt must carry the guidance prompt_guidance.py lists; copy it "
-            "from examples/prompts/."
-        )
+    def test_prompt_files_are_readable_and_nonempty(self) -> None:
+        assert _PROMPT_PATH.read_text(encoding="utf-8").strip()
+        checklist = _PROMPT_PATH.with_name("code-review-checklist.md")
+        assert checklist.read_text(encoding="utf-8").strip()
 
 
 # ---------------------------------------------------------------------------
