@@ -7,9 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 import post_inline_comments
-import test_post_inline_comments as folded_tests
 from aggregate_reviews import _format_issue_line
-from test_gate_headline_drill import gate_function
+from tests_support import gate_function, run_folded_gate
 
 
 @pytest.fixture
@@ -79,9 +78,7 @@ def test_one_verdict_quote_set_answers_both_verdict_and_folded_surfaces(
         + "\n"
         + "\n".join("> " + line for line in verdict)
     )
-    result = folded_tests.TestFoldedFindingGate.run_gate(
-        bodies[index], "Dispositions: " + reply
-    )
+    result = run_folded_gate(bodies[index], "Dispositions: " + reply)
     assert result.returncode == 0, result.stdout + result.stderr
     for line in verdict:
         result = major(line, "> " + line)
@@ -113,7 +110,7 @@ def test_key_near_misses_do_not_answer_a_major(findings, field, value):
     assert _format_issue_line(issues[0]) in result.stdout
     reply = "Dispositions: inline-fallback-claude-r14\n> " + _format_issue_line(changed)
     reply += "\n> " + _format_issue_line(issues[1])
-    folded = folded_tests.TestFoldedFindingGate.run_gate(bodies[0], reply)
+    folded = run_folded_gate(bodies[0], reply)
     assert folded.returncode == 1, folded.stdout + folded.stderr
 
 
@@ -135,21 +132,19 @@ def test_key_multiplicity_is_per_source_not_per_surface(findings):
     body = bodies[0].replace(lines[1], second)
     quote = "> " + _format_issue_line(issues[0])
     reply = "Dispositions: inline-fallback-claude-r14\n" + quote
-    assert folded_tests.TestFoldedFindingGate.run_gate(body, reply).returncode == 1
-    result = folded_tests.TestFoldedFindingGate.run_gate(body, reply + "\n" + quote)
+    assert run_folded_gate(body, reply).returncode == 1
+    result = run_folded_gate(body, reply + "\n" + quote)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_source_binding_and_each_item_remain_required(findings):
     issues, bodies = findings
     quoted = "\n".join("> " + _format_issue_line(issue) for issue in issues)
-    assert (
-        folded_tests.TestFoldedFindingGate.run_gate(bodies[0], quoted).returncode == 1
-    )
+    assert run_folded_gate(bodies[0], quoted).returncode == 1
     reply = "Dispositions: inline-fallback-claude-r14\n> " + _format_issue_line(
         issues[0]
     )
-    result = folded_tests.TestFoldedFindingGate.run_gate(bodies[0], reply)
+    result = run_folded_gate(bodies[0], reply)
     assert result.returncode == 1
     missing = next(line for line in bodies[0].splitlines() if "retry budget" in line)
     assert missing in result.stdout
@@ -197,7 +192,7 @@ def test_actual_thread_snapshot_keeps_posted_major_description_route(
     monkeypatch, shape, expected
 ):
     from github_pr_support import inline_post_marker
-    from test_gate_headline_drill import SKILL
+    from tests_support import SKILL
 
     description = "Validate credentials before forwarding"
     comments, _, _ = post_inline_comments.build_comments(

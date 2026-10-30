@@ -11,15 +11,12 @@ from __future__ import annotations
 import ast
 import json
 import signal
-import sys
 from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-from local_reviewer_support import (  # noqa: E402
+from local_reviewer_support import (
     ERROR_CRASHED,
     EXIT_NOT_INSTALLED,
     EXIT_SPAWN_FAILED,
@@ -29,6 +26,8 @@ from local_reviewer_support import (  # noqa: E402
     guarded_main,
     spawn_exit_reason,
 )
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 SHIMS = ("review_claude_local.py", "review_codex_local.py")
 

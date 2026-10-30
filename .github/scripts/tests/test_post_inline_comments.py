@@ -35,10 +35,10 @@ from post_inline_comments import (
 
 # The consumer of the round-cutoff comment: cutoff_findings in the plugin's
 # SKILL.md, the function the merge gate pastes into a shell. Its path has one
-# anchor, in the drill's test, and so does the way it is carved out of the
+# anchor, in tests_support, and so does the way it is carved out of the
 # file -- gate_function runs the drill's own extract() -- so the two cannot
 # disagree about where it is or about what it is.
-from test_gate_headline_drill import SKILL, gate_function
+from tests_support import SKILL, gate_function, run_folded_gate
 
 
 def _cutoff_findings(
@@ -717,52 +717,6 @@ class TestFoldedFindingGate:
             post_cutoff_summary("o/r", "7", reviewer, 14, comments)
         return captured[0], captured[1]
 
-    @staticmethod
-    def run_gate(
-        body: str,
-        reply: str = "",
-        *,
-        source_author: str = "github-actions[bot]",
-        source_type: str = "Bot",
-        reply_author: str = "hyuk-hur",
-        reply_type: str = "User",
-        source_at: str = "2026-10-22T00:00:00Z",
-    ) -> subprocess.CompletedProcess[str]:
-        assert shutil.which("jq"), "jq must be on PATH: cutoff_findings is a jq program"
-        comments = [
-            {
-                "id": 1,
-                "author": source_author,
-                "type": source_type,
-                "created_at": source_at,
-                "body": body,
-            }
-        ]
-        if reply:
-            comments.append(
-                {
-                    "id": 2,
-                    "author": reply_author,
-                    "type": reply_type,
-                    "created_at": "2026-10-22T00:01:00Z",
-                    "body": reply,
-                }
-            )
-        return subprocess.run(
-            [
-                "bash",
-                "-c",
-                gate_function("finding_key")
-                + "\n"
-                + gate_function("cutoff_findings")
-                + '\ncutoff_findings "2026-10-22T00:00:00Z"',
-            ],
-            input=json.dumps(comments),
-            text=True,
-            capture_output=True,
-            timeout=30,
-        )
-
     @pytest.mark.parametrize("index", [0, 1])
     def test_each_real_producer_requires_every_item(
         self, folded: tuple[str, str], index: int
@@ -775,7 +729,7 @@ class TestFoldedFindingGate:
             (marker + "\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second", 0),
         ]:
             # A response names the marker inline, never in the producer's first-line form.
-            result = self.run_gate(body, "Dispositions: " + reply if reply else "")
+            result = run_folded_gate(body, "Dispositions: " + reply if reply else "")
             assert result.returncode == expected, result.stdout + result.stderr
 
     @pytest.mark.parametrize(
@@ -787,8 +741,8 @@ class TestFoldedFindingGate:
     ) -> None:
         _, rest = folded[0].split("\n", 1)
         body = "<!-- inline-fallback-claude-r14 -->\n" + envelope + "\n" + rest
-        assert self.run_gate(body).returncode == 1
-        result = self.run_gate(
+        assert run_folded_gate(body).returncode == 1
+        result = run_folded_gate(
             body,
             "inline-fallback-claude-r14\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second",
         )
@@ -806,7 +760,7 @@ class TestFoldedFindingGate:
         self, folded: tuple[str, str], envelope: str
     ) -> None:
         first, rest = folded[0].split("\n", 1)
-        result = self.run_gate(
+        result = run_folded_gate(
             first + "\n" + envelope + "\n" + rest,
             "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both",
         )
@@ -825,13 +779,13 @@ class TestFoldedFindingGate:
         body = folded[0].replace("b.py:2", "a.py:1")
         first, second = [line for line in body.splitlines() if line.startswith("- **")]
         reply = "inline-fallback-claude-r14\n> " + first + "\nFixed: first"
-        partial = self.run_gate(body, reply)
+        partial = run_folded_gate(body, reply)
         assert partial.returncode == 1
         assert (
             "a.py:1 (whole item line required: 2 items share this location)"
             in partial.stdout
         )
-        result = self.run_gate(body, reply + "\n> " + second + "\nFixed: second")
+        result = run_folded_gate(body, reply + "\n> " + second + "\nFixed: second")
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize(
@@ -842,7 +796,7 @@ class TestFoldedFindingGate:
         ],
     )
     def test_empty_or_malformed_items_fail_closed(self, body: str) -> None:
-        result = self.run_gate(
+        result = run_folded_gate(
             body,
             "inline-fallback-claude round-cutoff-claude-r14\n> a.py:1\nFixed: item",
         )
@@ -855,10 +809,10 @@ class TestFoldedFindingGate:
 
     def test_crlf_and_marker_quotations(self, folded: tuple[str, str]) -> None:
         crlf_body = folded[0].replace("\n", "\r\n")
-        absent = self.run_gate(crlf_body)
+        absent = run_folded_gate(crlf_body)
         assert absent.returncode == 1
         assert "carries findings that have no thread id" in absent.stdout
-        result = self.run_gate(
+        result = run_folded_gate(
             crlf_body, "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -867,7 +821,7 @@ class TestFoldedFindingGate:
             "> " + folded[0],
             folded[0].replace(" -->", " --> suffix", 1),
         ]:
-            result = self.run_gate(body)
+            result = run_folded_gate(body)
             assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("index", [0, 1])
@@ -888,14 +842,15 @@ class TestFoldedFindingGate:
     ) -> None:
         body = folded[index]
         assert (
-            self.run_gate(body, source_author=author, source_type=kind).returncode == 1
+            run_folded_gate(body, source_author=author, source_type=kind).returncode
+            == 1
         )
         reply = (
             "Dispositions for "
             + body.splitlines()[0]
             + "\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second"
         )
-        result = self.run_gate(
+        result = run_folded_gate(
             body,
             reply,
             source_author=author,
@@ -903,7 +858,7 @@ class TestFoldedFindingGate:
             reply_author="another-reviewer",
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        result = self.run_gate(
+        result = run_folded_gate(
             body,
             reply,
             source_author=author,
@@ -923,7 +878,7 @@ class TestFoldedFindingGate:
             "<!-- " + marker + " -->\n"
             "inline-fallback-claude-r14\n> a.py:1\nFixed: first\n> b.py:2\nFixed: second"
         )
-        result = self.run_gate(
+        result = run_folded_gate(
             folded[0], reply, source_type="User", source_author="local-operator"
         )
         assert result.returncode == 1, result.stdout + result.stderr
@@ -941,8 +896,8 @@ class TestFoldedFindingGate:
         assert "\n- **bold** second line" in body
         marker = body.splitlines()[0]
         partial = "Dispositions: " + marker + "\n> a.py:1\nFixed: first"
-        assert self.run_gate(body, partial).returncode == 1
-        result = self.run_gate(body, partial + "\n> b.py:2\nFixed: second")
+        assert run_folded_gate(body, partial).returncode == 1
+        result = run_folded_gate(body, partial + "\n> b.py:2\nFixed: second")
         assert result.returncode == 0, result.stdout + result.stderr
 
     def test_legacy_cutoff_marker_is_found_for_a_local_producer(
@@ -950,12 +905,12 @@ class TestFoldedFindingGate:
     ) -> None:
         body = folded[1].replace("round-cutoff-claude-r14", "round-cutoff-claude")
         assert (
-            self.run_gate(
+            run_folded_gate(
                 body, source_type="User", source_author="local-reviewer"
             ).returncode
             == 1
         )
-        result = self.run_gate(
+        result = run_folded_gate(
             body, "round-cutoff-claude\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -969,7 +924,7 @@ class TestFoldedFindingGate:
         legacy = folded[0].replace(
             "inline-fallback-claude-r14", "inline-fallback-claude"
         )
-        result = self.run_gate(legacy, marker + "\n> a.py:1\n> b.py:2\nFixed: both")
+        result = run_folded_gate(legacy, marker + "\n> a.py:1\n> b.py:2\nFixed: both")
         assert result.returncode == 1, result.stdout + result.stderr
 
     @pytest.mark.parametrize("folded", ["separator"], indirect=True)
@@ -988,8 +943,8 @@ class TestFoldedFindingGate:
         if with_count:
             body = marker + "\n<!-- fold-count: 2 head: " + "a" * 40 + " -->\n" + rest
         reply = "Dispositions: " + marker + "\n> a.py:1\nFixed: first"
-        assert self.run_gate(body, reply).returncode == 1
-        result = self.run_gate(body, reply + "\n> b.py:2\nFixed: second")
+        assert run_folded_gate(body, reply).returncode == 1
+        result = run_folded_gate(body, reply + "\n> b.py:2\nFixed: second")
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("path", ["dir with space/a.py", "scheme:component/a.py"])
@@ -998,7 +953,7 @@ class TestFoldedFindingGate:
     ) -> None:
         body = folded[0].replace("a.py", path)
         reply = "inline-fallback-claude-r14\n> " + path + ":1\n> b.py:2\nFixed: both"
-        result = self.run_gate(body, reply)
+        result = run_folded_gate(body, reply)
         assert result.returncode == 0, result.stdout + result.stderr
 
     def test_missing_jq_fails_before_a_negative_case_can_pass(
@@ -1006,7 +961,7 @@ class TestFoldedFindingGate:
     ) -> None:
         monkeypatch.setattr(shutil, "which", lambda name: None)
         with pytest.raises(AssertionError, match="jq must be on PATH"):
-            self.run_gate("<!-- inline-fallback-claude -->\n- **a.py:1** -- item")
+            run_folded_gate("<!-- inline-fallback-claude -->\n- **a.py:1** -- item")
 
     @pytest.mark.parametrize("folded", ["whitespace"], indirect=True)
     def test_collision_quotes_can_drop_only_trailing_whitespace(
@@ -1016,12 +971,12 @@ class TestFoldedFindingGate:
         first, second = [line for line in body.splitlines() if line.startswith("- **")]
         assert first.endswith(": ") and second.endswith("   ")
         partial = "inline-fallback-claude-r14\n> " + first.rstrip() + "\nFixed: first"
-        assert self.run_gate(body, partial).returncode == 1
+        assert run_folded_gate(body, partial).returncode == 1
         wrong = (
             partial + "\n> " + second.rstrip().replace("second  with", "second with")
         )
-        assert self.run_gate(body, wrong).returncode == 1
-        result = self.run_gate(
+        assert run_folded_gate(body, wrong).returncode == 1
+        result = run_folded_gate(
             body, partial + "\n> " + second.rstrip() + "\nFixed: second"
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -1034,13 +989,12 @@ class TestFoldedFindingGate:
         # Fail only the items query, after marker discovery and reply matching.
         shim = 'jq() { if [[ " $* " == *" --arg i "* ]]; then return 17; fi; command jq "$@"; }'
         monkeypatch.setattr(
-            sys.modules[__name__],
-            "gate_function",
+            "tests_support.gate_function",
             lambda name: extracted + "\n" + shim
             if name == "cutoff_findings"
             else original_gate_function(name),
         )
-        result = self.run_gate(
+        result = run_folded_gate(
             folded[0], "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 1, result.stdout + result.stderr
@@ -1060,8 +1014,8 @@ class TestFoldedFindingGate:
         if with_count:
             body = marker + "\n<!-- fold-count: 2 head: " + "a" * 40 + " -->\n" + rest
         reply = "Dispositions: " + marker + "\n> a.py:1\nFixed: first"
-        assert self.run_gate(body, reply).returncode == 1
-        result = self.run_gate(body, reply + "\n> b.py:2\nFixed: second")
+        assert run_folded_gate(body, reply).returncode == 1
+        result = run_folded_gate(body, reply + "\n> b.py:2\nFixed: second")
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("folded", ["collision-template"], indirect=True)
@@ -1072,19 +1026,21 @@ class TestFoldedFindingGate:
         reply = section.split("```text\n", 1)[1].split("\n```", 1)[0]
         quotes = [line for line in reply.splitlines() if line.startswith("> ")]
         assert len(quotes) == 2
-        assert self.run_gate(folded[0], reply.replace(quotes[1], "", 1)).returncode == 1
-        result = self.run_gate(folded[0], reply)
+        assert (
+            run_folded_gate(folded[0], reply.replace(quotes[1], "", 1)).returncode == 1
+        )
+        result = run_folded_gate(folded[0], reply)
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("folded", ["unknown", "empty-severity"], indirect=True)
     def test_prefix_does_not_whitelist_severity(self, folded: tuple[str, str]) -> None:
-        assert self.run_gate(folded[0]).returncode == 1
-        missing = self.run_gate(
+        assert run_folded_gate(folded[0]).returncode == 1
+        missing = run_folded_gate(
             folded[0], "inline-fallback-claude-r14\n> b.py:2\nFixed: second"
         )
         assert missing.returncode == 1, missing.stdout + missing.stderr
         assert "a.py:1" in missing.stdout
-        result = self.run_gate(
+        result = run_folded_gate(
             folded[0], "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both"
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -1100,10 +1056,10 @@ class TestFoldedFindingGate:
         if counted:
             body = marker + "\n<!-- fold-count: 2 -->\n" + rest
         partial = "Dispositions: " + marker + "\n> b.py:2\nFixed: second"
-        missing = self.run_gate(body, partial)
+        missing = run_folded_gate(body, partial)
         assert missing.returncode == 1, missing.stdout + missing.stderr
         assert "a*b.py:1" in missing.stdout
-        result = self.run_gate(body, partial + "\n> a*b.py:1\nFixed: first")
+        result = run_folded_gate(body, partial + "\n> a*b.py:1\nFixed: first")
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize(
@@ -1117,10 +1073,10 @@ class TestFoldedFindingGate:
         body = folded[0]
         marker = body.splitlines()[0]
         partial = "Dispositions: " + marker + "\n> b.py:2\nFixed: second"
-        missing = self.run_gate(body, partial)
+        missing = run_folded_gate(body, partial)
         assert missing.returncode == 1, missing.stdout + missing.stderr
         assert "a.py:1" in missing.stdout
-        result = self.run_gate(body, partial + "\n> a.py:1\nFixed: first")
+        result = run_folded_gate(body, partial + "\n> a.py:1\nFixed: first")
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("folded", ["identical-first-lines"], indirect=True)
@@ -1135,8 +1091,10 @@ class TestFoldedFindingGate:
             + first.rstrip()
             + "\nFixed: authentication"
         )
-        assert self.run_gate(body, one).returncode == 1
-        result = self.run_gate(body, one + "\n> " + second.rstrip() + "\nFixed: socket")
+        assert run_folded_gate(body, one).returncode == 1
+        result = run_folded_gate(
+            body, one + "\n> " + second.rstrip() + "\nFixed: socket"
+        )
         assert result.returncode == 0, result.stdout + result.stderr
 
     @pytest.mark.parametrize("folded", [False, "round-looking-reviewer"], indirect=True)
@@ -1145,13 +1103,13 @@ class TestFoldedFindingGate:
     ) -> None:
         body = folded[0].replace("-r14 -->", " -->", 1)
         old = "2026-10-21T00:00:00Z"
-        assert self.run_gate(body, source_at=old).returncode == 1
+        assert run_folded_gate(body, source_at=old).returncode == 1
         reply = (
             "Dispositions: "
             + body.splitlines()[0]
             + "\n> a.py:1\n> b.py:2\nFixed: both"
         )
-        result = self.run_gate(body, reply, source_at=old)
+        result = run_folded_gate(body, reply, source_at=old)
         assert result.returncode == 0, result.stdout + result.stderr
 
     def test_round_scoped_fallback_history_is_also_retained(
@@ -1165,8 +1123,8 @@ class TestFoldedFindingGate:
             + rest
         )
         old = "2026-10-21T00:00:00Z"
-        assert self.run_gate(body, source_at=old).returncode == 1
-        result = self.run_gate(
+        assert run_folded_gate(body, source_at=old).returncode == 1
+        result = run_folded_gate(
             body,
             "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both",
             source_at=old,
@@ -1176,7 +1134,7 @@ class TestFoldedFindingGate:
     def test_old_cutoff_stays_outside_the_current_head_window(
         self, folded: tuple[str, str]
     ) -> None:
-        result = self.run_gate(folded[1], source_at="2026-10-21T00:00:00Z")
+        result = run_folded_gate(folded[1], source_at="2026-10-21T00:00:00Z")
         assert result.returncode == 0, result.stdout + result.stderr
         assert "no round-cutoff or inline-fallback" in result.stdout
 
@@ -1185,7 +1143,7 @@ class TestFoldedFindingGate:
     ) -> None:
         marker, rest = folded[0].split("\n", 1)
         body = marker + "\n<!-- fold-count: 3 -->\n" + rest
-        result = self.run_gate(
+        result = run_folded_gate(
             body,
             "inline-fallback-claude-r14\n> a.py:1\n> b.py:2\nFixed: both",
             source_at="2026-10-21T00:00:00Z",

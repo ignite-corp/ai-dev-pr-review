@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_prepare_pr_metadata import (
+from tests_support import (
     _GIT_ENV,
     SCRIPT_DIR,
     WORKFLOW,

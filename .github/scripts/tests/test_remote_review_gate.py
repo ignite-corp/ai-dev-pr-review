@@ -5,10 +5,13 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
-from test_gate_headline_drill import SKILL, gate_function
+from tests_support import SKILL, gate_function
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 HEAD = "a" * 40
 WF = "AI Code Review"
@@ -206,6 +209,10 @@ def run_gate(
 ):
     env = dict(
         os.environ,
+        # The gh stub runs this file directly, outside pytest's pythonpath setup.
+        PYTHONPATH=os.pathsep.join(
+            path for path in (str(SCRIPT_DIR), os.environ.get("PYTHONPATH", "")) if path
+        ),
         AUDIT_MODE=mode,
         AUDIT_MARKER=marker,
         AUDIT_ANSWER=answered,
@@ -222,6 +229,32 @@ def run_gate(
     return subprocess.run(
         ["bash", "-c", script], env=env, text=True, capture_output=True, timeout=30
     )
+
+
+@pytest.mark.parametrize(
+    "parent_path", [None, "", "/caller/first:/caller/second", ":/caller/first::"]
+)
+def test_gate_child_preserves_parent_pythonpath_without_adding_empty_entries(
+    monkeypatch: pytest.MonkeyPatch, parent_path: str | None
+) -> None:
+    if parent_path is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", parent_path)
+    observed: dict[str, str] = {}
+
+    def capture_child(
+        cmd: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs["env"])
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", capture_child)
+    run_gate("remote", "round-cutoff-claude-r1", "no")
+    expected = str(SCRIPT_DIR)
+    if parent_path:
+        expected += os.pathsep + parent_path
+    assert observed["PYTHONPATH"] == expected
 
 
 @pytest.mark.parametrize("mode", ["self", "remote", "both"])

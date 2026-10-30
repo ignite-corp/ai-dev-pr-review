@@ -17,7 +17,7 @@ import post_inline_comments as posting
 import review_pr_local as driver
 import fetch_review_context as context_reader
 import github_pr_support as support
-from test_round_cutoff_fold_count import (
+from tests_support import (
     _BELOW_CUTOFF,
     _BOT,
     _HEAD,

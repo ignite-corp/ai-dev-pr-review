@@ -15,10 +15,8 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-from review_coordinates import (  # noqa: E402
+from review_coordinates import (
     EVIDENCE_WINDOW,
     MIN_TOKEN_LEN,
     _source_lines,
@@ -30,6 +28,8 @@ from review_coordinates import (  # noqa: E402
     parse_diff,
     quoted_tokens,
 )
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 EVIDENCE = (
     SCRIPT_DIR.parent.parent

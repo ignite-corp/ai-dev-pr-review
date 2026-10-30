@@ -54,7 +54,7 @@ from aggregate_reviews import (
     _payload_failure_reason,
     format_summary,
 )
-from test_claude_review_allowed_bots import is_allowed_bot
+from tests_support import is_allowed_bot
 
 _REPO = Path(__file__).resolve().parents[3]
 _ACTION = _REPO / ".github" / "actions" / "claude-review" / "action.yml"

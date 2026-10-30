@@ -6,14 +6,9 @@ import io
 import json
 import sys
 import urllib.error
-from pathlib import Path
 from typing import Any
 
-# Add parent dir to path for import
-SCRIPT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
-
-import switch_claude_auth as sca  # noqa: E402
+import switch_claude_auth as sca
 
 _NOW = 1_800_000_000.0
 _FORCE_PATH = "/orgs/ignite-corp/actions/variables/CLAUDE_FORCE_API"

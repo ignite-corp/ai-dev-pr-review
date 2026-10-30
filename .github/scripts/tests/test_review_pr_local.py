@@ -18,19 +18,18 @@ import errno
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-import local_reviewer_support as support  # noqa: E402
-import review_pr_local as driver  # noqa: E402
-from local_review_config import LocalConfig, workflow_defaults  # noqa: E402
-from reviewer_prompts import existing_threads_block  # noqa: E402
+import local_reviewer_support as support
+import review_pr_local as driver
+from local_review_config import LocalConfig, workflow_defaults
+from reviewer_prompts import existing_threads_block
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
 NEW_MODULES = (
     "review_pr_local.py",

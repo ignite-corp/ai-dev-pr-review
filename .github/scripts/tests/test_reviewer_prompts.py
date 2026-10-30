@@ -19,17 +19,14 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
-from local_review_config import WORKFLOW_DIR  # noqa: E402
-from reviewer_prompts import (  # noqa: E402
+from local_review_config import WORKFLOW_DIR
+from reviewer_prompts import (
     MAX_EXISTING_THREADS,
     MAX_THREAD_BODY_CHARS,
     build_claude_prompt,
