@@ -654,12 +654,12 @@ The merge call runs only when, **on the same head SHA, read immediately before t
 What counts as a verdict is the repository's `AGENTS.md`'s to declare, not this skill's: the review workflow's name, which step 8 already requires, and, for a local review, the header its verdict comment opens with. The two kinds are bound differently, and the block below does both. Kind (i)'s aggregate is bound to an identity — `github-actions[bot]` or `ignite-ai-review-approver[bot]`, user type `Bot`, the workflow's own token or its App's — because those are identities no session's account can post under, so they tell the workflow's comment or review from everyone else's. Kind (ii)'s verdict cannot be: every session posts as one account, so an author list there — `Bot`, a `[bot]` suffix, `github-actions`, a login — would be a list of whom to trust rather than of what was said, and the gate carries none for it. With identity unavailable, the content check is the only thing that separates a verdict from a request that quotes one, so kind (ii) is a contract of **position and form, default-deny**: the comment's first non-empty line, whole, is `## LENS 판정 — **<word>** · head `<40-char SHA>`` — `LENS verdict` is accepted in the same slot — with the full head SHA, a prefix being no name. The captured word is the verdict, and it approves only when it is exactly `승인` or, case-insensitively, `APPROVE` / `APPROVED`. Any other word — `차단 1건`, `승인 보류`, `승인 아님`, `CHANGES REQUESTED` — is a verdict that does not approve, and it blocks. A comment whose first line is any other shape is not a verdict, whatever its body says: a review request, a quotation of a verdict, a gate record never count — and must never be posted in the header shape, because the shape is the whole of what the gate reads. On one head the newest verdict decides: an approval followed by a non-approval blocks. This is the contract a local reviewer posts to; the defaults below are LENS's actual header, and a repository that declares its own overrides both regexes. When both kinds exist on the same head, both are dispositioned: two reviewers, not duplicates. What a kind (ii) verdict leaves to the operator it lists in the aggregate's item shape, `- + **major** `<path>[:<line>]` -- <description>`, and the gate checks those the way it checks the aggregate's own: `verdict_dispositions` below runs `major_dispositions` on every verdict (a) named, whichever kind, so an approval that lists an item nobody answered blocks on either path. An item in any other shape is the human read (c) prints, and the verdict word is the reviewer's own disposition of it — a hand verdict has no `Approved with N` headline, so nothing but its item lines can count its majors.
 
 ```bash
-# Nothing here is carried forward: every condition is read on the head that
-# exists NOW, and the merge call names that head.
-HEAD_SHA=$(gh pr view N --repo OWNER/REPO --json headRefOid --jq .headRefOid) \
-  || { echo "ERROR: could not read the PR head"; exit 1; }
-[ "${#HEAD_SHA}" -eq 40 ] || { echo "ERROR: need the full 40-char head SHA, got '$HEAD_SHA'"; exit 1; }
-
+# The pull request the gate reads. Every read in this block names it
+# through these three, so they are filled once, here (AT-3142). The merge
+# block after the gate carries its own literals.
+OWNER='<owner>'
+REPO='<repo>'
+PR='<pr number>'
 # What counts as a verdict is the repository's AGENTS.md's to declare (Review
 # routing, rule 5): the review workflow's name — step 8's literal — and, for a
 # local review, the header its verdict comment opens with. The two regexes
@@ -700,6 +700,35 @@ REMOTE_REVIEW_SOURCE=''
 FPUSH_PAGE_CAP=10
 VERDICT_RE='^##\s*LENS (?:판정|verdict)\s*—\s*\*\*(?<word>[^*]+)\*\*\s*·\s*head\s*`?<HEAD_SHA>`?\s*$'
 APPROVE_WORDS='^(?:승인|(?i:approved?))$'
+
+# The five literals above that must be filled before any read can run,
+# checked before the first gh call. RUNNER_REPO and REMOTE_REVIEW_SOURCE
+# are not among them: empty is a meaningful setting for both, and each is
+# read on its own terms below. Left at its placeholder, PR or OWNER/REPO
+# used to surface as whatever gh said about it — a 404, `no pull requests
+# found for branch "N"`, a GraphQL type error — one site per run
+# (AT-3142). All unfilled ones are named at once. PR, OWNER and REPO are held to the shape the
+# reads need, so a filled but malformed value is refused here too.
+# REVIEW_WF and EXPECTED_REVIEWERS keep their own checks below, and this
+# refuses early only what those already refuse: REVIEW_WF empty or at its
+# placeholder (review_workflow_known), EXPECTED_REVIEWERS at its
+# placeholder. An empty EXPECTED_REVIEWERS stays headline_roster's, which
+# clears kind (i) rather than stopping the gate.
+unfilled=$(
+  [[ $OWNER =~ ^[A-Za-z0-9-]+$ ]] || echo "  OWNER is '$OWNER' — the repository owner, the part before the slash"
+  [[ $REPO =~ ^[A-Za-z0-9._-]+$ && $REPO != . && $REPO != .. ]] || echo "  REPO is '$REPO' — the repository name, the part after the slash"
+  [[ $PR =~ ^[1-9][0-9]*$ ]] || echo "  PR is '$PR' — the pull request number"
+  case $REVIEW_WF in '' | '<'*'>') echo "  REVIEW_WF is '$REVIEW_WF' — the review workflow's name (step 8)" ;; esac
+  case $EXPECTED_REVIEWERS in '<'*'>') echo "  EXPECTED_REVIEWERS is '$EXPECTED_REVIEWERS' — the configured reviewer count (step 8)" ;; esac
+)
+[ -z "$unfilled" ] \
+  || { echo "ERROR: placeholder(s) unfilled or not in the shape the gate needs — fix each, then paste the block again; nothing has been read yet:"; printf '%s\n' "$unfilled"; exit 1; }
+
+# Nothing here is carried forward: every condition is read on the head that
+# exists NOW, and the merge call names that head.
+HEAD_SHA=$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid --jq .headRefOid) \
+  || { echo "ERROR: could not read the PR head"; exit 1; }
+[ "${#HEAD_SHA}" -eq 40 ] || { echo "ERROR: need the full 40-char head SHA, got '$HEAD_SHA'"; exit 1; }
 
 # A remote review reports an App check run instead of a workflow run here.
 # Select the newest identity-matched start before judging its status/result.
@@ -1622,10 +1651,10 @@ cutoff_findings() {
 #     this SHA, and it must approve — an older approval under a newer
 #     non-approval is a block. Zero of either is a block: no verdict is not
 #     "nothing to answer".
-workflow_names_raw=$(gh api --paginate "repos/OWNER/REPO/actions/workflows?per_page=100" \
+workflow_names_raw=$(gh api --paginate "repos/$OWNER/$REPO/actions/workflows?per_page=100" \
   --jq '.workflows[] | {id, name} | @json') \
   || { echo "ERROR: could not list the repository's workflows — without them a run cannot be matched to REVIEW_WF"; exit 1; }
-wf_runs=$(gh api --paginate "repos/OWNER/REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+wf_runs=$(gh api --paginate "repos/$OWNER/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
   --jq '.workflow_runs[] | {id, workflow_id, status, conclusion, created_at, updated_at, html_url} | @json') \
   || { echo "ERROR: could not list the runs on $HEAD_SHA"; exit 1; }
 workflow_runs=$(jq -n --argjson w "$(printf '%s\n' "$workflow_names_raw" | jq -s .)" \
@@ -1635,7 +1664,7 @@ workflow_runs=$(jq -n --argjson w "$(printf '%s\n' "$workflow_names_raw" | jq -s
                createdAt: .created_at, updatedAt: .updated_at, url: .html_url} ]') \
   || { echo "ERROR: could not join the runs to their workflow names on $HEAD_SHA"; exit 1; }
 # surface 2 — a check run a review dispatched elsewhere reported into this repository
-raw_k=$(gh api --paginate "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
+raw_k=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
   --jq '.check_runs[] | {name, status, conclusion, started_at, completed_at, app: .app.slug, details_url} | @json') \
   || { echo "ERROR: could not list the check runs on $HEAD_SHA"; exit 1; }
 checks=$(printf '%s\n' "$raw_k" | jq -s .) \
@@ -1776,7 +1805,7 @@ elif [ -n "$RUNNER_REPO" ]; then
     # The same rule decides the other two on the call below: `$o` and
     # `$r` are declared `String!`, GitHub allows an all-digit owner or
     # repository name, and an operator substituting one would get the
-    # same unactionable exit. They take `-f`. `-F n=N` stays `-F`,
+    # same unactionable exit. They take `-f`. `-F n="$PR"` stays `-F`,
     # because `$n:Int!` needs exactly the coercion the others must not
     # have. The three other GraphQL calls in this block predate this
     # row and are left as they are.
@@ -1788,11 +1817,11 @@ elif [ -n "$RUNNER_REPO" ]; then
       pageInfo { hasPreviousPage startCursor }
       nodes { ... on HeadRefForcePushedEvent { createdAt afterCommit { oid } } } }
   } }
-}' -f o=OWNER -f r=REPO -F n=N ${fpush_before[@]+"${fpush_before[@]}"} \
+}' -f o="$OWNER" -f r="$REPO" -F n="$PR" ${fpush_before[@]+"${fpush_before[@]}"} \
       --jq '.data.repository.pullRequest.timelineItems
             | {more: .pageInfo.hasPreviousPage, cursor: (.pageInfo.startCursor // ""),
                nodes: [.nodes[] | {oid: (.afterCommit.oid // ""), at: (.createdAt // "")}]} | @json') \
-      || { echo "ERROR: could not read page $fpush_pages of the force-push events on OWNER/REPO#N — gh printed why above; the bound is not falling back to the committer date on a read that failed"; exit 1; }
+      || { echo "ERROR: could not read page $fpush_pages of the force-push events on $OWNER/$REPO#$PR — gh printed why above; the bound is not falling back to the committer date on a read that failed"; exit 1; }
     # Guarded like every other read here, and for the reason this whole
     # arm exists: a failed jq leaves `head_push_time` empty, which is
     # byte-identical to the legitimate absence of an event —
@@ -1802,23 +1831,23 @@ elif [ -n "$RUNNER_REPO" ]; then
     # shell options, so nothing catches it for them.
     head_push_time=$(printf '%s\n' "$fpush_raw" | jq -r --arg s "$HEAD_SHA" \
       '[.nodes[] | select(.oid == $s) | .at] | max // ""') \
-      || { echo "ERROR: could not read the force-push stamp for $HEAD_SHA out of the timeline OWNER/REPO#N returned — an unreadable answer is not an absent event, and the bound does not fall back on one"; exit 1; }
+      || { echo "ERROR: could not read the force-push stamp for $HEAD_SHA out of the timeline $OWNER/$REPO#$PR returned — an unreadable answer is not an absent event, and the bound does not fall back on one"; exit 1; }
     fpush_seen=$(printf '%s\n' "$fpush_raw" | jq -r '.nodes | length') \
-      || { echo "ERROR: could not count the force-push events read on OWNER/REPO#N — see above: an unreadable answer is not an absent event"; exit 1; }
+      || { echo "ERROR: could not count the force-push events read on $OWNER/$REPO#$PR — see above: an unreadable answer is not an absent event"; exit 1; }
     fpush_more=$(printf '%s\n' "$fpush_raw" | jq -r '.more') \
-      || { echo "ERROR: could not read whether older force-push events remain on OWNER/REPO#N — without it the gate cannot tell an exhausted connection from a truncated one"; exit 1; }
+      || { echo "ERROR: could not read whether older force-push events remain on $OWNER/$REPO#$PR — without it the gate cannot tell an exhausted connection from a truncated one"; exit 1; }
     fpush_cursor=$(printf '%s\n' "$fpush_raw" | jq -r '.cursor') \
-      || { echo "ERROR: could not read the cursor for the next page of force-push events on OWNER/REPO#N — without it this walk cannot continue, and a truncated walk is not an absent event"; exit 1; }
+      || { echo "ERROR: could not read the cursor for the next page of force-push events on $OWNER/$REPO#$PR — without it this walk cannot continue, and a truncated walk is not an absent event"; exit 1; }
     # Shape, not only exit status: jq exits 0 over a payload that has
     # no `.nodes` and no `.pageInfo`, so only a well-formed answer is
     # allowed to decide, and an empty stamp counts as the no-event
     # case only when it came out of one.
     case $fpush_seen in
-      '' | *[!0-9]* ) echo "ERROR: the force-push event count on OWNER/REPO#N read back as '${fpush_seen:-<empty>}', not a number, so the timeline read did not return what this gate expects"; exit 1 ;;
+      '' | *[!0-9]* ) echo "ERROR: the force-push event count on $OWNER/$REPO#$PR read back as '${fpush_seen:-<empty>}', not a number, so the timeline read did not return what this gate expects"; exit 1 ;;
     esac
     case $fpush_more in
       true | false ) : ;;
-      * ) echo "ERROR: the timeline's hasPreviousPage on OWNER/REPO#N read back as '${fpush_more:-<empty>}', not a boolean, so the gate cannot tell an exhausted connection from a truncated one"; exit 1 ;;
+      * ) echo "ERROR: the timeline's hasPreviousPage on $OWNER/$REPO#$PR read back as '${fpush_more:-<empty>}', not a boolean, so the gate cannot tell an exhausted connection from a truncated one"; exit 1 ;;
     esac
     case $head_push_time in
       '' | [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z ) : ;;
@@ -1828,7 +1857,7 @@ elif [ -n "$RUNNER_REPO" ]; then
     [ -z "$head_push_time" ] || break
     [ "$fpush_more" = true ] || break
     [ -n "$fpush_cursor" ] \
-      || { echo "ERROR: OWNER/REPO#N reports older force-push events but returned no cursor to reach them — a walk that cannot continue is not an exhausted one"; exit 1; }
+      || { echo "ERROR: $OWNER/$REPO#$PR reports older force-push events but returned no cursor to reach them — a walk that cannot continue is not an exhausted one"; exit 1; }
   done
   # The server stamp, where there is one, is the whole bound — not the
   # later of it and the committer date. It is the moment this SHA
@@ -1855,7 +1884,7 @@ elif [ -n "$RUNNER_REPO" ]; then
     # back normalised to UTC even for a commit made on a machine that is
     # not, so the pattern below requires the `Z`, and the lexicographic
     # comparison in `runner_dispatch` is valid because of it.
-    head_commit_time=$(gh api repos/OWNER/REPO/commits/"$HEAD_SHA" --jq .commit.committer.date) \
+    head_commit_time=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq .commit.committer.date) \
       || { echo "ERROR: could not read the committer date of $HEAD_SHA, and with no force-push stamp for this head there is nothing else to bound a runner-side run with"; exit 1; }
     case $head_commit_time in
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z ) : ;;
@@ -1864,9 +1893,9 @@ elif [ -n "$RUNNER_REPO" ]; then
     head_bound=committer
     head_time=$head_commit_time
     head_time_note="the committer date, not a push stamp — see the caveat above"
-    echo "(a) kind (i): no force-push event for $HEAD_SHA among the $fpush_total_seen read on OWNER/REPO#N over $fpush_pages page(s) (older ones remain: $fpush_more) — the bound below is the committer date, which the commit's author can set, so it cannot say a completed run belongs to this head rather than the last"
+    echo "(a) kind (i): no force-push event for $HEAD_SHA among the $fpush_total_seen read on $OWNER/$REPO#$PR over $fpush_pages page(s) (older ones remain: $fpush_more) — the bound below is the committer date, which the commit's author can set, so it cannot say a completed run belongs to this head rather than the last"
   fi
-  disp=$(runner_dispatch OWNER/REPO N "$head_time" "$round_surface") \
+  disp=$(runner_dispatch "$OWNER/$REPO" "$PR" "$head_time" "$round_surface") \
     || { echo "ERROR: could not locate the dispatch in $RUNNER_REPO"; exit 1; }
   IFS=$'\x1f' read -r disp_kind disp_id disp_status disp_url disp_earlier <<<"$disp"
   # The tuple is checked for shape BEFORE anything is decided from it.
@@ -1888,9 +1917,9 @@ elif [ -n "$RUNNER_REPO" ]; then
     # case re-dispatching cancels a round that is running, which is
     # what the `running` reading warns against.
     none)    if [ "$head_bound" = server ]; then
-               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO has no review run for OWNER/REPO#N since $head_time ($head_time_note) — nothing was dispatched for it. Re-dispatch it, or wait for the webhook (AT-3007). Do not merge on a round that is not there"
+               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO has no review run for $OWNER/$REPO#$PR since $head_time ($head_time_note) — nothing was dispatched for it. Re-dispatch it, or wait for the webhook (AT-3007). Do not merge on a round that is not there"
              else
-               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO has no review run for OWNER/REPO#N since $head_time ($head_time_note) — but with no server-side push stamp that window may start after a round this head's dispatch already began, so this is not proof that nothing was dispatched. Wait for the webhook (AT-3007); before re-dispatching, read $RUNNER_REPO's recent runs for this PR, because a second dispatch cancels one that is running. Do not merge on a round that is not there"
+               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO has no review run for $OWNER/$REPO#$PR since $head_time ($head_time_note) — but with no server-side push stamp that window may start after a round this head's dispatch already began, so this is not proof that nothing was dispatched. Wait for the webhook (AT-3007); before re-dispatching, read $RUNNER_REPO's recent runs for this PR, because a second dispatch cancels one that is running. Do not merge on a round that is not there"
              fi ;;
     # WAIT blocks either way, so an unauthoritative bound may produce
     # it — but on that bound a round still running may be the PREVIOUS
@@ -1898,9 +1927,9 @@ elif [ -n "$RUNNER_REPO" ]; then
     # never resolve this wait, while the line's own warning discourages
     # the re-dispatch that would end it. So the arm says which it is.
     running) if [ "$head_bound" = server ]; then
-               echo "(a) kind (i): no round here yet, and $RUNNER_REPO's run $disp_id for OWNER/REPO#N, started since $head_time ($head_time_note), is '$disp_status' ($disp_url) — WAIT for it. Do NOT re-dispatch: a second dispatch cancels this one"
+               echo "(a) kind (i): no round here yet, and $RUNNER_REPO's run $disp_id for $OWNER/$REPO#$PR, started since $head_time ($head_time_note), is '$disp_status' ($disp_url) — WAIT for it. Do NOT re-dispatch: a second dispatch cancels this one"
              else
-               echo "(a) kind (i): no round here yet, and $RUNNER_REPO's run $disp_id for OWNER/REPO#N is '$disp_status' ($disp_url), started after $head_time ($head_time_note) — WAIT, but read which head it was dispatched for before waiting long: with no server-side push stamp this may be the previous head's round, which posts on the old SHA and will never complete this wait. Do NOT re-dispatch blind: a second dispatch cancels a round that is genuinely this head's."
+               echo "(a) kind (i): no round here yet, and $RUNNER_REPO's run $disp_id for $OWNER/$REPO#$PR is '$disp_status' ($disp_url), started after $head_time ($head_time_note) — WAIT, but read which head it was dispatched for before waiting long: with no server-side push stamp this may be the previous head's round, which posts on the old SHA and will never complete this wait. Do NOT re-dispatch blind: a second dispatch cancels a round that is genuinely this head's."
                echo "    gh run view $disp_id --repo $RUNNER_REPO"
              fi ;;
     # The one reading that opens a path forward rather than blocking, so
@@ -1909,7 +1938,7 @@ elif [ -n "$RUNNER_REPO" ]; then
     # head's finished round, and it says so instead of guessing: WAIT
     # and re-dispatch both block, and blocking is the safe side.
     died)    if [ "$head_bound" = server ]; then
-               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO's newest run for OWNER/REPO#N since $head_time ($head_time_note) completed without posting one ($disp_url) — the runner could not produce a verdict. Read why, then per Review routing a local review (kind (ii)) is the path on this head:"
+               echo "(a) kind (i): no round on either surface here, and $RUNNER_REPO's newest run for $OWNER/$REPO#$PR since $head_time ($head_time_note) completed without posting one ($disp_url) — the runner could not produce a verdict. Read why, then per Review routing a local review (kind (ii)) is the path on this head:"
                echo "    gh run view $disp_id --repo $RUNNER_REPO --log-failed"
              else
                echo "(a) kind (i): $RUNNER_REPO's run $disp_id completed after $head_time ($head_time_note) ($disp_url), but with no server-side push stamp for $HEAD_SHA the gate cannot say it is THIS head's dispatch rather than the previous head's round — it is not read as a dead dispatch, and kind (ii) is not opened on it. WAIT; before re-dispatching, read $RUNNER_REPO's recent runs for this PR, because a second dispatch cancels one that is running — and on this bound a round genuinely in flight for this head can have been created before it, which puts it in the earlier count rather than among the candidates:"
@@ -1936,9 +1965,9 @@ else
   # are (Review routing rule 5).
   echo "(a) kind (i): no round on either surface here, and RUNNER_REPO is empty, taken as 'this repository reviews itself', so there is nowhere else to look. Wait and re-ask; if it stays empty the workflow did not trigger on this push, and Review routing's local review (kind (ii)) is the path. Do not merge on a round that is not there. And if a runner does review this repository, that empty value is an unfilled literal rather than a fact: fill it from this repository's AGENTS.md (Review routing rule 5), as REVIEW_WF and EXPECTED_REVIEWERS are filled, and read this row again"
 fi
-c_total=$(gh api repos/OWNER/REPO/issues/N --jq .comments) \
+c_total=$(gh api "repos/$OWNER/$REPO/issues/$PR" --jq .comments) \
   || { echo "ERROR: could not read the comment count"; exit 1; }
-raw=$(gh api --paginate repos/OWNER/REPO/issues/N/comments \
+raw=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/comments" \
   --jq '.[] | {id, created_at, author: .user.login, type: .user.type, body: (.body // "")} | @json') \
   || { echo "ERROR: could not read the comments"; exit 1; }
 comments=$(printf '%s\n' "$raw" | jq -s .) \
@@ -1953,9 +1982,9 @@ c_seen=$(printf '%s' "$comments" | jq length) \
 # comment count came from the issue object, and a short list is a block.
 r_total=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!) {
   repository(owner:$o,name:$r) { pullRequest(number:$n) { reviews(first:1) { totalCount } } }
-}' -F o=OWNER -F r=REPO -F n=N --jq '.data.repository.pullRequest.reviews.totalCount') \
+}' -F o="$OWNER" -F r="$REPO" -F n="$PR" --jq '.data.repository.pullRequest.reviews.totalCount') \
   || { echo "ERROR: could not read the review count"; exit 1; }
-raw_r=$(gh api --paginate repos/OWNER/REPO/pulls/N/reviews \
+raw_r=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" \
   --jq '.[] | {id, created_at: .submitted_at, author: .user.login, type: .user.type, state, commit_id, body: (.body // "")} | @json') \
   || { echo "ERROR: could not read the reviews"; exit 1; }
 reviews=$(printf '%s\n' "$raw_r" | jq -s .) \
@@ -2057,7 +2086,7 @@ snap_json=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!) {
     reviewThreads(last:50) { totalCount nodes { id isResolved path line originalLine
       comments(first:100) { totalCount nodes { body author { login __typename } } } } }
   } }
-}' -F o=OWNER -F r=REPO -F n=N --jq '.data.repository.pullRequest') \
+}' -F o="$OWNER" -F r="$REPO" -F n="$PR" --jq '.data.repository.pullRequest') \
   || { echo "ERROR: could not read the threads"; exit 1; }
 snap=$(printf '%s' "$snap_json" | jq -r \
   '"\(.headRefOid) \(.reviewThreads.totalCount) \([.reviewThreads.nodes[] | select(.isResolved|not) | .id] | join(" "))"') \
@@ -2109,7 +2138,7 @@ short=$(printf '%s' "$snap_json" | jq -r \
 #     only REVIEW_WF — since a run and the check runs its jobs register are
 #     not one record (step 8's "not visible yet" window). Either surface
 #     naming anything not completed refuses.
-running=$(gh api --paginate "repos/OWNER/REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
+running=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
   --jq '.check_runs[] | select(.status!="completed") | "\(.name):\(.status)"') \
   || { echo "ERROR: could not list check-runs on $HEAD_SHA"; exit 1; }
 pending=$(printf '%s' "$runs" \
