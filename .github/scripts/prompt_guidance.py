@@ -1,46 +1,16 @@
 #!/usr/bin/env python3
-"""The guidance a reviewer prompt must carry, and the check for it (AT-2844).
+"""Base-owned reviewer guidance and consumer prompt availability (AT-3159).
 
-One list, read by: the tests that hold this repo's own reviewer instructions
-to it, the tests that hold the consumer template (examples/prompts/) to it,
-``TestPromptGuidance`` in test_verify_action_shas.py, which holds a checkout's
-.github/prompts/code-review-system.md to it and skips where that file is
-absent, as it is here, and consumer-health.yml, which reads each tracked
-consumer's prompts, and the runner's default-prompts/, every day and reports
-what they lack. A consumer's copy is the consumer's file (MIGRATION.md,
-"Upgrading an already-onboarded consumer"), so no test in this repo reaches
-it; this module is how the daily check and the tests agree on what "carries
-the guidance" means without a second hand-kept list.
+CONGRUENCE_BLOCK and PIN_BLOCK travel in the reviewers' own instructions,
+through the consumer's or runner's review pin. Tests hold all three rendered
+reviewers to these canonical blocks and execute Claude's inline workflow shell
+against its local mirror, preserving pre-tag self-review compatibility.
 
-Two groups, with two different homes:
-
-- ``congruence`` lives in the reviewers' own instructions only, which are
-  base-owned and travel with the pin, so they reach every consumer and every
-  runner target without a copy. ``CONGRUENCE_BLOCK`` is the text, and the
-  base carries it four times: the inline shell in base-ai-review-single.yml
-  and its mirror reviewer_prompts.py (Claude), review_prompt.md (Codex) and
-  review_gemini.py (Gemini). test_reviewer_prompts.py holds the shell
-  byte-equal to the mirror, and test_prompt_guidance.py holds the three
-  rendered prompts byte-equal to this constant, so an edit changes all four.
-  The definition's home is ~/.claude/AGENTS.md, ``### Congruent features``
-  (the definition owner's choice); the block points there and does not copy
-  it. The pointer is for the person reading a finding -- the model reviewing
-  in CI cannot open it, and the questions inline are what it applies.
-  Consumer prompts owe none of it,
-  and the daily check reads a consumer's pin freshness, not its prompt, for
-  whether the questions reach it.
-- ``pin`` is the consumer prompt's, all-or-none. These are the labels
-  verify_action_shas.py emits into context.md, which a prompt's
-  ``## GitHub Actions SHA Pins`` section keys on, and that heading itself;
-  when the heading is there the labels are read inside its section only.
-  MIGRATION.md says a prompt
-  with no such section needs no change, because the rendered blurb is then
-  its only guidance; a section that carries some of the labels but not all
-  is the AT-2801 drift, a reviewer told about one 404 label and not the
-  other.
-
-Matching is exact text after collapsing whitespace, so a prompt may wrap a
-sentence at any column; it may not reword it.
+Consumer prompts contain repository-specific guidance and owe no copy of
+these shared rules. The CLI still reads their files and reports unreadable
+text. Its --control mode checks the actual base Codex instructions against
+REVIEWER_INSTRUCTIONS, through the same remote fetch path in consumer-health.
+Matching collapses whitespace but never rewords a rule.
 """
 
 from __future__ import annotations
@@ -99,27 +69,42 @@ CONGRUENCE = GuidanceGroup(
 )
 
 PIN = GuidanceGroup(
+    # Explicit ids keep health diagnostics tied to the same semantic rule
+    # when the canonical policy is reordered or wrapped.
     items={
-        # The section heading counts as an item, so a section kept with
-        # every label reworded is a partial section, not an absent one.
         "pin-section": "## GitHub Actions SHA Pins",
-        "pin-comment-matches-false": 'comment-matches="false"',
-        "pin-absent-comment-matches": "absent from the `<pin>` element",
-        "pin-repo-not-found": 'error="repo-not-found"',
-        "pin-repo-not-visible": 'error="repo-not-visible"',
+        "pin-context": "When the diff pins a SHA for a GitHub Action (`uses: owner/repo@<SHA>`), consult the `<verified-action-pins>` section in context.md and apply these rules by status:",
+        "pin-verified": '- **`status="verified"`** -- The SHA matched a tag in the upstream repository\'s tag listing. Treat the SHA as definitively valid: do NOT raise a critical/major about SHA invalidity; any such claim would be a false positive.',
+        "pin-comment-matches-false": '  - If the same pin carries **`comment-matches="false"`**, the `# vX.Y` version comment in the diff drifts from the resolved upstream tag (given in the `tag="..."` attribute). This IS a legitimate finding -- raise as `minor` and cite the `tag=` value as the correct version comment.',
+        "pin-absent-comment-matches": "  - The `comment-matches` attribute appears **only when the diff line carried a `# vX.Y` comment**. If the attribute is absent from the `<pin>` element, the PR chose not to annotate the pin with a version comment -- that is not a finding and MUST NOT be flagged as a comment mismatch.",
+        "pin-unmatched": '- **`status="unmatched"`** -- The tag listing was fetched successfully but the SHA did not appear in any tag. This indicates a stale mirror, a force-pushed tag, or a wrong/typo\'d SHA. Raise as `major`: the upstream repo is reachable, so the discrepancy is deterministic, not transient.',
+        "pin-repo-not-found": '- **`status="unverified"` with `error="repo-not-found"`** -- The API returned 404 for a repository whose owner is not the owner of the repository under review, or the run\'s own owner could not be determined. GitHub answers 404 both for a repository that does not exist and for a private one this run\'s token may not read, so the 404 does NOT establish that the repository is absent. Where the owners are known to differ, the pin is usually a public action, which makes a misspelled `owner/repo` the likelier of the two. Ask the author to confirm the `owner/repo` spelling; do NOT claim the repository does not exist. Raise only as `suggestion`.',
+        "pin-repo-not-visible": '- **`status="unverified"` with `error="repo-not-visible"`** -- The API returned 404 for a repository whose owner is the owner of the repository under review. The same two causes are indistinguishable here, and when the owners match the likelier one is a private repository this run\'s token cannot read. Still ask the author to confirm the `owner/repo` spelling, since a typo or a renamed/deleted action looks identical and would otherwise fail only at runtime; do NOT claim the repository does not exist. Raise only as `suggestion`.',
+        "pin-transient": '- **`status="unverified"` with any other `error`** (`rate-limit`, `timeout`, `api-error: ...`, `json-decode-error`, `unknown`) -- The verification itself failed transiently; we could not confirm or deny the pin. Raise only as `suggestion`; do not raise `critical`/`major` since the SHA was not actually checked.',
     },
-    all_or_none=True,
+    all_or_none=False,
     section="pin-section",
 )
 
-# This repo's own reviewer instructions (the Claude prompt, review_prompt.md,
-# review_gemini.py). Pin guidance is not theirs to carry: the blurb
-# verify_action_shas.py renders into context.md travels with it.
-REVIEWER_INSTRUCTIONS: tuple[GuidanceGroup, ...] = (CONGRUENCE,)
+# Render the canonical policy from its one home, preserving the paragraph
+# spacing and nested bullet indentation delivered by every reviewer.
+PIN_BLOCK = (
+    PIN.items["pin-section"]
+    + "\n\n"
+    + PIN.items["pin-context"]
+    + "\n\n"
+    + "\n".join(
+        rule
+        for item, rule in PIN.items.items()
+        if item not in ("pin-section", "pin-context")
+    )
+    + "\n"
+)
 
-# A consumer's code-review-system.md and code-review-checklist.md, read
-# together the way prepare concatenates them into context.md.
-CONSUMER_PROMPTS: tuple[GuidanceGroup, ...] = (PIN,)
+REVIEWER_INSTRUCTIONS: tuple[GuidanceGroup, ...] = (CONGRUENCE, PIN)
+
+# Consumer/runner files are still read; shared guidance arrives via their pin.
+CONSUMER_PROMPTS: tuple[GuidanceGroup, ...] = ()
 
 
 def _normalize(text: str) -> str:
@@ -198,13 +183,13 @@ def missing_items(
 
 
 def main(argv: Sequence[str]) -> int:
-    """Check prompt files against ``CONSUMER_PROMPTS``.
+    """Read consumer prompt files, or check base instructions with --control.
 
     usage: prompt_guidance.py [--control] FILE [FILE ...]
 
     The files are read together, as prepare concatenates the system prompt
-    and the checklist into context.md. ``--control`` requires every group,
-    all-or-none ones included, for the positive control. Prints each missing
+    and the checklist into context.md. ``--control`` requires every group
+    in REVIEWER_INSTRUCTIONS, for the positive control. Prints each missing
     item id on its own line. Exit 0 when nothing is missing, 1 when something
     is, 2 on a usage error (argparse's own exit) or when a file cannot be read
     as UTF-8 text.
@@ -223,7 +208,9 @@ def main(argv: Sequence[str]) -> int:
             print(f"cannot read prompt file: {type(exc).__name__}", file=sys.stderr)
             return EXIT_UNREADABLE
     missing = missing_items(
-        "\n".join(texts), CONSUMER_PROMPTS, require_all=args.control
+        "\n".join(texts),
+        REVIEWER_INSTRUCTIONS if args.control else CONSUMER_PROMPTS,
+        require_all=args.control,
     )
     for item in missing:
         print(item)

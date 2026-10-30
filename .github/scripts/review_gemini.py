@@ -293,6 +293,18 @@ CONGRUENCE: Ask three questions of the change. Definition: ~/.claude/AGENTS.md, 
 A difference is not itself a defect; a difference that reads as drift because no reason is given is.
 The PR body is not part of your input: judge what the diff itself says. An incongruence is a finding like any other, under the EVIDENCE RULE and DIFF SCOPE above.
 
+## GitHub Actions SHA Pins
+
+When the diff pins a SHA for a GitHub Action (`uses: owner/repo@<SHA>`), consult the `<verified-action-pins>` section in context.md and apply these rules by status:
+
+- **`status="verified"`** -- The SHA matched a tag in the upstream repository's tag listing. Treat the SHA as definitively valid: do NOT raise a critical/major about SHA invalidity; any such claim would be a false positive.
+  - If the same pin carries **`comment-matches="false"`**, the `# vX.Y` version comment in the diff drifts from the resolved upstream tag (given in the `tag="..."` attribute). This IS a legitimate finding -- raise as `minor` and cite the `tag=` value as the correct version comment.
+  - The `comment-matches` attribute appears **only when the diff line carried a `# vX.Y` comment**. If the attribute is absent from the `<pin>` element, the PR chose not to annotate the pin with a version comment -- that is not a finding and MUST NOT be flagged as a comment mismatch.
+- **`status="unmatched"`** -- The tag listing was fetched successfully but the SHA did not appear in any tag. This indicates a stale mirror, a force-pushed tag, or a wrong/typo'd SHA. Raise as `major`: the upstream repo is reachable, so the discrepancy is deterministic, not transient.
+- **`status="unverified"` with `error="repo-not-found"`** -- The API returned 404 for a repository whose owner is not the owner of the repository under review, or the run's own owner could not be determined. GitHub answers 404 both for a repository that does not exist and for a private one this run's token may not read, so the 404 does NOT establish that the repository is absent. Where the owners are known to differ, the pin is usually a public action, which makes a misspelled `owner/repo` the likelier of the two. Ask the author to confirm the `owner/repo` spelling; do NOT claim the repository does not exist. Raise only as `suggestion`.
+- **`status="unverified"` with `error="repo-not-visible"`** -- The API returned 404 for a repository whose owner is the owner of the repository under review. The same two causes are indistinguishable here, and when the owners match the likelier one is a private repository this run's token cannot read. Still ask the author to confirm the `owner/repo` spelling, since a typo or a renamed/deleted action looks identical and would otherwise fail only at runtime; do NOT claim the repository does not exist. Raise only as `suggestion`.
+- **`status="unverified"` with any other `error`** (`rate-limit`, `timeout`, `api-error: ...`, `json-decode-error`, `unknown`) -- The verification itself failed transiently; we could not confirm or deny the pin. Raise only as `suggestion`; do not raise `critical`/`major` since the SHA was not actually checked.
+
 Respond ONLY with a valid JSON object -- no markdown fences, no explanation.
 
 The JSON schema is defined in .github/schemas/review-schema.json:

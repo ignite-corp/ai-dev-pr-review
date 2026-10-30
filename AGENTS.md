@@ -32,27 +32,25 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
 - org/repo-level secret accessibility, Actions and Dependabot (Dependabot is
   reported, not flagged)
 - Dependabot PR status
-- reviewer prompt guidance (AT-2844): each consumer's `.github/prompts/`
-  pair (this repo's entry: `examples/prompts/`, the pair self-review.yml
-  passes) and the runner's `default-prompts/` are read together, as
-  `prepare` concatenates them, and matched against the one list in
-  `.github/scripts/prompt_guidance.py`: a prompt that carries neither the
-  SHA Pins heading nor any pin label owes none of them; one that carries any
-  owes all, the labels inside the heading's section when it is there. A consumer's prompt paths are
-  the ones its review workflow passes, else the defaults; a declared path
-  that is not a plain relative path (an expression, `..`, a query) is not
-  requested, and has its own notice. A missing item or an absent prompt flags
-  like a stale pin; a fetch failure is "not evaluated". A positive control --
-  this commit's `examples/prompts/`, through the same fetch and matcher with
-  every group required -- must come back complete first, or the run fails;
-  a control that cannot be read skips this check alone. The
-  congruence questions are not read from any prompt copy: they live in the
-  reviewers' own instructions, so they reach a consumer through its pin
-  (check above) and a runner target through the runner's review pin, which
-  is held to the same freshness rule. Results go to the job summary by entry
-  index; a runner flag raises its own error, not the consumers'. Not
-  reached: runner targets outside ignite-corp, which the fleet-administration
-  App below is not installed on.
+- reviewer prompt availability and base guidance (AT-3159): each consumer's
+  `.github/prompts/` pair (this repo: `examples/prompts/`) and the runner's
+  `default-prompts/` remain repository-specific and are read together.
+  Consumers owe no copied SHA Pins or congruence rules: both live in the
+  actual base reviewer instructions and travel through the consumer's review
+  pin or the runner's review pin, checked for freshness. A source merge alone
+  does not publish or deploy them; MINOR publication and compatible pin
+  adoption precede stale-copy removal (MIGRATION.md). Freshness tolerance alone does not prove
+  adoption of the particular release.
+  Declared prompt paths must be plain relative paths; expressions, `..`, and
+  queries are not requested and have their own notice. Absent prompts flag;
+  failed fetches are not evaluated. The positive control fetches this commit's
+  actual Codex base instructions through the same fetch/matcher path and
+  requires the full shared rules in `.github/scripts/prompt_guidance.py`.
+  Missing rules fail the run; an unreadable control skips only prompt checks.
+  Tests hold all three rendered reviewers and the executed Claude shell/local
+  mirror to the exact canonical blocks and reject omitted rules. Results go
+  to the summary by entry index; runner flags raise their own error. Runner
+  targets outside ignite-corp remain outside the fleet App's reach.
 
 The `health` job of `consumer-health.yml` authenticates as the fleet-admin App
 below, not as the review-pipeline App.
