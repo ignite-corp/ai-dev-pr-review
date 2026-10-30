@@ -183,13 +183,9 @@ def gate(path):
         .split("\n```", 1)[0]
     )
     for before, after in [
-        ("OWNER/REPO", "o/r"),
-        ("-F o=OWNER", "-F o=o"),
-        ("-F r=REPO", "-F r=r"),
-        ("gh pr view N", "gh pr view 7"),
-        ("/issues/N", "/issues/7"),
-        ("/pulls/N", "/pulls/7"),
-        ("-F n=N", "-F n=7"),
+        ("OWNER='<owner>'", "OWNER='o'"),
+        ("REPO='<repo>'", "REPO='r'"),
+        ("PR='<pr number>'", "PR='7'"),
         ("REVIEW_WF='<review workflow name>'", f"REVIEW_WF='{WF}'"),
         ("EXPECTED_REVIEWERS='<n>'", "EXPECTED_REVIEWERS='3'"),
     ]:

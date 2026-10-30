@@ -109,6 +109,12 @@
 #      with the committer date only where there is no such stamp -- which
 #      is why every fixture carries a run-name and sits on one side of
 #      HEAD_TIME or the other, and why the bound has two paths (AT-3097)
+#  13. the whole gate block, run with gh stubbed, refuses each caller-filled
+#      placeholder left at its shipped value, or PR, OWNER or REPO filled out
+#      of shape, by name before any gh call, and
+#      names them all at once when none is filled; filled, it reaches its
+#      first read naming the PR it was given, and no read in it spells the
+#      PR or the repository as text any more (AT-3142)
 #
 # All fourteen core functions are extracted from SKILL.md by name, not copied here:
 # the gate block is pasted whole into shells on any machine, so it has to
@@ -481,6 +487,10 @@ arm() { # $1 arm file, $2 round_surface, $3 RUNNER_REPO, $4 tuple, $5 committer 
     # shellcheck disable=SC2034  # the sourced arm reads these, as the gate block does
     ( rm -f "$D/loc-called" "$D/arm-windows"
       HEAD_SHA=$ARM_HEAD
+      # The PR literals hold their own names, so the arm's lines read as
+      # the placeholders they stood for and the assertions below can match
+      # `OWNER/REPO N` and `OWNER/REPO#N` as written.
+      OWNER=OWNER; REPO=REPO; PR=N
       round_surface=$2; round_status=completed; round_concl=success
       run_start=2026-10-21T01:13:31Z; run_end=2026-10-21T01:18:21Z
       round_url=https://example.invalid/round
@@ -1997,7 +2007,8 @@ chk "the block declares the page cap as a named literal" \
 # shellcheck disable=SC2016  # matched literally: the loop as SKILL.md spells it
 chk "and the walk tests against that name, not against a number of its own" \
     "$(grep -c 'while \[ "\$fpush_pages" -lt "\$FPUSH_PAGE_CAP" \]; do' "$LOC_ARM")" 1
-chk "the gate's discovery arm was isolated" "$(grep -c 'runner_dispatch OWNER/REPO N' "$LOC_ARM")" 1
+# shellcheck disable=SC2016  # matched literally: the call as SKILL.md spells it
+chk "the gate's discovery arm was isolated" "$(grep -c 'runner_dispatch "$OWNER/$REPO" "$PR"' "$LOC_ARM")" 1
 # shellcheck disable=SC2016  # matched literally: the elif as SKILL.md spells it
 chk "and the locator sits in the elif of the round test" \
     "$(grep -c '^elif \[ -n "\$RUNNER_REPO" \]; then$' "$LOC_ARM")" 1
@@ -2008,7 +2019,7 @@ chk "and the locator sits in the elif of the round test" \
 # field the push stamp is the bound".
 # shellcheck disable=SC2016  # matched literally: the read as SKILL.md spells it
 chk "the arm reads the committer date - the fallback half of the bound - on the path where it is the bound" \
-    "$(grep -c 'commits/"\$HEAD_SHA" --jq \.commit\.committer\.date' "$LOC_ARM")" 1
+    "$(grep -c 'commits/\$HEAD_SHA" --jq \.commit\.committer\.date' "$LOC_ARM")" 1
 T_NONE=$(printf 'none\037\037\037\0370')
 T_RUNNING=$(printf 'running\03739530000001\037in_progress\037https://example.invalid/runner/running\0370')
 T_DIED=$(printf 'died\03739523085356\037completed\037%s\0370' "$DIED_URL")
@@ -2352,6 +2363,86 @@ chk "while a real count still reports" \
     "$(arm "$LOC_ARM" '' "$RREPO" "$T_NONE_STALE" > /dev/null; grep -c '2 earlier run(s)' "$D/arm.out")" 1
 chk "and with none to report the line is not printed" \
     "$(arm "$LOC_ARM" '' "$RREPO" "$T_NONE" > /dev/null; grep -c 'predate this head' "$D/arm.out")" 0
+
+echo "5m. a placeholder left unfilled, or filled out of shape, is refused by name before any gh call"
+# AT-3142: the PR number and OWNER/REPO were bare text at eight sites in
+# the gate block, and one left unfilled surfaced as whatever gh said
+# about it - a 404, `no pull requests found for branch "N"`, a GraphQL
+# type error - after every read before it had run. The whole block is
+# run here, as pasted, with `gh` stubbed to record its calls and fail:
+# each case leaves one placeholder at its shipped value and must stop
+# with that placeholder named and the call log empty. The control fills
+# every one and must reach the first read, naming the PR it was given.
+PH_FILLED="$D/gate-block-filled.sh"
+sed -e "s/^OWNER='<owner>'\$/OWNER='o'/" -e "s/^REPO='<repo>'\$/REPO='r'/" \
+    -e "s/^PR='<pr number>'\$/PR='7'/" \
+    -e "s/^REVIEW_WF='<review workflow name>'\$/REVIEW_WF='AI Code Review'/" \
+    -e "s/^EXPECTED_REVIEWERS='<n>'\$/EXPECTED_REVIEWERS='3'/" "$GATE_BLOCK" > "$PH_FILLED"
+chk "the fill touched all five placeholder lines" "$(diff "$GATE_BLOCK" "$PH_FILLED" | grep -c '^>')" 5
+# A placeholder put back on the filled copy, by its whole declaration line.
+ph_leave() { # $1 name, $2 shipped value, $3 output file
+    sed "s|^$1='[^']*'\$|$1='$2'|" "$PH_FILLED" > "$3"
+}
+ph_run() { # $1 block file; prints exit(N) and whether gh was called
+    rm -f "$D/ph-gh"
+    # shellcheck disable=SC1090,SC2317  # the stub is called by the sourced block
+    ( gh() { printf '%s\n' "$*" >> "$D/ph-gh"; return 1; }
+      . "$1" ) > "$D/ph.out" 2>&1
+    printf 'exit(%s) gh:%s' "$?" "$([ -e "$D/ph-gh" ] && echo called || echo none)"
+}
+chk "every placeholder filled: the guard passes and the first read is reached" \
+    "$(ph_run "$PH_FILLED")" "exit(1) gh:called"
+chk "and that read names the PR and repository the literals were given" \
+    "$(ph_run "$PH_FILLED" > /dev/null; head -n 1 "$D/ph-gh")" "pr view 7 --repo o/r --json headRefOid --jq .headRefOid"
+chk "and nothing about placeholders is printed" \
+    "$(ph_run "$PH_FILLED" > /dev/null; grep -c 'placeholder' "$D/ph.out")" 0
+for ph in "PR|<pr number>" "OWNER|<owner>" "REPO|<repo>" "REVIEW_WF|<review workflow name>" "EXPECTED_REVIEWERS|<n>"; do
+    ph_name=${ph%%|*}; ph_value=${ph#*|}
+    ph_leave "$ph_name" "$ph_value" "$D/ph-$ph_name.sh"
+    chk "$ph_name left at '$ph_value': the gate stops before any gh call" \
+        "$(ph_run "$D/ph-$ph_name.sh")" "exit(1) gh:none"
+    chk "and names $ph_name, with what it still holds" \
+        "$(ph_run "$D/ph-$ph_name.sh" > /dev/null; grep -c "^  $ph_name is '$ph_value'" "$D/ph.out")" 1
+    chk "and names nothing else" \
+        "$(ph_run "$D/ph-$ph_name.sh" > /dev/null; grep -c "^  [A-Z_]* is '" "$D/ph.out")" 1
+done
+chk "the shipped block, nothing filled: every placeholder is named at once, before any gh call" \
+    "$(ph_run "$GATE_BLOCK" > /dev/null; printf '%s %s' "$(grep -c "^  [A-Z_]* is '" "$D/ph.out")" "$([ -e "$D/ph-gh" ] && echo called || echo none)")" "5 none"
+# The old habit: N typed into the PR literal is not a number.
+ph_leave PR N "$D/ph-PR-N.sh"
+chk "PR filled with the old placeholder N is refused the same way" \
+    "$(ph_run "$D/ph-PR-N.sh" > /dev/null; printf '%s %s' "$(grep -c "^  PR is 'N'" "$D/ph.out")" "$([ -e "$D/ph-gh" ] && echo called || echo none)")" "1 none"
+ph_leave REPO 'o/r' "$D/ph-REPO-slash.sh"
+chk "REPO filled with owner/repo is refused: the slash belongs between the two literals" \
+    "$(ph_run "$D/ph-REPO-slash.sh" > /dev/null; grep -c "^  REPO is 'o/r'" "$D/ph.out")" 1
+ph_leave REPO '..' "$D/ph-REPO-dots.sh"
+chk "REPO filled with .. is refused: it passes the name characters and is a path step, not a name" \
+    "$(ph_run "$D/ph-REPO-dots.sh" > /dev/null; printf '%s %s' "$(grep -c "^  REPO is '..'" "$D/ph.out")" "$([ -e "$D/ph-gh" ] && echo called || echo none)")" "1 none"
+# Control: the guard's exit cut out, the same unfilled PR reaches gh -
+# so the guard, not some later read, is what stops the cases above.
+ph_leave PR '<pr number>' "$D/ph-ctrl-src.sh"
+# shellcheck disable=SC2016  # matched literally: the guard as SKILL.md spells it
+sed '/^\[ -z "\$unfilled" \] \\$/{N;d;}' "$D/ph-ctrl-src.sh" > "$D/ph-ctrl.sh"
+chk "the guard control differs from the block" "$(cmp -s "$D/ph-ctrl-src.sh" "$D/ph-ctrl.sh" && echo same || echo differs)" differs
+chk "without the guard, PR left unfilled reaches gh as the old text did" \
+    "$(ph_run "$D/ph-ctrl.sh" > /dev/null; head -n 1 "$D/ph-gh")" "pr view <pr number> --repo o/r --json headRefOid --jq .headRefOid"
+# The reason one check is enough: no read in the block spells the PR or
+# the repository itself any more, so none can be left behind unfilled.
+# OWNER and REPO are default-deny: any bare occurrence outside a comment,
+# the two declarations and the guard's own messages counts, whatever
+# shape a future read gives it. N is a common letter in the block's
+# prose, so it is checked against the shapes the eight sites took.
+bare_repo() { # $1 block file; counts executable lines that spell OWNER or REPO bare
+    awk '!/^ *#/ && !/^(OWNER|REPO)=/ && !/echo "  (OWNER|REPO) is / {
+           l = $0; gsub(/[$A-Za-z_]+(OWNER|REPO)|(OWNER|REPO)[A-Za-z_]+/, "", l)
+           if (l ~ /OWNER|REPO/) n++ } END { print n + 0 }' "$1"
+}
+chk "no executable line of the gate block spells OWNER or REPO bare" "$(bare_repo "$GATE_BLOCK")" 0
+# shellcheck disable=SC2016  # the injected line is shell text, not expanded here
+{ cat "$GATE_BLOCK"; printf '%s\n' 'x=$(gh api repos/x --repo "OWNER")'; } > "$D/ph-bare.sh"
+chk "control: a bare OWNER in a spelling none of the old sites used is counted" "$(bare_repo "$D/ph-bare.sh")" 1
+chk "no executable line spells the PR as N in any shape the eight sites took" \
+    "$(grep -v '^ *#' "$GATE_BLOCK" | grep -cE 'n=N|issues/N|pulls/N|pr view N|REPO N |#N')" 0
 
 echo "6. control: one equality cut out, the headline short on that fraction alone passes"
 CTRL_EQ="$D/fn-no-eq.sh"
@@ -2861,10 +2952,10 @@ CTRL_MAXBOUND="$D/gate-arm-max-bound.sh"
 # mere presence. The read has to come back with it, because the arm now
 # fetches the committer date only on the path where it is the bound.
 # shellcheck disable=SC2016  # matched literally: the branch as SKILL.md spells it
-sed 's|^    head_time=\$head_push_time$|    head_commit_time=$(gh api repos/OWNER/REPO/commits/"$HEAD_SHA" --jq .commit.committer.date)\n    head_time=$(printf '"'"'%s\\n%s\\n'"'"' "$head_commit_time" "$head_push_time" \| sort \| tail -1)|' "$LOC_ARM" > "$CTRL_MAXBOUND"
+sed 's|^    head_time=\$head_push_time$|    head_commit_time=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq .commit.committer.date)\n    head_time=$(printf '"'"'%s\\n%s\\n'"'"' "$head_commit_time" "$head_push_time" \| sort \| tail -1)|' "$LOC_ARM" > "$CTRL_MAXBOUND"
 # shellcheck disable=SC2016  # matched literally: the read as SKILL.md spells it
 chk "the max-bound control really re-reads the committer date on the server path" \
-    "$(grep -c 'head_commit_time=$(gh api repos/OWNER/REPO/commits' "$CTRL_MAXBOUND")" 2
+    "$(grep -c 'head_commit_time=$(gh api "repos/$OWNER/$REPO/commits' "$CTRL_MAXBOUND")" 2
 chk "the max-bound control differs from the gate's arm" "$(cmp -s "$LOC_ARM" "$CTRL_MAXBOUND" && echo same || echo differs)" differs
 chk "taking the later of the two, a skewed committer date becomes the bound" \
     "$(arm "$CTRL_MAXBOUND" '' "$RREPO" "$T_NONE" 2026-10-25T00:00:00Z > /dev/null; grep -c 'OWNER/REPO N 2026-10-25T00:00:00Z' "$D/loc-called")" 1
