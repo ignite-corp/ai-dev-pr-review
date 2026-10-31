@@ -42,10 +42,14 @@ _WORKSPACE_LIMITS = {
     "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
     "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
 }
+# The usage-limit renderings below: rust-v0.166.0 prints U+2019 in "You've"
+# where 0.147.0 printed an ASCII apostrophe, so both are accepted (AT-3174).
+# The workspace and spend-cap strings above carry no apostrophe and are
+# unchanged in 0.166.0, so they are still matched exactly.
 _QUOTA_MESSAGE = re.compile(
-    r"(?:You've hit your usage limit\."
+    r"(?:You['\u2019]ve hit your usage limit\."
     r"(?: To get more access now, send a request to your admin)?|"
-    r"You've hit your usage limit for [^\r\n]+\. Switch to another model now,)"
+    r"You['\u2019]ve hit your usage limit for [^\r\n]+\. Switch to another model now,)"
     r" (?:or try|Try) again (?:later|at (?P<reset>[^\r\n]+))\."
 )
 

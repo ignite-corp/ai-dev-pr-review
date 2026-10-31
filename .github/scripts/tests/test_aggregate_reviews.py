@@ -3031,7 +3031,7 @@ class TestCodexPromptStaysOutOfArgv(_CodexStepHarness):
 
     An argument is readable from /proc/<pid>/cmdline by any process on the
     runner, and the prompt carries up to 50 PR review-thread excerpts.
-    codex-cli 0.147.0, the pinned version, reads the prompt from stdin when
+    codex-cli 0.166.0, the pinned version, reads the prompt from stdin when
     the PROMPT argument is `-`.
     """
 

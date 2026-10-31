@@ -40,7 +40,7 @@ only report. Measured on codex-cli 0.154.0:
 So the ceiling is not worked around, it is not reached: the size check, its
 exit code, and the prompt's exposure in the process table all go away rather
 than being carried across. base-ai-review-single.yml passes the prompt
-the same way since AT-2411, on the pinned codex-cli 0.147.0.
+the same way since AT-2411, on the pinned codex-cli 0.166.0.
 
 Reads context.md and pr.diff from the current directory and writes
 review-codex.json.

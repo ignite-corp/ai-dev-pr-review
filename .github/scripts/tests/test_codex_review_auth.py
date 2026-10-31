@@ -478,16 +478,33 @@ def test_restore_reports_a_window_changed_after_flag_deletion(
     assert auth.api_override(store, NOW)
 
 
-def test_real_pinned_cli_offline_quota_fixture() -> None:
-    fixture = Path(__file__).parent / "fixtures/codex-0.147.0-quota.jsonl"
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "codex-0.147.0-quota.jsonl",
+        # 0.166.0 renders "You've" with U+2019 where 0.147.0 printed an
+        # ASCII apostrophe (AT-3174); captured offline from the real CLI,
+        # with the character stored as its JSON escape (test_ascii_only).
+        # Its reset reads "Oct 27th, 2026 2:04 PM" rather than "2:04 PM"
+        # only because it was captured on a later day: both versions print
+        # the bare time when the reset falls on the current local date
+        # (format_retry_timestamp is identical in the two tags).
+        "codex-0.166.0-quota.jsonl",
+    ],
+)
+def test_real_cli_offline_quota_fixture(fixture_name: str) -> None:
+    fixture = Path(__file__).parent / "fixtures" / fixture_name
     assert (
         auth.quota_until(fixture, 1, NOW)
         == datetime(2026, 10, 27, 14, 5, tzinfo=UTC).timestamp()
     )
 
 
-def test_named_model_quota_uses_same_retry_path(tmp_path: Path) -> None:
-    message = "You've hit your usage limit for codex_other. Switch to another model now, or try again later."
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019"])
+def test_named_model_quota_uses_same_retry_path(
+    tmp_path: Path, apostrophe: str
+) -> None:
+    message = f"You{apostrophe}ve hit your usage limit for codex_other. Switch to another model now, or try again later."
     event = {"type": "turn.failed", "error": {"message": message}}
     assert auth.quota_until(_events(tmp_path, event), 1, NOW) == NOW + 5 * 3600
 
