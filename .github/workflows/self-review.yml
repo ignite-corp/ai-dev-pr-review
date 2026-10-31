@@ -14,9 +14,9 @@
 #     they ship in a release tag.
 #
 # Release pin-bump PRs: the bumped pin names a tag that is only created after
-# the merge, so prepare's pinned checkout would fail and skip the six reviewer
-# jobs plus aggregate. The `guard` job below detects that case and skips the
-# review with an explanatory notice instead of leaving a red X. Dispatch this
+# the merge, so a pinned script checkout would fail before review completes.
+# The `guard` job below checks all script checkout tags and skips the review
+# with an explanatory notice instead of leaving a red X. Dispatch this
 # workflow against the release PR once the tag exists to get its review.
 #
 # Skips happen inside the reusable workflows, never on the `review` job:
@@ -62,10 +62,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  # Gate on the release tag the script checkouts are pinned to actually
-  # existing. Keyed on the tag rather than on a branch-name convention: the tag
+  # Gate on all release tags the script checkouts are pinned to actually
+  # existing. Keyed on tags rather than on a branch-name convention: a tag
   # is what defines a release, and it is the missing tag - not the branch name
-  # - that makes prepare fail.
+  # - that makes a script checkout fail.
   guard:
     runs-on: ubuntu-latest
     permissions:
@@ -78,22 +78,38 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 1
-      - name: Check the pinned release tag exists
+      - name: Check the pinned script release tags exist
         id: pin
         run: |
-          PIN="$(awk '/repository: ignite-corp\/ai-dev-pr-review/ { found = 1 }
-                      found && $1 == "ref:" { print $2; exit }' \
-                 .github/workflows/base-ai-review-prepare.yml)"
-          if [ -z "$PIN" ]; then
-            echo "::error::cannot parse the script checkout pin from base-ai-review-prepare.yml"
-            exit 1
-          fi
-          if git ls-remote --exit-code --tags origin "$PIN" >/dev/null 2>&1; then
-            echo "pinned tag $PIN exists; running self-review"
-          else
-            echo "skip_reason=release pin bump: pinned tag $PIN does not exist yet, so the scripts cannot be checked out; dispatch this workflow once the tag exists" >> "$GITHUB_OUTPUT"
-            echo "::notice::self-review skipped -- pinned tag $PIN does not exist yet (expected during a release pin bump; unexpected otherwise)"
-          fi
+          WORKFLOWS=(base-ai-review-prepare.yml base-ai-review-single.yml base-ai-review-aggregate.yml)
+          PINS=()
+          # Validate every declaration before a missing tag can skip review.
+          for WORKFLOW in "${WORKFLOWS[@]}"; do
+            if ! PIN=$(awk '/repository: ignite-corp\/ai-dev-pr-review/ { found = 1 }
+                            found && $1 == "ref:" { print $2; exit }' \
+                       ".github/workflows/${WORKFLOW}") || [ -z "$PIN" ]; then
+              echo "::error::cannot parse the script checkout pin from ${WORKFLOW}"
+              exit 1
+            fi
+            PINS+=("$PIN")
+          done
+          for INDEX in "${!WORKFLOWS[@]}"; do
+            WORKFLOW="${WORKFLOWS[$INDEX]}"
+            PIN="${PINS[$INDEX]}"
+            if git ls-remote --exit-code --tags origin "$PIN" >/dev/null 2>&1; then
+              echo "pinned tag $PIN in $WORKFLOW exists"
+            else
+              STATUS=$?
+              if [ "$STATUS" -ne 2 ]; then
+                echo "::error::tag probe for $PIN in $WORKFLOW failed (git exit $STATUS)"
+                exit 1
+              fi
+              echo "skip_reason=release pin bump: pinned tag $PIN in $WORKFLOW does not exist yet, so the scripts cannot be checked out; dispatch this workflow once the tag exists" >> "$GITHUB_OUTPUT"
+              echo "::notice::self-review skipped -- pinned tag $PIN in $WORKFLOW does not exist yet (expected during a release pin bump; unexpected otherwise)"
+              exit 0
+            fi
+          done
+          echo "all script checkout tags exist; running self-review"
 
   review:
     needs: guard

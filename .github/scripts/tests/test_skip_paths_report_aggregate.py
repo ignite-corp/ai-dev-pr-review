@@ -264,7 +264,12 @@ class TestGuardSetsTheReason:
     @pytest.fixture
     def workdir(self, tmp_path: Path) -> Path:
         (tmp_path / ".github" / "workflows").mkdir(parents=True)
-        shutil.copy(_PREPARE, tmp_path / ".github" / "workflows" / _PREPARE.name)
+        for workflow in (
+            _PREPARE,
+            _WORKFLOWS / "base-ai-review-single.yml",
+            _AGGREGATE,
+        ):
+            shutil.copy(workflow, tmp_path / ".github" / "workflows" / workflow.name)
         return tmp_path
 
     def _fake_git(self, workdir: Path, exit_code: int) -> str:
