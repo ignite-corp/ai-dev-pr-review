@@ -59,10 +59,11 @@ bootstrap the new feature. A private runner also needs its own explicit token
 forwarding and a compatible base pin; this base change alone does not update it.
 Release/tag/pin changes are separate deployment work.
 
-The pinned CLI is `@openai/codex@0.147.0`; its actual login help supports
-`--with-access-token`. Official [Codex access-token documentation][access-tokens]
-describes workspace eligibility, permissions and expiry. The first-supported
-`0.138.0-alpha.6` version was not independently established by this change.
+The pinned CLI is `@openai/codex@0.166.0` (AT-3174); its actual login help
+supports `--with-access-token`, as 0.147.0's did. Official
+[Codex access-token documentation][access-tokens] describes workspace
+eligibility, permissions and expiry. The first-supported `0.138.0-alpha.6`
+version was not independently established by this change.
 
 ## Quota fallback and recovery
 
@@ -134,6 +135,11 @@ messages come from `codex-rs/protocol/src/error.rs`. The JSONL processor in
 in `turn.failed` but drops the typed code and raw reset fields. The detector
 therefore recognizes those specific workspace/named-limit renderings, not a
 general substring such as “quota”. Unrecognized future CLI wording fails closed.
+`rust-v0.166.0` keeps that mapping and the JSONL wrapping, but renders the
+messages with a typographic apostrophe (`You’ve`, U+2019) where 0.147.0 printed
+an ASCII one, so the detector accepts both. Each rendering has a fixture captured
+from the real CLI offline
+(`.github/scripts/tests/fixtures/codex-<version>-quota.jsonl`).
 
 The trusted login step imports selected credentials over stdin and prepares any
 API fallback before the model starts. Auth files and attempt metadata are

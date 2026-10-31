@@ -1028,7 +1028,7 @@ jobs:
         # Pinned: unpinned installs pulled releases that dropped `codex exec
         # --full-auto`, breaking every codex review. Bump deliberately after
         # verifying `codex exec --help` for the new version.
-        run: npm install -g @openai/codex@0.147.0
+        run: npm install -g @openai/codex@0.166.0
 
       - name: Authenticate Codex CLI with preferred credential
         if: inputs.reviewer == 'codex'
@@ -1270,7 +1270,7 @@ jobs:
           # readable from /proc/<pid>/cmdline by any process on the runner,
           # and the prompt carries PR review-thread excerpts (AT-2411).
           # $COMBINED and the run log are both created mode 600.
-          # 0.147.0 `codex exec --help`: "If not provided as an argument
+          # 0.166.0 `codex exec --help`: "If not provided as an argument
           # (or if `-` is used), instructions are read from stdin."
           LOG="${RUNNER_TEMP}/codex-run.log"
           EVENTS="${RUNNER_TEMP}/codex-events.jsonl"
