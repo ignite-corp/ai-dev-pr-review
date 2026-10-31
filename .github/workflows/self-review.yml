@@ -29,7 +29,7 @@ jobs:
             sdk: 0.3.243
             cli: 2.1.243
           - variant: new
-            ref: 9b26dd1ef233d4dc798590ca376847349202c9b8
+            ref: ac53227b176d758ddc1ca3b79a9087d0cb3d8d5a
             upstream: d535f5172dec02b204866b393d6b20b9b2aaf98d
             sdk: 0.3.316
             cli: 2.1.316
