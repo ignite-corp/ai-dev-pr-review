@@ -1,160 +1,232 @@
-# Self-review (dogfooding): run this repo's own multi-LLM AI review pipeline
-# on its own PRs, mirroring the consumer thin trigger
-# (examples/consumer-thin-trigger.yml) but calling the orchestrator via a
-# LOCAL path so the workflow YAML under review is the YAML that runs.
-#
-# What a PR exercises here:
-#   - EXERCISED: all four base-ai-review-*.yml reusable workflows run from the
-#     PR's merge commit, so YAML changes are tested pre-merge.
-#   - NOT EXERCISED: the Python/bash helper scripts. prepare/single/aggregate
-#     (base-ai-review-prepare.yml, base-ai-review-single.yml,
-#     base-ai-review-aggregate.yml) check out ignite-corp/ai-dev-pr-review
-#     pinned to release tags (single: v1.19.1; prepare/aggregate: v1.18.1),
-#     and no input exists to override those refs. Script changes only take
-#     effect on self-review after they ship in a release tag.
-#
-# Release pin-bump PRs: the bumped pin names a tag that is only created after
-# the merge, so a pinned script checkout would fail before review completes.
-# The `guard` job below checks all script checkout tags and skips the review
-# with an explanatory notice instead of leaving a red X. Dispatch this
-# workflow against the release PR once the tag exists to get its review.
-#
-# Skips happen inside the reusable workflows, never on the `review` job:
-# `review / aggregate / Aggregate & Verdict` exists only when all three of its
-# jobs run, and an absent required check leaves a PR pending forever. `guard`
-# names the release-pin reason, `review` adds the fork one and hands it on as
-# `skip_reason`, and the aggregate job passes with that reason as its summary
-# (AT-3119).
-#
-# Auto-approve: the org var ALLOW_AUTO_APPROVE is `true`, but this repo sets a
-# repo-level var ALLOW_AUTO_APPROVE=false to override it. This repo is the
-# review tool itself; letting the pipeline approve its own PRs would defeat
-# review integrity, so verdicts here are posted as plain comments only.
-#
-# Merge block: the org var BLOCK_MERGE_ON_VERDICT is `false`, and a repo-level
-# var overrides it the same way. When it is `true`, the aggregate job fails on
-# Changes Requested or a withheld approval, after posting the verdict, so the
-# verdict blocks a merge wherever `Aggregate & Verdict` is a required check --
-# without the pipeline ever approving its own PRs (AT-3114). Like the scripts
-# above, the aggregate's handling of it reaches this workflow only once a
-# release tag carries it.
-name: AI Code Review (self)
+# Disposable branch-only synthetic diagnostic; never merge into main.
+name: AT-3179 Claude SDK synthetic comparison
 
 on:
-  pull_request:
-    # No `branches:` filter: `guard` is a required status check on main and the
-    # review round is the point of this workflow, so both must happen whatever
-    # the PR's base branch. AT-2413 measured the gap -- #170 and #172 had
-    # topic-branch bases, their check rollup was empty, and a hand-dispatched
-    # round on #170 raised three majors that would otherwise have merged.
-    # `reopened` for the same reason: a branch pushed while the PR is closed
-    # gets no run on its new head otherwise, and the check is absent again.
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "PR number to review (required for manual trigger)"
-        required: true
+        description: Unused compatibility input; synthetic diagnostic reads no PR
+        required: false
+        default: ''
         type: string
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  # Gate on all release tags the script checkouts are pinned to actually
-  # existing. Keyed on tags rather than on a branch-name convention: a tag
-  # is what defines a release, and it is the missing tag - not the branch name
-  # - that makes a script checkout fail.
-  guard:
+  compare:
+    if: github.ref == 'refs/heads/codex/AT-3179-sdk-probe'
+    name: Synthetic SDK ${{ matrix.variant }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      # Empty means review; anything else is why not, shown as the aggregate
-      # check's summary.
-      skip_reason: ${{ steps.pin.outputs.skip_reason }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: old
+            ref: fff040d0a88841ccad2f1ace1daa07bff1575e22
+            upstream: e5ad3c7725bc2459721893f88879fef9dbcf97b0
+            sdk: 0.3.243
+            cli: 2.1.243
+          - variant: new
+            ref: 9b26dd1ef233d4dc798590ca376847349202c9b8
+            upstream: d535f5172dec02b204866b393d6b20b9b2aaf98d
+            sdk: 0.3.316
+            cli: 2.1.316
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          fetch-depth: 1
-      - name: Check the pinned script release tags exist
-        id: pin
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: anthropics/claude-code-action
+          ref: ${{ matrix.upstream }}
+          path: .sdk55-upstream
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: .github/scripts/.python-version
+      - name: Install trusted schema validator
+        run: python -m pip install --disable-pip-version-check jsonschema==4.25.1
+      - name: Prepare private outer invocation capture
+        env:
+          UPSTREAM_SHA: ${{ matrix.upstream }}
+        shell: bash
         run: |
-          WORKFLOWS=(base-ai-review-prepare.yml base-ai-review-single.yml base-ai-review-aggregate.yml)
-          PINS=()
-          # Validate every declaration before a missing tag can skip review.
-          for WORKFLOW in "${WORKFLOWS[@]}"; do
-            if ! PIN=$(awk '/repository: ignite-corp\/ai-dev-pr-review/ { found = 1 }
-                            found && $1 == "ref:" { print $2; exit }' \
-                       ".github/workflows/${WORKFLOW}") || [ -z "$PIN" ]; then
-              echo "::error::cannot parse the script checkout pin from ${WORKFLOW}"
-              exit 1
-            fi
-            PINS+=("$PIN")
-          done
-          for INDEX in "${!WORKFLOWS[@]}"; do
-            WORKFLOW="${WORKFLOWS[$INDEX]}"
-            PIN="${PINS[$INDEX]}"
-            if git ls-remote --exit-code --tags origin "$PIN" >/dev/null 2>&1; then
-              echo "pinned tag $PIN in $WORKFLOW exists"
-            else
-              STATUS=$?
-              if [ "$STATUS" -ne 2 ]; then
-                echo "::error::tag probe for $PIN in $WORKFLOW failed (git exit $STATUS)"
-                exit 1
-              fi
-              echo "skip_reason=release pin bump: pinned tag $PIN in $WORKFLOW does not exist yet, so the scripts cannot be checked out; dispatch this workflow once the tag exists" >> "$GITHUB_OUTPUT"
-              echo "::notice::self-review skipped -- pinned tag $PIN in $WORKFLOW does not exist yet (expected during a release pin bump; unexpected otherwise)"
-              exit 0
-            fi
-          done
-          echo "all script checkout tags exist; running self-review"
+          if [ "${RUNNER_DEBUG:-0}" = "1" ] || [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then
+            echo "probe_status=debug_logging_not_supported"
+            exit 1
+          fi
+          umask 077
+          : > "$RUNNER_TEMP/sdk55-private.log"
+          chmod 600 "$RUNNER_TEMP/sdk55-private.log"
+          python - <<'PREPARE'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
 
-  review:
-    needs: guard
-    # Not gated on the guard's outcome: a skipped `review` job never creates
-    # `review / aggregate / Aggregate & Verdict` (AT-3119). A guard that
-    # failed set no reason, so the full review runs and its aggregate reports
-    # what happened. `${{ }}` because a bare leading `!` is a YAML tag.
-    if: ${{ !cancelled() }}
-    uses: ./.github/workflows/base-ai-review-orchestrator.yml
-    with:
-      # The fork skip is read from the event here, not from `guard`: it must
-      # hold even when `guard` failed. This is a public repo and fork PRs
-      # cannot read the org secrets; an empty head repo is a deleted fork.
-      # Written to fail closed: any event but a dispatch whose head is not
-      # this repository is skipped, so a trigger added later reaches the
-      # secrets only once someone opts it in. The two secrets below repeat
-      # the test.
-      skip_reason: ${{ needs.guard.outputs.skip_reason || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository) && 'fork PR -- the org secrets the reviewers need are not available to it' || '' }}
-      pr_number: ${{ inputs.pr_number || '' }}
-      # This repo has no .github/prompts; reuse the starter templates that
-      # consumers copy from examples/prompts.
-      code-review-system-prompt-path: examples/prompts/code-review-system.md
-      code-review-checklist-path: examples/prompts/code-review-checklist.md
-      # The Claude reviewer step is capped at 10 minutes by default and this
-      # repo's PRs can exceed it: on PR #194 the step hit the cap in both
-      # runs 38679319725 and 38819148513 (the second ended 2/3 with
-      # action_invocation_failed), while the other self-review runs of the
-      # same day finished it in 4 to 7.5 minutes. Twice the default clears
-      # #194's shape with margin and still bounds a stuck review; the job cap
-      # keeps the defaults' 5-minute headroom over the step cap. Set here,
-      # not in the base defaults, so consumers are unchanged (AT-2876).
-      claude-timeout-minutes: 20
-      review-job-timeout-minutes: 25
-    secrets:
-      # A fork PR reads every secret as empty. A skip never reads these
-      # review credentials, so a placeholder stands in there;
-      # a review gets the real ones. The fork test repeats the one in
-      # `skip_reason` above on purpose: it must hold when `guard` failed, so
-      # it cannot be a guard output. test_skip_paths_report_aggregate.py
-      # evaluates all three sites on every path.
-      OPENAI_API_KEY: ${{ (needs.guard.outputs.skip_reason != '' || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository)) && 'unused-review-skipped' || secrets.OPENAI_API_KEY }}
-      GOOGLE_AI_API_KEY: ${{ (needs.guard.outputs.skip_reason != '' || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository)) && 'unused-review-skipped' || secrets.GOOGLE_AI_API_KEY }}
-      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      # Used by the claude job's usage-limit auth-switch post-step (AT-1606);
-      # never leads to an approval here because ALLOW_AUTO_APPROVE is false.
-      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          try:
+              source = Path('.sdk55-upstream')
+              revision = subprocess.run(['git', '-C', str(source), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+              if revision != os.environ['UPSTREAM_SHA']:
+                  raise ValueError
+              wrapper = Path('.github/actions/claude-review/action.yml')
+              text = wrapper.read_text()
+              pin = 'anthropics/claude-code-action@' + revision
+              if text.count(pin) != 1:
+                  raise ValueError
+              wrapper.write_text(text.replace(pin, './.sdk55-upstream'))
+              action = source / 'action.yml'
+              text = action.read_text()
+              command = '        bun --no-env-file \\\n          --config="${GITHUB_ACTION_PATH}/bunfig.toml" \\\n          run ${GITHUB_ACTION_PATH}/src/entrypoints/run.ts'
+              if text.count(command) != 1:
+                  raise ValueError
+              captured = '        umask 077\n        {\n' + '\n'.join('  ' + line for line in command.splitlines()) + '\n        } >>"${RUNNER_TEMP:?}/sdk55-private.log" 2>&1'
+              action.write_text(text.replace(command, captured))
+          except Exception:
+              sys.exit('probe_status=setup_failed')
+          print('probe_status=prepared')
+          PREPARE
+      - name: Run restricted local Claude composite
+        id: review
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: ./.github/actions/claude-review
+        env:
+          ACTIONS_STEP_DEBUG: 'false'
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          force_api: 'true'
+          model: claude-opus-5-5
+          prompt: >-
+            This is a trusted synthetic structured-output compatibility check.
+            Do not read any files, call any tools, or post comments.
+            Review only this synthetic function: def add(a, b): return a + b.
+            There are no requested findings. Return only the review JSON object
+            matching the supplied schema, with summary "Synthetic review complete.",
+            status "ok", early_exit false, and issues [].
+      - name: Validate privately and report finite diagnostics
+        if: always()
+        env:
+          INNER_OUTCOME: ${{ steps.review.outputs.inner_outcome }}
+          UPSTREAM_SHA: ${{ matrix.upstream }}
+          EXPECTED_SDK: ${{ matrix.sdk }}
+          EXPECTED_CLI: ${{ matrix.cli }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          root = Path(os.environ['RUNNER_TEMP'])
+          report = {
+              'source_match': False,
+              'setup_stage': 'setup',
+              'action_ok': os.environ.get('INNER_OUTCOME') == 'success',
+              'schema_valid': False,
+              'model_match': False,
+              'synthetic_result_ok': False,
+              'sdk_version': 'unknown',
+              'cli_version': 'unknown',
+              'runtime_match': False,
+              'result_status': 'unknown',
+              'result_error': False,
+              'error_class': 'checker_unavailable',
+          }
+          try:
+              cache = Path.cwd() / '.sdk55-upstream'
+              revision = subprocess.run(['git', '-C', str(cache), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=15, check=False)
+              report['source_match'] = revision.returncode == 0 and revision.stdout.strip() == os.environ['UPSTREAM_SHA']
+              if report['source_match']:
+                  report['setup_stage'] = 'source'
+              # The SDK import originates in base-action/src; prefer its nearest install.
+              for directory in [cache / 'base-action', cache]:
+                  package = directory / 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'
+                  if package.is_file():
+                      version = json.loads(package.read_text())['version']
+                      if isinstance(version, str) and re.fullmatch(r'\d+\.\d+\.\d+', version):
+                          report['sdk_version'] = version
+                          report['setup_stage'] = 'dependencies'
+                      break
+              # This is the explicit default executable passed to the SDK upstream.
+              cli = subprocess.run([str(Path.home() / '.local/bin/claude'), '--version'], capture_output=True, text=True, timeout=15, check=False)
+              match = re.fullmatch(r'(\d+\.\d+\.\d+)(?: \(Claude Code\))?\s*', cli.stdout)
+              if cli.returncode == 0 and match:
+                  report['cli_version'] = match.group(1)
+                  report['setup_stage'] = 'cli'
+          except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+              pass
+          report['runtime_match'] = report['source_match'] and report['sdk_version'] == os.environ['EXPECTED_SDK'] and report['cli_version'] == os.environ['EXPECTED_CLI']
+          try:
+              from jsonschema import Draft202012Validator
+              sys.path.insert(0, str(Path.cwd() / '.github/scripts'))
+              from extract_claude_review import review_json_schema
+              messages = json.loads((root / 'claude-execution-output.json').read_text())
+              if not isinstance(messages, list):
+                  raise ValueError
+              results = [m for m in messages if isinstance(m, dict) and m.get('type') == 'result']
+              report['model_match'] = any(isinstance(m, dict) and m.get('type') == 'system' and m.get('subtype') == 'init' and m.get('model') == 'claude-opus-5-5' for m in messages)
+              if report['model_match']:
+                  report['setup_stage'] = 'model'
+              if not results:
+                  report['error_class'] = 'result_missing'
+              else:
+                  report['setup_stage'] = 'result'
+                  result = results[-1]
+                  allowed = {'success', 'error_during_execution', 'error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries'}
+                  if result.get('subtype') in allowed:
+                      report['result_status'] = result['subtype']
+                  report['result_error'] = result.get('is_error') is True
+                  payload = result.get('structured_output')
+                  report['schema_valid'] = Draft202012Validator(review_json_schema()).is_valid(payload)
+                  report['synthetic_result_ok'] = report['schema_valid'] and payload['status'] == 'ok' and payload['early_exit'] is False and payload['issues'] == []
+                  if result.get('subtype') != 'success' or result.get('is_error') is not False:
+                      report['error_class'] = 'result_error'
+                  elif payload is None:
+                      report['error_class'] = 'structured_output_missing'
+                  elif not report['schema_valid']:
+                      report['error_class'] = 'schema_invalid'
+                  elif not report['synthetic_result_ok']:
+                      report['error_class'] = 'unexpected_synthetic_result'
+                  elif not report['action_ok']:
+                      report['error_class'] = 'action_failed'
+                  elif not report['runtime_match']:
+                      report['error_class'] = 'runtime_unverified'
+                  elif not report['model_match']:
+                      report['error_class'] = 'model_unverified'
+                  else:
+                      report['error_class'] = 'success'
+          except FileNotFoundError:
+              report['error_class'] = 'execution_missing'
+          except (ValueError, TypeError, KeyError):
+              report['error_class'] = 'execution_invalid'
+          except Exception:
+              report['error_class'] = 'checker_unavailable'
+          if report['error_class'] != 'success':
+              try:
+                  private = (root / 'sdk55-private.log').read_text(errors='replace').lower()
+                  for token, label in [('unsupported event type:', 'unsupported_event'), ('failed to install claude code after 3 attempts', 'cli_install_failed'), ('authentication_error', 'provider_auth_error'), ('rate_limit_error', 'provider_rate_limit'), ('not_found_error', 'provider_not_found'), ('invalid_request_error', 'provider_invalid_request')]:
+                      if token in private:
+                          report['error_class'] = label
+                          break
+              except OSError:
+                  pass
+          safe = json.dumps(report, sort_keys=True)
+          print(safe)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(safe + '\n')
+          sys.exit(0 if report['error_class'] == 'success' else 1)
+          PY
+      - name: Remove private diagnostic files
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/sdk55-private.log" "$RUNNER_TEMP/claude-execution-output.json"
+          rm -rf "$RUNNER_TEMP/claude-prompts"
