@@ -13,7 +13,9 @@ the single source of truth for:
   When an OAuth token is present, an empty API key is passed (subscription is
   used); when absent, the API key is the fallback.
 - **claude-code-action SHA pin** - a full-length commit SHA (currently
-  `e5ad3c77...` = v1.0.202), not a floating tag.
+  `d535f517...` = v1.0.266), not a floating tag. Its lockfiles select Agent SDK
+  0.3.316 and its default installer selects CLI 2.1.316; verify the installed
+  pair when comparing runtime behavior.
 - **Model wiring** - `--model ${{ inputs.model }}`.
 - **`api_timeout_ms` (default 600000)** - applied to BOTH `API_TIMEOUT_MS` (the
   per-request cap) and `CLAUDE_STREAM_IDLE_TIMEOUT_MS`. The CLI's byte-level

@@ -12,7 +12,7 @@ This module does not import production code -- there is none for this axis,
 
 1. Mirrors the comparison the pinned action actually performs
    (``tests_support.is_allowed_bot``), verified against
-   ``anthropics/claude-code-action@e5ad3c7725bc2459721893f88879fef9dbcf97b0``
+   ``anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d``
    (the SHA pinned in ``action.yml``), file
    ``src/github/validation/actor.ts``, function ``isAllowedBot``:
 
