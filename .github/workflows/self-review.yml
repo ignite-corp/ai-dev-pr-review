@@ -9,9 +9,9 @@
 #   - NOT EXERCISED: the Python/bash helper scripts. prepare/single/aggregate
 #     (base-ai-review-prepare.yml, base-ai-review-single.yml,
 #     base-ai-review-aggregate.yml) check out ignite-corp/ai-dev-pr-review
-#     pinned to the release tag (currently v1.18.1), and no input exists to
-#     override that ref. Script changes only take effect on self-review after
-#     they ship in a release tag.
+#     pinned to release tags (single: v1.19.0; prepare/aggregate: v1.18.1),
+#     and no input exists to override those refs. Script changes only take
+#     effect on self-review after they ship in a release tag.
 #
 # Release pin-bump PRs: the bumped pin names a tag that is only created after
 # the merge, so a pinned script checkout would fail before review completes.
