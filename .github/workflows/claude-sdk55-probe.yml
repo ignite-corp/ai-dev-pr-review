@@ -1,0 +1,184 @@
+# Disposable synthetic diagnostic; never merge this workflow into main.
+name: AT-3179 Claude SDK synthetic comparison
+
+on:
+  push:
+    branches: [codex/AT-3179-sdk-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Synthetic SDK ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: old
+            ref: fff040d0a88841ccad2f1ace1daa07bff1575e22
+            upstream: e5ad3c7725bc2459721893f88879fef9dbcf97b0
+            sdk: 0.3.243
+            cli: 2.1.243
+          - variant: new
+            ref: 9b26dd1ef233d4dc798590ca376847349202c9b8
+            upstream: d535f5172dec02b204866b393d6b20b9b2aaf98d
+            sdk: 0.3.316
+            cli: 2.1.316
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: .github/scripts/.python-version
+      - name: Install trusted schema validator
+        run: python -m pip install --disable-pip-version-check jsonschema==4.25.1
+      - name: Prepare private output capture
+        shell: bash
+        run: |
+          if [ "${RUNNER_DEBUG:-0}" = "1" ] || [ "${ACTIONS_STEP_DEBUG:-false}" = "true" ]; then
+            echo "probe_status=debug_logging_not_supported"
+            exit 1
+          fi
+          umask 077
+          : > "$RUNNER_TEMP/sdk55-private.log"
+          cat > "$RUNNER_TEMP/sdk55-capture.sh" <<'CAPTURE'
+          umask 077
+          exec >>"${RUNNER_TEMP:?}/sdk55-private.log" 2>&1
+          CAPTURE
+          chmod 600 "$RUNNER_TEMP/sdk55-private.log" "$RUNNER_TEMP/sdk55-capture.sh"
+      - name: Run restricted local Claude composite
+        id: review
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: ./.github/actions/claude-review
+        env:
+          BASH_ENV: ${{ runner.temp }}/sdk55-capture.sh
+          ACTIONS_STEP_DEBUG: 'false'
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          force_api: 'true'
+          model: claude-opus-5-5
+          prompt: >-
+            This is a trusted synthetic structured-output compatibility check.
+            Do not read any files, call any tools, or post comments.
+            Review only this synthetic function: def add(a, b): return a + b.
+            There are no requested findings. Return only the review JSON object
+            matching the supplied schema, with summary "Synthetic review complete.",
+            status "ok", early_exit false, and issues [].
+      - name: Validate privately and report finite diagnostics
+        if: always()
+        env:
+          INNER_OUTCOME: ${{ steps.review.outputs.inner_outcome }}
+          UPSTREAM_SHA: ${{ matrix.upstream }}
+          EXPECTED_SDK: ${{ matrix.sdk }}
+          EXPECTED_CLI: ${{ matrix.cli }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+
+          root = Path(os.environ['RUNNER_TEMP'])
+          report = {
+              'action_ok': os.environ.get('INNER_OUTCOME') == 'success',
+              'schema_valid': False,
+              'model_match': False,
+              'synthetic_result_ok': False,
+              'sdk_version': 'unknown',
+              'cli_version': 'unknown',
+              'runtime_match': False,
+              'result_status': 'unknown',
+              'result_error': False,
+              'error_class': 'checker_unavailable',
+          }
+          try:
+              cache = Path(os.environ['RUNNER_WORKSPACE']).parent / '_actions' / 'anthropics' / 'claude-code-action' / os.environ['UPSTREAM_SHA']
+              # The SDK import originates in base-action/src; prefer its nearest install.
+              for directory in [cache / 'base-action', cache]:
+                  package = directory / 'node_modules/@anthropic-ai/claude-agent-sdk/package.json'
+                  if package.is_file():
+                      version = json.loads(package.read_text())['version']
+                      if isinstance(version, str) and re.fullmatch(r'\d+\.\d+\.\d+', version):
+                          report['sdk_version'] = version
+                      break
+              # This is the explicit default executable passed to the SDK upstream.
+              cli = subprocess.run([str(Path.home() / '.local/bin/claude'), '--version'], capture_output=True, text=True, timeout=15, check=False)
+              match = re.fullmatch(r'(\d+\.\d+\.\d+)(?: \(Claude Code\))?\s*', cli.stdout)
+              if cli.returncode == 0 and match:
+                  report['cli_version'] = match.group(1)
+          except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+              pass
+          report['runtime_match'] = report['sdk_version'] == os.environ['EXPECTED_SDK'] and report['cli_version'] == os.environ['EXPECTED_CLI']
+          try:
+              from jsonschema import Draft202012Validator
+              sys.path.insert(0, str(Path.cwd() / '.github/scripts'))
+              from extract_claude_review import review_json_schema
+              messages = json.loads((root / 'claude-execution-output.json').read_text())
+              if not isinstance(messages, list):
+                  raise ValueError
+              results = [m for m in messages if isinstance(m, dict) and m.get('type') == 'result']
+              report['model_match'] = any(isinstance(m, dict) and m.get('type') == 'system' and m.get('subtype') == 'init' and m.get('model') == 'claude-opus-5-5' for m in messages)
+              if not results:
+                  report['error_class'] = 'result_missing'
+              else:
+                  result = results[-1]
+                  allowed = {'success', 'error_during_execution', 'error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries'}
+                  if result.get('subtype') in allowed:
+                      report['result_status'] = result['subtype']
+                  report['result_error'] = result.get('is_error') is True
+                  payload = result.get('structured_output')
+                  report['schema_valid'] = Draft202012Validator(review_json_schema()).is_valid(payload)
+                  report['synthetic_result_ok'] = report['schema_valid'] and payload['status'] == 'ok' and payload['early_exit'] is False and payload['issues'] == []
+                  if result.get('subtype') != 'success' or result.get('is_error') is not False:
+                      report['error_class'] = 'result_error'
+                  elif payload is None:
+                      report['error_class'] = 'structured_output_missing'
+                  elif not report['schema_valid']:
+                      report['error_class'] = 'schema_invalid'
+                  elif not report['synthetic_result_ok']:
+                      report['error_class'] = 'unexpected_synthetic_result'
+                  elif not report['action_ok']:
+                      report['error_class'] = 'action_failed'
+                  elif not report['runtime_match']:
+                      report['error_class'] = 'runtime_unverified'
+                  elif not report['model_match']:
+                      report['error_class'] = 'model_unverified'
+                  else:
+                      report['error_class'] = 'success'
+          except FileNotFoundError:
+              report['error_class'] = 'execution_missing'
+          except (ValueError, TypeError, KeyError):
+              report['error_class'] = 'execution_invalid'
+          except Exception:
+              report['error_class'] = 'checker_unavailable'
+          if report['error_class'] != 'success':
+              try:
+                  private = (root / 'sdk55-private.log').read_text(errors='replace').lower()
+                  for token, label in [('authentication_error', 'provider_auth_error'), ('rate_limit_error', 'provider_rate_limit'), ('not_found_error', 'provider_not_found'), ('invalid_request_error', 'provider_invalid_request')]:
+                      if token in private:
+                          report['error_class'] = label
+                          break
+              except OSError:
+                  pass
+          safe = json.dumps(report, sort_keys=True)
+          print(safe)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(safe + '\n')
+          sys.exit(0 if report['error_class'] == 'success' else 1)
+          PY
+      - name: Remove private diagnostic files
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/sdk55-private.log" "$RUNNER_TEMP/sdk55-capture.sh" "$RUNNER_TEMP/claude-execution-output.json"
+          rm -rf "$RUNNER_TEMP/claude-prompts"
