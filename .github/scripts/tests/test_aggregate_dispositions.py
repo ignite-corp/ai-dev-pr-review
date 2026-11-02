@@ -12,6 +12,7 @@ a section of its own.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -26,12 +27,14 @@ from aggregate_reviews import (
     _approval_withhold,
     _count_unreviewed_majors,
     _dispositioned_majors,
+    _fetch_disposition_threads,
     _parse_disposition_threads,
+    _repository_writer,
     format_summary,
     main,
     REVIEWER_NAMES,
 )
-from github_pr_support import inline_post_marker
+from github_pr_support import GH_TIMEOUT_SEC, inline_post_marker
 from post_inline_comments import DEDUP_STRONG_JACCARD, is_duplicate, normalize_body
 from tests_support import gate_function
 
@@ -258,6 +261,184 @@ class TestWhatCountsAsDispositioned:
     def test_pathless_major_has_no_thread_channel(self) -> None:
         available = _available(_issue(file=None, line=None))
         assert _dispositioned(available, _thread()) == {}
+
+
+class TestVerifiedWriterDispositions:
+    @pytest.mark.parametrize(
+        "permission,role_name", [("admin", "admin"), ("write", "maintain")]
+    )
+    def test_masked_writer_disposes_a_real_major(
+        self, permission: str, role_name: str
+    ) -> None:
+        thread = _thread(replies=[(_HUMAN, "By design: pooled.", "CONTRIBUTOR")])
+        result = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "permission": permission,
+                    "role_name": role_name,
+                    "user": {"login": _HUMAN["login"].upper()},
+                }
+            ),
+        )
+        with patch("aggregate_reviews.subprocess.run", return_value=result) as run:
+            parsed = _parse_disposition_threads([thread], repo="owner/repo")
+        assert _dispositioned_majors(_available(_issue()), parsed) == {
+            (_REVIEWER, 0): "By design by `hyuk-hur`"
+        }
+        run.assert_called_once_with(
+            ["gh", "api", "repos/owner/repo/collaborators/hyuk-hur/permission"],
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {"permission": "read", "role_name": "admin"},
+            {"permission": "none"},
+            {"permission": "maintain"},
+            {"permission": "push"},
+            {"permission": "custom-writer"},
+            {"permission": None},
+            {"permission": ["admin"]},
+            {"role_name": "admin"},
+            {"permission": "admin", "user": {"login": "someone-else"}},
+            {"permission": "admin", "user": {}},
+            {"permission": "admin", "user": None},
+            {"permission": "admin", "user": {"login": 123}},
+            [],
+            None,
+        ],
+    )
+    def test_unverified_access_withholds(self, response: Any) -> None:
+        if isinstance(response, dict):
+            response = {"user": {"login": _HUMAN["login"]}, **response}
+        thread = _thread(replies=[(_HUMAN, "Won't fix: intentional.", "CONTRIBUTOR")])
+        result = subprocess.CompletedProcess([], 0, json.dumps(response))
+        with patch("aggregate_reviews.subprocess.run", return_value=result):
+            parsed = _parse_disposition_threads([thread], repo="owner/repo")
+        assert (
+            _count_unreviewed_majors(
+                _available(_issue()),
+                _dispositioned_majors(_available(_issue()), parsed),
+            )
+            == 1
+        )
+
+    @pytest.mark.parametrize("failure", ["403", "404", "429", "timeout", "os", "json"])
+    def test_lookup_failure_withholds(self, failure: str) -> None:
+        result = subprocess.CompletedProcess([], 1, "", f"HTTP {failure}")
+        error = None
+        if failure == "timeout":
+            error = subprocess.TimeoutExpired("gh", GH_TIMEOUT_SEC)
+        elif failure == "os":
+            error = OSError("gh unavailable")
+        elif failure == "json":
+            result = subprocess.CompletedProcess([], 0, "not JSON")
+        with patch(
+            "aggregate_reviews.subprocess.run", return_value=result, side_effect=error
+        ):
+            assert not _repository_writer("owner/repo", _HUMAN["login"])
+
+    @pytest.mark.parametrize(
+        "repo,login",
+        [
+            ("owner", "writer"),
+            ("owner/repo/other", "writer"),
+            ("owner/..", "writer"),
+            ("owner/.", "writer"),
+            ("owner/repo?query", "writer"),
+            ("owner/repo", "../writer"),
+            ("owner/repo", "writer?query"),
+            ("owner/repo", "--hostname=other"),
+            ("owner/repo", "$(command)"),
+            ("owner/repo", ""),
+        ],
+    )
+    def test_invalid_endpoint_components_are_never_requested(
+        self, repo: str, login: str
+    ) -> None:
+        with patch("aggregate_reviews.subprocess.run") as run:
+            assert not _repository_writer(repo, login)
+        run.assert_not_called()
+
+    @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+    def test_existing_associations_need_no_permission_lookup(
+        self, association: str
+    ) -> None:
+        thread = _thread(replies=[(_HUMAN, "By design: pooled.", association)])
+        with patch("aggregate_reviews.subprocess.run") as run:
+            assert _parse_disposition_threads([thread], repo="owner/repo")
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "thread",
+        [
+            _thread(resolved=False),
+            _thread(first_author=_HUMAN),
+            _thread(first_body=_posted(severity="minor")),
+            _thread(replies=[]),
+            _thread(replies=[(_BOT, "By design: pooled.")]),
+            _thread(replies=[(None, "By design: deleted.")]),
+            _thread(replies=[(_HUMAN, "Fixed: pooled.")]),
+            _thread(
+                replies=[
+                    (_HUMAN, "By design: pooled."),
+                    (_HUMAN, "Reopening: still broken."),
+                ]
+            ),
+        ],
+    )
+    def test_other_thread_gates_run_before_permission_lookup(
+        self, thread: dict[str, Any]
+    ) -> None:
+        for reply in thread["tail"]["nodes"]:
+            reply["authorAssociation"] = "CONTRIBUTOR"
+        with patch("aggregate_reviews.subprocess.run") as run:
+            assert _parse_disposition_threads([thread], repo="owner/repo") == []
+        run.assert_not_called()
+
+    @pytest.mark.parametrize("allowed", [True, False])
+    def test_cache_is_scoped_to_repository_and_login(self, allowed: bool) -> None:
+        cache: dict[tuple[str, str], bool] = {}
+        thread = _thread(replies=[(_HUMAN, "By design: pooled.", "CONTRIBUTOR")])
+        other = _thread(
+            replies=[({"login": "other", "__typename": "User"}, "By design:", "NONE")]
+        )
+        with patch(
+            "aggregate_reviews._repository_writer", return_value=allowed
+        ) as check:
+            for repo in ("owner/repo", "owner/other"):
+                parsed = _parse_disposition_threads(
+                    [thread, thread, other], repo=repo, permission_cache=cache
+                )
+                assert len(parsed) == (3 if allowed else 0)
+        assert check.call_count == 4
+        assert {call.args for call in check.call_args_list} == {
+            (repo, login)
+            for repo in ("owner/repo", "owner/other")
+            for login in (_HUMAN["login"], "other")
+        }
+
+    def test_fetch_caches_across_pages_but_not_across_aggregates(self) -> None:
+        thread = _thread(replies=[(_HUMAN, "By design: pooled.", "CONTRIBUTOR")])
+
+        def pages(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            transform = kwargs["transform"]
+            return transform([thread]) + transform([thread])
+
+        with (
+            patch("aggregate_reviews.fetch_paginated_nodes", side_effect=pages),
+            patch(
+                "aggregate_reviews._repository_writer", side_effect=[True, False]
+            ) as check,
+        ):
+            assert len(_fetch_disposition_threads("owner/repo", "42")) == 2
+            assert _fetch_disposition_threads("owner/repo", "42") == []
+        assert check.call_count == 2
 
 
 class TestOneCountEverywhere:
