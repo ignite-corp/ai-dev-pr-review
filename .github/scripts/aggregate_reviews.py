@@ -70,6 +70,7 @@ from github_pr_support import (
     inline_post_envelope,
     inline_run_identity,
     is_valid_review as _is_valid_review,
+    is_json_object,
     normalize_severity as _normalize_severity,
     array_field,
     object_field,
@@ -996,10 +997,10 @@ _DISPOSITION_PREFIXES = (
     "Deferred to",
     "Won't fix",
 )
-# Who may dispose of a major: GitHub's authorAssociation -- the repository's
-# owner, a member of the owning org, or an invited collaborator. Association,
-# not permission: a read-only org member passes too. It keeps out accounts
-# with no standing on the repository at all, which is the cheap half. The PR
+# Trusted authorAssociation is the fast path: the repository's owner, a
+# member of the owning org, or an invited collaborator. A visible read-only
+# org member still passes. When a token hides that association, only an
+# independently verified repository writer/admin passes the fallback. The PR
 # author is not excluded, by decision: here the author is normally a member
 # and disposes of majors on their own PR, as the merge ruleset already lets
 # them resolve threads. So with auto-approve on, the formal approval that
@@ -1054,7 +1055,47 @@ def _comment_fields(node: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _repository_writer(repo: str, login: str) -> bool:
+    """Verify effective write access when a token hides org membership (AT-3213)."""
+    parts = repo.split("/")
+    if (
+        len(parts) != 2
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", parts[0])
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", parts[1])
+        or parts[1] in (".", "..")
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", login)
+    ):
+        return False
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/collaborators/{login}/permission"],
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+        if result.returncode != 0:
+            return False
+        data = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return False
+    if not is_json_object(data):
+        return False
+    response_login = object_field(data, "user").get("login")
+    # GitHub maps maintain to legacy write and triage to read here. Custom
+    # role_name strings alone say nothing about the base access granted.
+    return (
+        data.get("permission") in ("write", "admin")
+        and isinstance(response_login, str)
+        and response_login.casefold() == login.casefold()
+    )
+
+
+def _parse_disposition_threads(
+    nodes: list[dict[str, Any]],
+    *,
+    repo: str = "",
+    permission_cache: dict[tuple[str, str], bool] | None = None,
+) -> list[dict[str, Any]]:
     """The resolved threads that close a posted major, in ``is_duplicate``'s shape.
 
     Narrow on purpose, because a match lets a reply neutralize a
@@ -1069,13 +1110,17 @@ def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, An
       opens with a standing disposition prefix -- a silent resolve, a bare
       "thanks", or a later reply that withdraws the disposition does not
       count -- and that person is the repository's OWNER, MEMBER or
-      COLLABORATOR, so an outside account cannot clear a major (anyone's
-      later reply can still withdraw one: the failure side withholds).
+      COLLABORATOR, or independently verified to have effective write/admin
+      access. Org membership can be hidden from workflow tokens; a weaker
+      association alone never clears a major (anyone's later reply can
+      still withdraw one: the failure side withholds).
 
     Each kept thread carries the disposition and who gave it, for the body
     to show.
     """
     kept: list[dict[str, Any]] = []
+    if permission_cache is None:
+        permission_cache = {}
     for node in nodes:
         if node.get("isResolved") is not True:
             continue
@@ -1099,12 +1144,19 @@ def _parse_disposition_threads(nodes: list[dict[str, Any]]) -> list[dict[str, An
             for c in tail
             if c["login"] and c["author_type"] not in ("", "Bot") and c != first
         ]
-        if not human or human[-1]["association"] not in _DISPOSING_ASSOCIATIONS:
+        if not human:
             continue
         reply = human[-1]["body"].lstrip()
         prefix = next((p for p in _DISPOSITION_PREFIXES if reply.startswith(p)), None)
         if prefix is None:
             continue
+        if human[-1]["association"] not in _DISPOSING_ASSOCIATIONS:
+            login = human[-1]["login"]
+            key = (repo.casefold(), login.casefold())
+            if key not in permission_cache:
+                permission_cache[key] = _repository_writer(repo, login)
+            if not permission_cache[key]:
+                continue
         kept.append(
             {
                 "path": node.get("path") or "",
@@ -1129,6 +1181,7 @@ def _fetch_disposition_threads(repo: str, pr_number: str) -> list[dict[str, Any]
     if len(parts) != 2:
         return []
     owner, name = parts
+    permission_cache: dict[tuple[str, str], bool] = {}
     return fetch_paginated_nodes(
         _DISPOSITION_THREADS_QUERY,
         "reviewThreads",
@@ -1136,7 +1189,9 @@ def _fetch_disposition_threads(repo: str, pr_number: str) -> list[dict[str, Any]
         name,
         pr_number,
         page_size=_DISPOSITION_PAGE_SIZE,
-        transform=_parse_disposition_threads,
+        transform=lambda nodes: _parse_disposition_threads(
+            nodes, repo=repo, permission_cache=permission_cache
+        ),
     )
 
 
