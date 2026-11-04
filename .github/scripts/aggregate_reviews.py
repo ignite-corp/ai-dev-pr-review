@@ -54,7 +54,7 @@ from github_pr_support import (
     COMBINED_SIZE_AXIS,
     COMBINED_SIZE_VAR,
     REVIEW_MARKER,
-    REVIEWER_NAMES,
+    REVIEWER_NAMES as REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     describe_size_breach,
@@ -80,10 +80,14 @@ from github_pr_support import (
 # re-raised major is the same finding a thread holds exactly when the
 # posting step would have deduplicated it against that thread (AT-2843).
 from post_inline_comments import is_duplicate, normalize_body
+from reviewer_roster import SUPPORTED_REVIEWERS, configured_reviewers
 
 logger = logging.getLogger(__name__)
 
-REVIEWERS: dict[str, str] = {name: f"review-{name}.json" for name in REVIEWER_NAMES}
+# Validate trusted configuration before any PR lookup, output or posting.
+REVIEWERS: dict[str, str] = {
+    name: f"review-{name}.json" for name in configured_reviewers()
+}
 
 # Max chars for issue description in verdict reason string.
 # Keeps the PR review title concise while showing enough context.
@@ -1011,7 +1015,7 @@ _DISPOSING_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 # it for a major: `+ **major** (<reviewer>): <description>`.
 _POSTED_MAJOR_RE = re.compile(
     rf"^{re.escape(SEVERITY_ICONS['major'])} \*\*major\*\* "
-    rf"\((?:{'|'.join(re.escape(r) for r in REVIEWER_NAMES)})\): \S"
+    rf"\((?:{'|'.join(re.escape(r) for r in SUPPORTED_REVIEWERS)})\): \S"
 )
 # Newest comments read per thread. A disposition followed by more than this
 # many comments falls out of the window and the major withholds again --

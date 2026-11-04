@@ -93,6 +93,7 @@ from local_review_config import (
 )
 from local_reviewer_support import DRIVER_ENV_MARKER, reviewer_env_allowlist
 from review_coordinates import check_reviewer_coordinates
+from reviewer_roster import REVIEWERS_ENV
 from reviewer_prompts import MAX_EXISTING_THREADS, MAX_THREAD_BODY_CHARS
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1981,6 +1982,9 @@ def aggregate_env(
             ),
             "MAJOR_CONSENSUS_MIN": config.get("MAJOR_CONSENSUS_MIN"),
             "REVIEW_MODE": config.get("REVIEW_MODE"),
+            # Match the default roster this driver actually dispatches until
+            # selected-roster dispatch is wired; never inherit ambient input.
+            REVIEWERS_ENV: json.dumps(REVIEWER_NAMES),
             # Pinned off, and this assignment IS the guarantee: there is no
             # App token to mint and the operator cannot approve their own
             # PR. Nothing in local_review_config enforces it -- that module

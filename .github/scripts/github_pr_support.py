@@ -11,6 +11,8 @@ import sys
 from collections.abc import Callable, Iterable
 from typing import Any, TypeGuard
 
+from reviewer_roster import DEFAULT_REVIEWERS, SUPPORTED_REVIEWERS
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,8 @@ def array_field(node: dict[str, Any], key: str) -> list[Any]:
     return value if is_json_array(value) else []
 
 
-REVIEWER_NAMES: tuple[str, ...] = ("claude", "codex", "gemini")
+# Compatibility alias: the local driver still dispatches the default three.
+REVIEWER_NAMES = DEFAULT_REVIEWERS
 GH_TIMEOUT_SEC = 60
 _DEFAULT_PAGE_SIZE = 50
 
@@ -124,7 +127,7 @@ FOLD_COMMENT_MARKERS: tuple[str, ...] = (
     "<!-- inline-fallback-{reviewer}-r{round} -->",
 )
 _INLINE_POST_MARKER = re.compile(
-    rf"<!-- inline-post-(?P<reviewer>{'|'.join(REVIEWER_NAMES)})-r(?P<round>[1-9][0-9]*) "
+    rf"<!-- inline-post-(?P<reviewer>{'|'.join(SUPPORTED_REVIEWERS)})-r(?P<round>[1-9][0-9]*) "
     r"run:(?P<run>actions-[1-9][0-9]*-[1-9][0-9]*|local-[0-9a-f]{32}) -->"
 )
 

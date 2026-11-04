@@ -28,6 +28,7 @@ import local_reviewer_support as support
 import review_pr_local as driver
 from local_review_config import LocalConfig, workflow_defaults
 from reviewer_prompts import existing_threads_block
+from reviewer_roster import REVIEWERS_ENV
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 
@@ -247,6 +248,28 @@ def test_auto_approve_is_pinned_off_whatever_the_operator_sets(monkeypatch):
         conclusions=driver.initial_conclusions(),
     )
     assert env["ALLOW_AUTO_APPROVE"] == "false"
+
+
+@pytest.mark.parametrize(
+    "ambient",
+    ['["claude"]', '["claude","codex","gemini","copilot"]', "not-json", ""],
+)
+def test_aggregate_roster_is_the_default_three_dispatched_locally(monkeypatch, ambient):
+    monkeypatch.setenv(REVIEWERS_ENV, ambient)
+    env = driver.aggregate_env(
+        "o/r",
+        "1",
+        LocalConfig.load(),
+        bot_login="me",
+        head_sha="abc",
+        pr_author="a",
+        size=driver.initial_size(),
+        policy=driver.initial_policy(),
+        conclusions=driver.initial_conclusions(),
+    )
+    assert env[REVIEWERS_ENV] == json.dumps(driver.REVIEWER_NAMES)
+    assert json.loads(env[REVIEWERS_ENV]) == ["claude", "codex", "gemini"]
+    assert set(json.loads(env[REVIEWERS_ENV])) == set(driver.REVIEWER_SCRIPTS)
 
 
 def test_aggregate_reads_the_same_jaccard_threshold_as_the_posting_step(

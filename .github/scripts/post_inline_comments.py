@@ -51,7 +51,6 @@ from github_pr_support import (
     DIFF_FILE_PREFIX_LEN,
     DIFF_SIDE_RIGHT,
     FOLD_COMMENT_MARKERS,
-    REVIEWER_NAMES,
     SEVERITY_ICONS,
     GH_TIMEOUT_SEC,
     fetch_paginated_nodes,
@@ -66,6 +65,7 @@ from github_pr_support import (
     inline_post_marker,
     inline_run_identity,
 )
+from reviewer_roster import SUPPORTED_REVIEWERS
 
 # Page size per GraphQL request for thread pagination.
 THREAD_PAGE_SIZE = 100
@@ -116,7 +116,7 @@ _SEVERITY_RANK: dict[str, int] = {
 _ICON_RE = re.compile("[" + "".join(SEVERITY_ICONS.values()) + "*]")
 _BOLD_RE = re.compile(r"\*\*.*?\*\*")
 _REVIEWER_RE = re.compile(
-    rf"\((?:{'|'.join(re.escape(r) for r in REVIEWER_NAMES)})\)", re.IGNORECASE
+    rf"\((?:{'|'.join(re.escape(r) for r in SUPPORTED_REVIEWERS)})\)", re.IGNORECASE
 )
 _BLOCKQUOTE_RE = re.compile(r"^>.*$", re.MULTILINE)
 _LEADING_COLON_RE = re.compile(r"^\s*:\s*")
