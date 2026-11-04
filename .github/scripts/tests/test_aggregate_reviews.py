@@ -21,7 +21,7 @@ from review_status import stamp_model_status, write_verdict_json
 from aggregate_reviews import (
     _count_unreviewed_majors,
     _get_available,
-    _has_full_reviewer_coverage,
+    _has_approval_quorum,
     _prepare_failure_result,
     _head_is_stale,
     _size_skip_details,
@@ -276,7 +276,7 @@ class TestCriticalThreshold:
 
     def test_one_critical_does_not_trigger_request_changes(self) -> None:
         # With CRITICAL_THRESHOLD=2, a single critical should not block.
-        # Provide 2 reviewers (to meet MIN_REVIEWERS_FOR_VERDICT) but only 1 critical.
+        # Provide 2 reviewers (the three-reviewer verdict minimum) but only 1 critical.
         names = list(REVIEWER_NAMES)
         reviews: dict[str, dict[str, Any] | None] = {n: None for n in REVIEWER_NAMES}
         reviews[names[0]] = _make_named_review(
@@ -794,7 +794,7 @@ class TestApproveQuorumGate:
     def test_main_absent_reviewer_withholds_formal_approval(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # AT-2124: two live reviewers clear MIN_REVIEWERS_FOR_VERDICT, so the
+        # AT-2124: two live reviewers clear the verdict minimum, so the
         # verdict is "approve" -- but gemini never ran, and a formal APPROVED
         # review would assert coverage that never happened.
         monkeypatch.setenv("REVIEW_MODE", "parallel")
@@ -810,7 +810,7 @@ class TestApproveQuorumGate:
     def test_main_absent_reviewer_leaves_verdict_and_exit_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The verdict gate is untouched: MIN_REVIEWERS_FOR_VERDICT is still 2,
+        # The three-reviewer verdict minimum is still 2,
         # so one reviewer's outage must not turn the required check red.
         monkeypatch.setenv("REVIEW_MODE", "parallel")
         reviews: dict[str, Any] = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
@@ -1051,7 +1051,7 @@ class TestUndispositionedMajorsGate:
 
         assert not any("review" in cmd for cmd, _ in calls)
         body = next(body for cmd, body in calls if "comment" in cmd)
-        assert "not every configured reviewer produced a verdict" in body
+        assert "the configured approval response quorum was not met" in body
         # Positive control: the majors really are present in this fixture,
         # so the coverage reason winning is a precedence and not an
         # absence of majors.
@@ -1166,20 +1166,20 @@ class TestMajorCountIsOneComputation:
         )
 
 
-class TestFullReviewerCoverage:
-    """AT-2124: approve_quorum is full coverage, not an availability count."""
+class TestApprovalQuorum:
+    """AT-3164: the current three-reviewer approval quorum remains three."""
 
     def test_all_configured_reviewers_present_is_covered(self) -> None:
         available = {n: _make_named_review(n, []) for n in REVIEWER_NAMES}
-        assert _has_full_reviewer_coverage(available) is True
+        assert _has_approval_quorum(available) is True
 
     def test_missing_reviewer_is_not_covered(self) -> None:
         names = list(REVIEWER_NAMES)
         available = {n: _make_named_review(n, []) for n in names[:-1]}
-        assert _has_full_reviewer_coverage(available) is False
+        assert _has_approval_quorum(available) is False
 
     def test_empty_available_is_not_covered(self) -> None:
-        assert _has_full_reviewer_coverage({}) is False
+        assert _has_approval_quorum({}) is False
 
 
 class TestHeadlineAgreesWithPostedEvent:
@@ -1226,7 +1226,7 @@ class TestHeadlineAgreesWithPostedEvent:
         assert len(posted_bodies) == 1
         body = posted_bodies[0]
         assert (
-            "[!] Approved | comment only: not every reviewer responded (2/3 reviewers)"
+            "[!] Approved | comment only: approval response quorum not met (2/3 reviewers)"
             in body
         )
         assert "[OK]" not in body
@@ -1469,7 +1469,7 @@ class TestSummaryLabels:
 
         AT-2511 built ``| comment only: <coverage>`` for the quorum
         shortfall, where the coverage segment IS the reason -- "comment
-        only: not every reviewer responded (2/3 reviewers)" reads
+        only: approval response quorum not met (2/3 reviewers)" reads
         correctly. AT-2823 widened the branch to every withhold without
         widening the prose, so the majors-only path rendered "comment
         only: 3/3 reviewers", where the colon makes a full roster look
@@ -1510,7 +1510,7 @@ class TestSummaryLabels:
             unreviewed_majors=0,
         )
         assert (
-            "[!] Approved | comment only: not every reviewer responded"
+            "[!] Approved | comment only: approval response quorum not met"
             " (2/3 reviewers)" in summary
         )
 
@@ -1527,7 +1527,7 @@ class TestSummaryLabels:
         )
         assert (
             "[!] Approved with 1 unreviewed major issue(s) | comment only:"
-            " not every reviewer responded (2/3 reviewers)" in summary
+            " approval response quorum not met (2/3 reviewers)" in summary
         )
 
     def test_approve_with_unreviewed_major_issues_loses_ok_icon(self) -> None:
@@ -1582,7 +1582,7 @@ class TestSummaryLabels:
             unreviewed_majors=_count_unreviewed_majors(reviews),
         )
         assert (
-            "[!] Approved | comment only: not every reviewer responded"
+            "[!] Approved | comment only: approval response quorum not met"
             " (2/3 reviewers)" in summary
         )
         assert "[OK]" not in summary
@@ -1606,7 +1606,7 @@ class TestSummaryLabels:
         )
         assert (
             "[!] Approved | posted as comment (auto-approve off) |"
-            " not every reviewer responded (2/3 reviewers)" in summary
+            " approval response quorum not met (2/3 reviewers)" in summary
         )
         assert "[OK]" not in summary
 
@@ -1708,7 +1708,7 @@ class TestClaudeInfrastructureFailure:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # One reviewer down stays merge-non-blocking: the remaining two meet
-        # MIN_REVIEWERS_FOR_VERDICT, so the aggregate reports an honest 2/3.
+        # the verdict minimum, so the aggregate reports an honest 2/3.
         for name in REVIEWER_NAMES:
             monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
         monkeypatch.setenv("PR_NUMBER", "737")
