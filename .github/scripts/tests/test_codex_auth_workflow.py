@@ -49,6 +49,7 @@ def _fixture(
         "promote_legacy_verdict.sh",
         "extract_codex_json.py",
         "github_pr_support.py",
+        "reviewer_roster.py",
         "review_status.py",
     ]:
         shutil.copy2(SCRIPTS / filename, trusted / filename)

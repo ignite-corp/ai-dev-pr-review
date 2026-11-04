@@ -913,7 +913,7 @@ def _run_step(
         target = work / ".ai-dev-pr-review" / ".github" / "scripts"
         target.mkdir(parents=True)
         # The pinned checkout ships the sibling module the script imports.
-        for name in (SCRIPT.name, "github_pr_support.py"):
+        for name in (SCRIPT.name, "github_pr_support.py", "reviewer_roster.py"):
             shutil.copy(SCRIPT_DIR / name, target / name)
     output = tmp_path / "github_output"
     output.touch()

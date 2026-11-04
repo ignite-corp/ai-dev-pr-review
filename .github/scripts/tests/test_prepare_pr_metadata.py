@@ -139,6 +139,9 @@ def _run_refs_step(
     pinned_scripts.mkdir(parents=True)
     if pinned_scripts_has_format_labels:
         shutil.copy(
+            SCRIPT_DIR / "reviewer_roster.py", pinned_scripts / "reviewer_roster.py"
+        )
+        shutil.copy(
             SCRIPT_DIR / "github_pr_support.py",
             pinned_scripts / "github_pr_support.py",
         )
@@ -512,9 +515,8 @@ def _make_metadata_repo(tmp_path: Path) -> tuple[Path, str]:
 
     pinned_scripts = work / ".ai-dev-pr-review" / ".github" / "scripts"
     pinned_scripts.mkdir(parents=True)
-    shutil.copy(
-        SCRIPT_DIR / "github_pr_support.py", pinned_scripts / "github_pr_support.py"
-    )
+    for name in ("github_pr_support.py", "reviewer_roster.py"):
+        shutil.copy(SCRIPT_DIR / name, pinned_scripts / name)
 
     return work, head_sha
 

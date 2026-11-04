@@ -93,7 +93,8 @@ def _make_repo(
     # The metadata block imports display_path from the pinned checkout.
     pinned = work / ".ai-dev-pr-review" / ".github" / "scripts"
     pinned.mkdir(parents=True)
-    shutil.copy(SCRIPT_DIR / "github_pr_support.py", pinned / "github_pr_support.py")
+    for name in ("github_pr_support.py", "reviewer_roster.py"):
+        shutil.copy(SCRIPT_DIR / name, pinned / name)
 
     if caller_files is not None or caller_links is not None:
         caller = work / ".ai-dev-pr-review-caller"
