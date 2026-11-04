@@ -1585,16 +1585,47 @@ cutoff_findings() {
     # with matching quote multiplicity within this source, never one for all.
     items=$(printf '%s' "$comments" | jq -r --arg t "$at" --arg i "$id" "$rx"'
        ([ .[] | select((.id | tostring) == $i) ] | first | (.body // "") | gsub("\r"; "") | split("\n")) as $lines
+       # Bound once: the fence strip below and the count check after it
+       # must agree on whether this comment carries the envelope.
+       | ($lines[1] // "") as $envelope
+       # A fenced block inside an item belongs to that item, the way a
+       # reader sees it: its lines are code, never items of their own, so
+       # an item-shaped line quoted in a fence is not counted against the
+       # fold-count or offered for a quote nobody could give
+       # (hyuk-hur/dev-dotfiles#205). A stray opener that some later fence
+       # line closes hides whatever lies between, as it would for a reader,
+       # and only the fold-count can see that: the items it hid are missing
+       # from the count. So fences are stripped only in a comment that
+       # carries the envelope; a legacy comment without one strips nothing
+       # and is read as before. An opener with no later closing run strips
+       # nothing either. An opener is as CommonMark defines it: up to three
+       # spaces, then three or more backticks or tildes, and a backtick run
+       # whose info string holds a backtick is inline code, not a fence. An
+       # opener indented further is left as text, which can only add items;
+       # a closer indented further does not close, so the stretch it should
+       # end may hide items, and the fold-count sees that too.
+       | (if ($envelope | startswith("<!-- fold-count:")) | not then [$lines[] | true]
+          else $lines | reduce .[] as $ln ({open: null, keep: []};
+           if .open == null then
+             ([$ln | capture("^ {0,3}(?<f>`{3,}|~{3,})(?<info>.*)$")
+               | select(.f[0:1] == "~" or (.info | test("`") | not))] | .[0].f) as $f
+             | if $f == null then .keep += [true]
+               else .open = {c: $f[0:1], n: ($f | length), at: (.keep | length)} | .keep += [false] end
+           else
+             .open as $o | .keep += [false]
+             | if ($ln | test("^ {0,3}" + $o.c + "{" + ($o.n | tostring) + ",}\\s*$")) then .open = null else . end
+           end)
+         | if .open == null then .keep else .open.at as $at | .keep[$at:] |= map(true) | .keep end
+          end) as $keep
        # jq capture emits no value for a nonmatching line: map drops
        # headers and separators without raising an error.
-       | ($lines | map(capture("^- \\*\\*(?<loc>.+?:[0-9]+)\\*\\* -- (?<text>\\S+ \\*\\*.*)$"))) as $findings
+       | ([ range(0; $lines | length) | select($keep[.]) | $lines[.] ] | map(capture("^- \\*\\*(?<loc>.+?:[0-9]+)\\*\\* -- (?<text>\\S+ \\*\\*.*)$"))) as $findings
        # Item bodies contain unescaped multiline prose and suggestions, so
        # an ordinary bold bullet is not evidence of an extra finding.
        # Only the icon and opening severity delimiter are invariant: raw
        # severity/reviewer fields can contain delimiters or newlines.
        # Prose carrying that producer-shaped opening prefix remains ambiguous
        # without a producer encoding change.
-       | ($lines[1] // "") as $envelope
        # Pending PR #191 at 49e7c610 adds optional count/head metadata;
        # main does not emit it yet. Only count consistency is checked here:
        # the head is not authentication or SHA proof. The caller supplies
