@@ -2444,6 +2444,131 @@ chk "control: a bare OWNER in a spelling none of the old sites used is counted" 
 chk "no executable line spells the PR as N in any shape the eight sites took" \
     "$(grep -v '^ *#' "$GATE_BLOCK" | grep -cE 'n=N|issues/N|pulls/N|pr view N|REPO N |#N')" 0
 
+echo "5n. a fenced block inside a folded item is that item's body, not items of its own"
+# hyuk-hur/dev-dotfiles#205, measured on #198's round-cutoff-claude-r22:
+# a finding that quotes code in a fence. A fenced line the item regex
+# does not match was already dropped; one it does match - a reviewer
+# quoting a fold comment, a fixture, a markdown list - was a second
+# finding: against a fold-count it is an invalid comment no reply can
+# clear, and without one it is an item nobody could quote. A fence is
+# stripped only when it closes, so a stray opener hides nothing.
+FENCE='```'
+cut_fold() { # $1 id, $2 marker suffix, $3 fold-count line or '', $4 item lines
+    cmt "$1" 2026-10-06T11:28:32Z 'github-actions[bot]' Bot "<!-- round-cutoff-claude-$2 -->${3:+
+$3}
+## [bot] claude Round Cutoff Summary
+
+$4"
+}
+F_ITEM='- **bin/drill:1919** -- ? **suggestion** (claude): the added arm is the only reference to DRILL_PID:'
+F_SHAPED='- **bin/drill:12** -- ? **minor** (claude): an item-shaped line inside the fence'
+F_AFTER='- **bin/drill:40** -- ? **minor** (claude): a real item after the fence'
+F_BODY="$F_ITEM
+
+$FENCE
++    *)
+$F_SHAPED
++        exit 1
+$FENCE"
+# shellcheck disable=SC2016  # the backticks are the reply's own
+F_QUOTE_ITEM=$(cmt 140 2026-10-06T11:40:00Z hyuk-hur User "\`round-cutoff-claude-r22\`, \`round-cutoff-claude-r23\`, \`round-cutoff-claude-r24\`:
+> $F_ITEM
+Fixed.")
+C_FENCE_COUNTED=$(cut_fold 141 r22 '<!-- fold-count: 1 -->' "$F_BODY")
+C_FENCE_LEGACY=$(cut_fold 141 r22 '' "$F_BODY")
+chk "the issue's shape: fenced diff lines are not items, and the one real item quoted clears it" \
+    "$(cutoff "$FN" "$(lst "$(cut_fold 141 r22 '<!-- fold-count: 1 -->' "$F_ITEM
+
+$FENCE
++    *)
++        exit 1
+$FENCE")" "$F_QUOTE_ITEM")" "$W_CUT")" ok
+chk "an item-shaped line inside a closed fence is not counted against fold-count 1" \
+    "$(cutoff "$FN" "$(lst "$C_FENCE_COUNTED" "$F_QUOTE_ITEM")" "$W_CUT")" ok
+# A legacy comment, with no fold-count, strips nothing: without the count
+# nothing could see an item a mis-paired fence hid (#276 round 2), so its
+# fenced item-shaped line is read as before - an item, quoted or blocking.
+chk "a comment without fold-count strips nothing: the fenced item-shaped line is still an item, and blocks unquoted" \
+    "$(cutoff "$FN" "$(lst "$C_FENCE_LEGACY" "$F_QUOTE_ITEM")" "$W_CUT")" block
+chk "a tilde fence is a fence too" \
+    "$(cutoff "$FN" "$(lst "$(cut_fold 141 r22 '<!-- fold-count: 1 -->' "$F_ITEM
+~~~
+$F_SHAPED
+~~~")" "$F_QUOTE_ITEM")" "$W_CUT")" ok
+# The half that must not regress: stripping fences is not a way to hide
+# an item. A real item after a closed fence is still offered, and still
+# counted.
+C_FENCE_THEN_ITEM=$(cut_fold 142 r23 '<!-- fold-count: 2 -->' "$F_BODY
+$F_AFTER")
+chk "a real item after a closed fence is still an item: unquoted, it blocks" \
+    "$(cutoff "$FN" "$(lst "$C_FENCE_THEN_ITEM" "$F_QUOTE_ITEM")" "$W_CUT")" block
+chk "and it is named as the item nobody quoted" \
+    "$( (. "$FN"; lst "$C_FENCE_THEN_ITEM" "$F_QUOTE_ITEM" | "$CUTOFF_FN" "$W_CUT") 2>&1 | grep -c 'quote: - \*\*bin/drill:40\*\*')" 1
+# shellcheck disable=SC2016  # the backticks are the reply's own
+chk "quoted, both items clear it: the fence counted for neither" \
+    "$(cutoff "$FN" "$(lst "$C_FENCE_THEN_ITEM" "$F_QUOTE_ITEM" "$(cmt 143 2026-10-06T11:41:00Z hyuk-hur User "\`round-cutoff-claude-r23\`:
+> $F_AFTER
+Fixed.")")" "$W_CUT")" ok
+# A fence that never closes strips nothing: the item-shaped line after a
+# stray opener stays an item, so the comment blocks until it is answered
+# or repaired.
+# Each fixture below carries a fold-count and has every item it should
+# keep quoted, so a wrong strip shows as a count mismatch and blocks.
+# shellcheck disable=SC2016  # the backticks are the reply's own
+F_QUOTE_SHAPED=$(cmt 147 2026-10-06T11:41:00Z hyuk-hur User "\`round-cutoff-claude-r24\`:
+> $F_SHAPED
+Fixed.")
+C_FENCE_UNCLOSED=$(cut_fold 144 r24 '<!-- fold-count: 2 -->' "$F_ITEM
+$FENCE
+$F_SHAPED")
+chk "an unclosed fence strips nothing: the line after it is still an item, counted and cleared once quoted" \
+    "$(cutoff "$FN" "$(lst "$C_FENCE_UNCLOSED" "$F_QUOTE_ITEM" "$F_QUOTE_SHAPED")" "$W_CUT")" ok
+chk "a closing run shorter than the opener does not close it" \
+    "$(cutoff "$FN" "$(lst "$(cut_fold 144 r24 '<!-- fold-count: 2 -->' "$F_ITEM
+\`\`\`\`
+$F_SHAPED
+$FENCE")" "$F_QUOTE_ITEM" "$F_QUOTE_SHAPED")" "$W_CUT")" ok
+# An info string holding a backtick makes a backtick run inline code, not
+# a fence (CommonMark 0.31.2, fenced code blocks): read as an opener, it
+# and a later bare fence would hide the real item between them, and with
+# no fold-count nothing would notice (#276 round 1, codex).
+chk "an inline \`\`\`code\`\`\` line is not an opener: the real item after it is still an item, counted and cleared once quoted" \
+    "$(cutoff "$FN" "$(lst "$(cut_fold 145 r25 '<!-- fold-count: 2 -->' "$F_ITEM
+\`\`\`example\`\`\`
+$F_AFTER
+$FENCE")" "$(cmt 146 2026-10-06T11:40:00Z hyuk-hur User "\`round-cutoff-claude-r25\`:
+> $F_ITEM
+> $F_AFTER
+Fixed.")")" "$W_CUT")" ok
+# The trade-off the envelope rule exists for: a stray opener in one item,
+# closed by the opener of a later item's own code block, hides the item
+# between them, as it would for a reader. The fold-count is what sees it.
+F_LATER='- **bin/drill:60** -- ? **minor** (claude): a later item with its own code block:'
+# shellcheck disable=SC2016  # the backticks are the reply's own
+chk "a stray opener closed by a later item's fence hides an item, and the fold-count blocks it" \
+    "$(cutoff "$FN" "$(lst "$(cut_fold 148 r26 '<!-- fold-count: 3 -->' "$F_ITEM
+$FENCE
+$F_AFTER
+$F_LATER
+$FENCE
++ code
+$FENCE")" "$(cmt 149 2026-10-06T11:40:00Z hyuk-hur User "\`round-cutoff-claude-r26\`:
+> $F_ITEM
+> $F_AFTER
+> $F_LATER
+Fixed.")")" "$W_CUT")" block
+# Control: the strip cut out of the item read - every line offered again,
+# as before - and the closed-fence fixture blocks once more, so the strip
+# is what clears it.
+CTRL_FENCE="$D/fn-no-fence-strip.sh"
+# shellcheck disable=SC2016  # matched literally: the select as SKILL.md spells it
+sed '/^'"$CUTOFF_FN"'() {$/,/^}$/s/select(\$keep\[\.\])/select(true)/' "$FN" > "$CTRL_FENCE"
+chk "the fence control differs from the real function" "$(cmp -s "$FN" "$CTRL_FENCE" && echo same || echo differs)" differs
+# shellcheck disable=SC1090
+chk "fence control still loads" "$(. "$CTRL_FENCE"; type -t "$CUTOFF_FN")" function
+chk "without the strip the fenced item-shaped line breaks fold-count 1 again" \
+    "$(cutoff "$CTRL_FENCE" "$(lst "$C_FENCE_COUNTED" "$F_QUOTE_ITEM")" "$W_CUT")" block
+
 echo "6. control: one equality cut out, the headline short on that fraction alone passes"
 CTRL_EQ="$D/fn-no-eq.sh"
 # The check is a test line and its `|| { ...; return 1; }` continuation.

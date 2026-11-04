@@ -43,7 +43,7 @@ EXPECTED_GATE_FUNCTIONS = 14
 
 # Checks the drill runs when every scenario section executes and shellcheck
 # is on PATH. Update it together with the drill, never to match a shortfall.
-EXPECTED_CHECKS = 774
+EXPECTED_CHECKS = 788
 
 RESULT_LINE = re.compile(r"^RESULT: (\d+) passed, (\d+) failed, (\d+) skipped$", re.M)
 
