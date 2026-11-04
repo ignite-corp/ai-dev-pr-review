@@ -112,7 +112,6 @@ ERROR_CAUSES_BY_KIND: dict[str, frozenset[str]] = {
         {"timeout", "quota_exhausted", "attempt_timeout"}
     ),
 }
-MIN_REVIEWERS_FOR_VERDICT = 2
 # Bullet icon of a major an earlier round's thread disposes of (AT-2843).
 DISPOSITIONED_ICON = "="
 _DISMISS_MESSAGE = "Superseded by new review"
@@ -232,7 +231,7 @@ def load_reviewer_conclusions() -> dict[str, str]:
     """
     return {
         name: os.environ.get(f"REVIEWER_RESULT_{name.upper()}", "")
-        for name in REVIEWER_NAMES
+        for name in REVIEWERS
     }
 
 
@@ -255,7 +254,8 @@ def _get_available(
     return {
         k: v
         for k, v in reviews.items()
-        if v is not None
+        if k in REVIEWERS
+        and v is not None
         and "summary" in v  # must have summary key (rejects empty {})
         and _normalize_status(k, v) != STATUS_FAILED
     }
@@ -289,30 +289,30 @@ def _has_early_exit(available: dict[str, dict[str, Any]]) -> bool:
     )
 
 
-def _has_full_reviewer_coverage(available: dict[str, dict[str, Any]]) -> bool:
-    """True only when every configured reviewer produced a verdict (AT-2124).
+def _minimum_reviewers_for_verdict() -> int:
+    """Require ceil(N/2) usable responses from the configured roster (AT-3164)."""
+    return (len(REVIEWERS) + 1) // 2
 
-    Deliberately independent of MIN_REVIEWERS_FOR_VERDICT. That threshold
-    governs the verdict and the merge-gate exit code, where one reviewer's
-    outage must not block every PR in the fleet. A green check is passive --
-    it says only that nothing is stopping you. A formal APPROVED review is an
-    affirmative, attributable claim that the code was reviewed, so it may be
-    posted only when the full configured reviewer set actually ran; on a PR a
-    configured reviewer never ran against, it is a false attestation.
 
-    The failure directions are not symmetric: requiring the full set degrades
-    to comment-only and a human approves, while reusing the availability
-    count degrades toward silently approving more. A gate must fail toward
-    passing less.
+def _has_approval_quorum(available: dict[str, dict[str, Any]]) -> bool:
+    """Require ceil(N/2)+1 responses, with at least three selected reviewers.
 
-    The configured set is REVIEWERS (claude, codex, gemini) -- fixed for
-    every run in both REVIEW_MODE=parallel and =sequential; neither mode
-    selects a subset. "Produced a verdict" means the payload survived
-    ``_get_available``, i.e. normalized status "ok" or "early_exit". An early
-    exit is a judgement the reviewer reached after reading the diff, so that
-    reviewer ran; status "failed", missing and malformed payloads did not.
+    This is a response quorum, not approval votes: the existing issue and
+    disposition rules still decide the verdict. Usable ``ok`` and
+    ``early_exit`` payloads count, including partial payloads already admitted
+    by ``_get_available``; failed, missing and malformed payloads do not.
+    Sequential early exit bypasses only insufficient-response handling, never
+    this formal approval threshold. Count only configured identities.
+
+    AT-3164 explicitly replaces AT-2124's full-coverage approval policy for
+    N >= 4: approval attests to this response quorum, not to every configured
+    reviewer having run. The roster still reports missing reviewers. For the
+    shipped N = 3 roster, all three responses remain required, so its formal
+    approval behavior is unchanged.
     """
-    return set(available) == set(REVIEWERS)
+    return len(REVIEWERS) >= 3 and len(set(available) & set(REVIEWERS)) >= (
+        _minimum_reviewers_for_verdict() + 1
+    )
 
 
 _PARTIAL_SUMMARY_PREFIX = "partial:"
@@ -369,7 +369,7 @@ def _emit_partial_observability(
     """
     partial_names: list[str] = []
     summary_rows: list[str] = []
-    for name in REVIEWER_NAMES:
+    for name in REVIEWERS:
         review = reviews.get(name)
         if not _is_partial(review):
             continue
@@ -435,7 +435,7 @@ def _check_insufficient(
     reviews: Mapping[str, dict[str, Any] | None],
     total: int,
 ) -> tuple[str, str] | None:
-    if len(available) < MIN_REVIEWERS_FOR_VERDICT:
+    if len(available) < _minimum_reviewers_for_verdict():
         # Only bypass minimum-reviewer check in sequential mode where
         # early_exit intentionally skips subsequent reviewers.
         review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
@@ -1898,7 +1898,7 @@ def format_summary(  # noqa: PLR0915
     # comment_only and quorum-short would report the auto-approve killswitch
     # but never mention that a reviewer didn't respond (AT-2240 follow-up).
     coverage_segment = (
-        f"not every reviewer responded ({coverage})"
+        f"approval response quorum not met ({coverage})"
         if approve_quorum_short
         else coverage
     )
@@ -1910,11 +1910,11 @@ def format_summary(  # noqa: PLR0915
         label += f" | posted as comment (auto-approve off) | {coverage_segment}"
     elif approve_quorum_short:
         # The colon introduces a reason, and here the coverage segment is
-        # one: "comment only: not every reviewer responded (2/3
+        # one: "comment only: approval response quorum not met (2/3
         # reviewers)" (AT-2511).
         label += f" | comment only: {coverage_segment}"
     elif approve_withheld:
-        # Majors with a full roster. The coverage figure is not the reason
+        # Majors with an approval quorum. The coverage figure is not the reason
         # -- the majors are, and the label already names them -- so this
         # keeps the plain axis separator. Under a colon it rendered
         # "comment only: 3/3 reviewers", which reads as though a complete
@@ -1980,7 +1980,7 @@ def format_summary(  # noqa: PLR0915
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
     if (
         review_mode == _REVIEW_MODE_SEQUENTIAL
-        and len(available) < MIN_REVIEWERS_FOR_VERDICT
+        and len(available) < _minimum_reviewers_for_verdict()
         and _has_early_exit(available)
     ):
         lines.append(
@@ -2421,7 +2421,7 @@ def _approval_withhold(
         # wrong -- while majors alongside it still mean a finding on this
         # head, so the flag reads the majors even when the prose does not.
         return _Withhold(
-            "not every configured reviewer produced a verdict",
+            "the configured approval response quorum was not met",
             unreviewed_majors == 0,
         )
     if unreviewed_majors > 0:
@@ -2525,7 +2525,7 @@ def post_verdict(
     )
 
     # Never send a formal APPROVED review for a round that is not finished:
-    # an approval asserts coverage that never happened, or fills the
+    # an approval asserts a response quorum that was not met, or fills the
     # ruleset's required approval over issues still awaiting a disposition.
     # The verdict (and thus the merge-gate exit code) is unchanged; only the
     # posted event is downgraded to a comment, and the next round approves
@@ -2897,8 +2897,8 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
 
     comment_only = _is_comment_only()
     # Computed once so the headline and the posted event can never disagree
-    # about whether every configured reviewer produced a verdict (AT-2240).
-    approve_quorum = _has_full_reviewer_coverage(available)
+    # about whether the configured approval response quorum was met (AT-3164).
+    approve_quorum = _has_approval_quorum(available)
     # The same contract for the other thing that withholds an approval: one
     # count, passed to the headline and to the posted event (AT-2823). A
     # major an earlier round's thread already disposes of is not in it
@@ -2959,7 +2959,7 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
     )
     print(f"Final verdict: {verdict} -- {reason}")
 
-    if len(available) < MIN_REVIEWERS_FOR_VERDICT and not sequential_bypass:
+    if len(available) < _minimum_reviewers_for_verdict() and not sequential_bypass:
         print("ERROR: Insufficient LLM responses -- failing CI", file=sys.stderr)
         sys.exit(1)
 
