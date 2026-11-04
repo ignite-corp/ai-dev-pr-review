@@ -1,0 +1,47 @@
+# Standalone Copilot reviewer
+
+The Copilot adapter is not connected to the local driver, Actions jobs or
+aggregator roster. The active pipeline still has three reviewers. This step
+establishes the adapter boundary before workflow integration.
+
+Install `.github/scripts/requirements.txt` (Copilot SDK 1.0.28), and provision a
+trusted Copilot CLI 1.0.105 executable outside the PR checkout. The adapter
+requires `COPILOT_CLI_PATH` to be its absolute path; it checks the reported
+version and never downloads a runtime. Do not use a PR-provided executable.
+Use the native executable: the runtime receives `PATH=/usr/bin:/bin`, so
+launchers that depend on Node or another interpreter from a toolcache or user
+installation are not supported by this invocation contract.
+
+In a directory containing prepared `context.md` and `pr.diff`, run the trusted
+adapter with `COPILOT_GITHUB_TOKEN` supplied through the environment:
+
+```sh
+export COPILOT_CLI_PATH=/trusted/path/to/copilot
+python /trusted/ai-dev-pr-review/.github/scripts/review_copilot.py
+```
+
+Optional `EXISTING_COMMENTS` and `THREAD_COUNT` supply the existing thread
+excerpts used by the other reviewers. Output is `review-copilot.json` in that
+directory, using the existing review fields. Infrastructure failures produce
+`status: failed`, without exception text or authentication metadata.
+`requested_model` records `auto`; `actual_models` records sanitized model IDs
+from SDK usage events, or `unknown` when the service supplies no such event.
+
+The model is fixed to Auto. Each invocation sends at most one review request,
+after checking that the explicit credential is authenticated, its chat quota
+has included requests remaining, and every returned quota bucket has no
+recorded overage or permission to continue after exhaustion. Missing or
+unsuitable quota information fails closed. This preflight supports the tested
+request-quota account contract; it does not establish coverage of credit-based
+plans. Auto may choose a billable model; Auto itself is no no-charge guarantee.
+There is no paid fallback, provider key or adapter retry. The account owner must keep
+overages disabled; the preflight cannot override server billing or prevent a
+concurrent account settings change. Model selection and quota availability
+remain service-controlled.
+
+The runtime receives isolated directories and a minimal environment, with no
+ambient login or inherited provider credentials. Filesystem tools, custom tools
+and configuration discovery are disabled; all review data is supplied in memory.
+The review has a five-minute limit; control and teardown operations have
+five-second limits. Runtime compatibility and review quality still need an
+end-to-end integration check before this reviewer joins the roster.
