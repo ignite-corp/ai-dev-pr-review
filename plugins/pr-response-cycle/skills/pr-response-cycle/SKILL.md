@@ -1686,8 +1686,14 @@ workflow_names_raw=$(gh api --paginate "repos/$OWNER/$REPO/actions/workflows?per
 wf_runs=$(gh api --paginate "repos/$OWNER/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
   --jq '.workflow_runs[] | {id, workflow_id, status, conclusion, created_at, updated_at, html_url} | @json') \
   || { echo "ERROR: could not list the runs on $HEAD_SHA"; exit 1; }
-workflow_runs=$(jq -n --argjson w "$(printf '%s\n' "$workflow_names_raw" | jq -s .)" \
-             --argjson r "$(printf '%s\n' "$wf_runs" | jq -s .)" \
+# Each list is read on its own line: a read nested inside an argument has
+# no exit status of its own, so its failure reached the join as an empty
+# argument (hyuk-hur/dev-dotfiles#204).
+wf_list=$(printf '%s\n' "$workflow_names_raw" | jq -s .) \
+  || { echo "ERROR: could not assemble the workflow list"; exit 1; }
+wf_run_list=$(printf '%s\n' "$wf_runs" | jq -s .) \
+  || { echo "ERROR: could not assemble the run list on $HEAD_SHA"; exit 1; }
+workflow_runs=$(jq -n --argjson w "$wf_list" --argjson r "$wf_run_list" \
   '($w | map({(.id|tostring): .name}) | add // {}) as $m
    | [ $r[] | {databaseId: .id, workflowName: ($m[(.workflow_id|tostring)] // ""), status, conclusion,
                createdAt: .created_at, updatedAt: .updated_at, url: .html_url} ]') \
