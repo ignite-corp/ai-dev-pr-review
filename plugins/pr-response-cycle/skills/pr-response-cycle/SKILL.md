@@ -33,7 +33,7 @@ ls "$PROJECT_MEMORY"/*.md 2>/dev/null
 
 If the directory doesn't exist (new project, standalone repo), apply this skill's defaults as written. Surface to user that no project memory was found — they may need to bootstrap one or accept the generic defaults explicitly.
 
-Key memory entries that affect this cycle. **All eight are qa-partner's** — every one exists only under `~/.claude/projects/-*-ai-dev-qa-partner/memory/` (the underscore filenames are the tell; other projects use hyphens). In any other project they are precedent, not authority: read them for the reasoning, then decide from what the current repository actually has — its own project memory, its enforced settings (branch protection, `allow_*_merge`), its own history — in that order, and say which one decided it.
+Key memory entries that affect this cycle. **All seven are qa-partner's** — every one exists only under `~/.claude/projects/-*-ai-dev-qa-partner/memory/` (the underscore filenames are the tell; other projects use hyphens). In any other project they are precedent, not authority: read them for the reasoning, then decide from what the current repository actually has — its own project memory, its enforced settings (branch protection, `allow_*_merge`), its own history — in that order, and say which one decided it.
 - `process_review_push_checklist.md` — the canonical 10-step ordering (also the spine of this skill)
 - `feedback_merge_strategy.md` — merge commit, never `--squash` at merge time (elsewhere, resolve it: **Merge strategy**, Stage 5)
 - `feedback_no_admin_merge.md` — `--admin` per-PR explicit only; REST API merge as gh-CLI workaround when APPROVED
@@ -41,21 +41,19 @@ Key memory entries that affect this cycle. **All eight are qa-partner's** — ev
 - `feedback_amend_over_close.md` — scope change → amend (force-push), never close+new
 - `feedback_execute_per_policy.md` — policy already covers it → execute, don't re-ask
 - `feedback_no_unjustified_wait.md` — no trailing question; pending task = next action
-- `feedback_spawn_freely.md` — safe teammate spawn doesn't need per-PR confirm
 
 AGENTS.md (global) sections that apply:
-- Non-Negotiables #1 (no AI attribution), #2 (English only), #5 (PR workflow only), #7 (leader-vs-teammate), #8 (review before merge, this cycle mandatory)
+- Non-Negotiables #1 (no AI attribution), #2 (writing language — `### Writing language`), #5 (PR workflow only), #7 (leader-vs-teammate), #8 (review before merge, this cycle mandatory)
 - `## PR Standards` (commits, comment management, resolve policy)
 - Phase 9 (push: rebase before push, PR description reflects latest)
 - Phase 10 (feedback: `git commit --fixup` + autosquash — canonical form under **Stage 5, step 9**)
+- `### Agent structure`, item 4 (spawning teammates)
 
 ## Conventions (apply throughout the cycle)
 
 These rules apply to every artifact this skill produces — commits, PR titles, PR bodies, replies, comments.
 
-**Language**:
-- Code artifacts (commits, PR titles, PR bodies, code comments, docs) — **English only**
-- Review thread replies and issue comments — Korean OK if the project conversation is Korean (matches reviewer)
+**Language**: the global AGENTS.md `### Writing language` (Non-Negotiable #2) decides each artifact's language. That section is the rule's one home; this skill does not restate it.
 
 **No AI attribution** (Non-Negotiable #1):
 - Never add `Co-Authored-By: Claude`, `Generated with`, or any AI mention in commits, PR bodies, replies, or any artifact
@@ -316,7 +314,7 @@ For **minor+ by-design** items (per `process_review_push_checklist.md` step 5): 
 
 ### Stage 3 — Code changes via teammate (checklist steps 1, 2, 9)
 
-Per AGENTS.md Non-Negotiable #7, leader must NOT edit code in the main worktree. Per `feedback_spawn_freely.md`, safe code-fix spawns don't need per-PR user confirm — just go.
+Per AGENTS.md Non-Negotiable #7, leader must NOT edit code in the main worktree. Whether a spawn needs the user's confirmation is the global AGENTS.md `### Agent structure`, item 4.
 
 For Fixed-class items requiring code change:
 
@@ -2361,7 +2359,7 @@ Pattern: assertion + verification command + applied-evidence + likely-cause-of-b
 ## Anti-patterns (catch these before they happen)
 
 - **AI attribution** — never write `Co-Authored-By: Claude`, `Generated with`, or any AI mention in any artifact. Non-Negotiable #1.
-- **Korean in commits/PR titles/PR bodies** — Non-Negotiable #2: code artifacts are English only. Thread replies/issue comments can be Korean.
+- **Choosing an artifact's language without the rule** — the global AGENTS.md `### Writing language` (Non-Negotiable #2) decides it, per document.
 - **Silent resolve** — close without reply. Every close needs a reply, no exceptions.
 - **Admin merge in status report** — `feedback_no_admin_merge_option.md`: never frame admin merge as a path. Status report = "review thread X 해결 + 인간 review 대기".
 - **Trailing question** — "should I merge?" when CLEAN + APPROVED + policy says yes. Per `feedback_no_unjustified_wait.md`: just merge.
@@ -2380,7 +2378,7 @@ Pattern: assertion + verification command + applied-evidence + likely-cause-of-b
 - **Sequential GraphQL mutations** when batch parallelism works — wastes minutes per PR.
 - **Re-fetching threads after each mutation** — fetch once, classify all, then act.
 - **Editing code as leader** — Non-Negotiable #7: spawn coder teammate with `isolation: "worktree"`.
-- **Asking before spawning a teammate for review-fix** — `feedback_spawn_freely.md`: safe spawns don't need per-PR confirm.
+- **Asking about a spawn the rule already settles** — the global AGENTS.md `### Agent structure`, item 4, says when a spawn needs confirmation.
 - **Interleaving code fix and comment cleanup** — AGENTS.md PR Comment Management: finish all code + push, THEN one final cleanup pass.
 - **Bot disagreement without evidence** — always cite schema/API/doc verification.
 - **Asking "policy or X?"** — `feedback_execute_per_policy.md`: if policy already covers it, execute the policy answer without consulting.
