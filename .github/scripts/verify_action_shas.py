@@ -52,7 +52,7 @@ _STDERR_EXCERPT_MAX_LEN = 200
 # stderr; it never reads the response headers). Per-request headers differ,
 # but carry no signal about which cause it was.
 #
-# So neither label asserts absence, and neither earns a `major`. The owner
+# So neither label asserts absence. The owner
 # split is NOT a visibility test: the run's credential is the repo-scoped
 # ``GITHUB_TOKEN``, whose boundary is public-vs-private rather than
 # in-org-vs-out-of-org, so a private repository is exactly as invisible on
@@ -61,6 +61,14 @@ _STDERR_EXCERPT_MAX_LEN = 200
 # run belongs to -- which shifts the LIKELIER cause the reviewer should raise
 # with the author (a misspelled public action out-of-org, an unreadable
 # private repository in-org) without settling it. (AT-2801)
+#
+# The severity follows that likelier cause (AT-3166): ``repo-not-found``
+# is a `major` worded as "unresolvable from this run", since at
+# `suggestion` a typo'd public action passed review and failed only when
+# the workflow ran; ``repo-not-visible`` stays a `suggestion`. The cost is
+# accepted, not avoided: a private repository this run cannot read is
+# raised as `major` too when its owner differs, and when the run's own
+# owner is unknown even a same-owner one is.
 #
 # Both names are misnomers, deliberately kept. ``repo-not-found`` asserts
 # the absence its own bullet forbids asserting, and ``repo-not-visible``
@@ -203,10 +211,11 @@ def _current_owner() -> str | None:
     be able to see. ``review_pr_local.py`` sets the same variable for the
     local driver. Returns ``None`` when it is absent or not ``owner/name``:
     membership is then unestablished, and the caller falls back to
-    ``repo-not-found`` rather than guessing in either direction. The
-    fallback is not an escalation -- both labels end in ``Raise only as
-    `suggestion`.`` -- so it changes only which cause the reviewer raises
-    as the likelier one.
+    ``repo-not-found`` rather than guessing in either direction. Since
+    AT-3166 that fallback escalates: ``repo-not-found`` ends in ``Raise as
+    `major`.``, worded as unresolvable from this run rather than absent, so
+    a run with no owner raises every 404 pin at ``major``, a same-owner
+    private one included.
     """
     owner, _, name = os.environ.get("GITHUB_REPOSITORY", "").strip().partition("/")
     if not owner or not name:
@@ -450,9 +459,15 @@ def main() -> None:
         "exist and for a private one this run's token may not read, so the "
         "404 does NOT establish that the repository is absent. Where the "
         "owners are known to differ, the pin is usually a public action, "
-        "which makes a misspelled `owner/repo` the likelier of the two. Ask "
-        "the author to confirm the `owner/repo` spelling; do NOT claim the "
-        "repository does not exist. Raise only as `suggestion`.\n"
+        "which makes a misspelled, renamed or deleted action the likelier of "
+        "the two, and such a pin fails only when the workflow runs. State "
+        "that the pin cannot be resolved from this run and may be a typo, a "
+        "renamed action or a deleted action, and ask the author to verify "
+        "it and confirm the `owner/repo` spelling; do NOT claim the "
+        "repository does not exist. A private repository this run's token "
+        "cannot read lands here too, whether its owner differs or the "
+        "run's own owner could not be determined, so word the finding as "
+        "unresolved, not absent. Raise as `major`.\n"
         '- `status="unverified"` with `error="repo-not-visible"` -- the API '
         "returned 404 for a repository whose owner is the owner of the "
         "repository under review. The same two causes are indistinguishable "
