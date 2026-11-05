@@ -416,14 +416,48 @@ _404_PREMISES = {
 }
 
 
+# The severity each 404 label carries (AT-3166, the user's decision of
+# 2026-11-05: split by owner). ``repo-not-visible`` -- same owner, where a
+# private repository is the likelier cause -- stays ``suggestion``.
+# ``repo-not-found`` -- another owner, or an unknown one, where a public
+# action is the likelier pin and a typo, rename or deletion the likelier
+# fault -- is ``major``. The severity moved; the premise did not: neither
+# bullet may assert absence.
+_404_SEVERITIES = {
+    "repo-not-found": "Raise as `major`.",
+    "repo-not-visible": "Raise only as `suggestion`.",
+}
+
+# A bullet's severity instruction, in either surface's spelling.
+_SEVERITY_SENTENCE = re.compile(r"Raise (?:only )?as `\w+`\.")
+
+# What the ``major`` has to say instead of "absent": the pin is unresolvable
+# from this run, and a request to the author to verify.
+_404_UNRESOLVED = "State that the pin cannot be resolved from this run"
+
+# The faults the finding names, as possibilities. The same label covers a
+# run whose own owner is unknown, and the ``<pin>`` row carries nothing that
+# tells the reviewer which case it is, so the instruction may not branch on
+# it: an unconditional "likely" asserts what an unknown-owner run did not see
+# (the AT-2801 defect, one scope narrower), and a branch the reviewer cannot
+# evaluate is one it guesses. The likelihood stays in the bullet's premise,
+# scoped to owners known to differ.
+_404_POSSIBLE_FAULTS = "may be a typo, a renamed action or a deleted action"
+_404_LIKELIER_WHERE_OWNERS_DIFFER = (
+    "Where the owners are known to differ, the pin is usually a public action"
+)
+
+
 def _assert_404_rule_is_honest(document: str, label: str) -> None:
     """Assert ``document``'s bullet for ``label`` says only what a 404 supports.
 
-    A 404 separates neither cause, so the bullet may not escalate and may
-    not assert absence -- and, per AT-2801's accepted consequence, it has to
-    stay actionable: a misspelled or deleted ``owner/repo`` produces this
-    same label, and a bullet that only reassures leaves that pin to fail at
-    runtime with no finding raised.
+    A 404 separates neither cause, so the bullet may not assert absence --
+    and, per AT-2801's accepted consequence, it has to stay actionable: a
+    misspelled or deleted ``owner/repo`` produces this same label, and a
+    bullet that only reassures leaves that pin to fail at runtime with no
+    finding raised. Its severity is the one ``_404_SEVERITIES`` gives the
+    label, and no other: the other label's severity appearing in the same
+    bullet would leave the reviewer to pick one.
 
     One contract, one home. The rendered blurb and the base instructions
     carry the same guidance in two files, so they are held here by the same
@@ -439,18 +473,45 @@ def _assert_404_rule_is_honest(document: str, label: str) -> None:
     without restating the policy.
     """
     rule = _severity_rule_for(document, label)
-    assert "Raise only as `suggestion`." in rule
-    assert "`major`" not in rule
+    severity = _404_SEVERITIES[label]
+    assert rule.endswith(severity), (
+        f"the {label} bullet must end on its severity {severity!r}: {rule!r}"
+    )
+    # Any other severity word, in any phrasing ("escalate to `major`"),
+    # would leave the reviewer to pick one.
+    for word in ("`critical`", "`major`", "`minor`", "`suggestion`"):
+        if word not in severity:
+            assert word not in rule, f"the {label} bullet names {word}: {rule!r}"
     assert "NOT claim the repository does not exist" in rule
     assert "confirm the `owner/repo` spelling" in rule
+    if label == "repo-not-found":
+        # The bullet that escalates carries AT-2801's premise in full; the
+        # same-owner bullet states it as "the same two causes are
+        # indistinguishable here", its wording before AT-3166, unchanged.
+        assert "the 404 does NOT establish that the repository is absent" in rule
+        assert _404_UNRESOLVED in rule
+        assert _404_POSSIBLE_FAULTS in rule
+        assert _404_LIKELIER_WHERE_OWNERS_DIFFER in rule
+        for unobservable in (
+            "is likely a typo",
+            "say it is likely",
+            "name no likelier cause",
+        ):
+            assert unobservable not in rule, (
+                "the instruction may neither assert a likely cause nor branch "
+                f"on the owner relation the pin row does not carry: {rule!r}"
+            )
+        assert "ask the author to verify" in rule
     assert _404_PREMISES[label] in rule, (
         f"the {label} bullet must state only the owner relation "
         f"_classify_404 establishes, not org membership: {_404_PREMISES[label]!r}"
     )
-    # Positive control: `major` is still reachable in this same document --
-    # the `unmatched` bullet carries it -- so "no major" above cannot be an
+    # Positive control: both severities are still reachable in this same
+    # document -- the `unmatched` bullet carries `major`, the transient one
+    # `suggestion` -- so "not the other severity" above cannot be an
     # artefact of reading an empty, truncated, or wrong document.
     assert "Raise as `major`" in document
+    assert "Raise only as `suggestion`" in document
 
 
 class TestFetchTags404Discrimination:
@@ -613,7 +674,7 @@ class TestRendered404Guidance:
     bullet the pin's own label selects.
     """
 
-    def test_in_org_pin_does_not_reach_the_major_instruction(
+    def test_same_owner_pin_stays_at_suggestion(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
@@ -624,16 +685,17 @@ class TestRendered404Guidance:
         assert 'error="repo-not-visible"' in row
         _assert_404_rule_is_honest(content, "repo-not-visible")
 
-    def test_out_of_org_pin_does_not_reach_the_major_instruction(
+    def test_other_owner_pin_reaches_major_without_claiming_absence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The out-of-org bullet may not escalate either.
+        """AT-3166: a 404 on another owner's pin is raised as ``major``.
 
-        The owner split is not a visibility test -- the run's credential is
-        the repo-scoped ``GITHUB_TOKEN``, which cannot read a private
-        repository on either side of it -- so a ``major`` here would hand a
-        valid private pin the very finding AT-2801 removed, just to a
-        consumer whose org differs from the pin's.
+        Where the owners differ the pin is usually a public action, so a
+        typo, rename or deletion is the likelier fault, and at
+        ``suggestion`` such a pin passed review to fail only when the
+        workflow ran. The owner split is still not a visibility test, so
+        the ``major`` says the pin is unresolvable from this run -- not
+        that it is absent, the claim AT-2801 removed.
         """
         monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
         content = _run_main(tmp_path, monkeypatch, _OUT_OF_ORG_ABSENT, CHECKOUT_SHA)
@@ -651,7 +713,9 @@ class TestRendered404Guidance:
         unknown, so ``_classify_404`` falls back to ``repo-not-found`` with
         nothing observed about the owner relation. A bullet that told the
         reviewer the owner is out-of-org would be asserting what this run
-        could not see -- the AT-2801 defect, one scope narrower.
+        could not see -- the AT-2801 defect, one scope narrower. It takes
+        the ``major`` too (AT-3166 names the unknown owner with the
+        differing one), worded as unresolvable rather than absent.
         """
         monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
         content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
@@ -666,9 +730,11 @@ class TestRendered404Guidance:
         """AT-2801's own case, replayed from a consumer in a different org.
 
         The pin is the real private ``ignite-corp/ai-dev-infra-common``; only
-        the run's owner differs from the in-org test above. It takes the
-        out-of-org label, so that label's bullet is what decides whether the
-        AT-2801 false ``major`` comes back for cross-org consumers.
+        the run's owner differs from the same-owner test above. It takes the
+        other-owner label, and so the ``major`` -- the residual risk AT-3166
+        accepted: a private action of another owner this run cannot read is
+        raised as a finding the author has to answer. What may not come
+        back is AT-2801's claim that the repository does not exist.
         """
         monkeypatch.setenv("GITHUB_REPOSITORY", _OUT_OF_ORG_RUN_REPO)
         content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
@@ -843,6 +909,33 @@ class TestGuidanceSurfacesShareOneLabelSet:
             f"only in the blurb: {sorted(blurb_labels - prompt_labels)}; "
             f"only in the prompt: {sorted(prompt_labels - blurb_labels)}"
         )
+
+    @pytest.mark.parametrize("label", list(_404_SEVERITIES))
+    def test_blurb_and_base_prompt_give_each_404_label_one_severity(
+        self, label: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AT-3166: the label sets above agreeing says nothing about severity.
+
+        Lowering one surface's ``repo-not-found`` bullet back to
+        ``suggestion`` leaves every token on both sides unchanged, so the
+        equality above stays green while the reviewer reads ``major`` in
+        its instructions and ``suggestion`` in ``context.md``. Each bullet
+        is held to exactly one severity sentence, and the two surfaces to
+        the same one.
+        """
+        monkeypatch.setenv("GITHUB_REPOSITORY", _RUN_REPO)
+        content = _run_main(tmp_path, monkeypatch, _IN_ORG_PRIVATE, _IN_ORG_PRIVATE_SHA)
+        severities = {
+            surface: _SEVERITY_SENTENCE.findall(_severity_rule_for(text, label))
+            for surface, text in (
+                ("blurb", _rendered_pin_blurb(content)),
+                ("base prompt", _base_prompt_pin_section()),
+            )
+        }
+        assert severities == {
+            "blurb": [_404_SEVERITIES[label]],
+            "base prompt": [_404_SEVERITIES[label]],
+        }
 
     def test_placeholder_valued_attribute_on_one_surface_is_not_hidden(self) -> None:
         """An attribute written ``name="..."`` on one surface alone differs.

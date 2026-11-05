@@ -100,6 +100,29 @@ class TestReviewerInstructions:
         text = _codex_prompt().replace("Raise as `major`:", "Raise as `critical`:")
         assert missing_items(text, REVIEWER_INSTRUCTIONS) == ["pin-unmatched"]
 
+    def test_404_severity_is_split_by_owner(self) -> None:
+        # AT-3166: another owner's 404 is major, the same owner's stays a
+        # suggestion; neither asserts that the repository is absent.
+        found = PIN.items["pin-repo-not-found"]
+        visible = PIN.items["pin-repo-not-visible"]
+        assert found.endswith("Raise as `major`.")
+        assert visible.endswith("Raise only as `suggestion`.")
+        assert "the 404 does NOT establish that the repository is absent" in found
+        for rule in (found, visible):
+            assert "do NOT claim the repository does not exist" in rule
+
+    @_REVIEWER_PROMPTS
+    def test_lowering_repo_not_found_back_to_suggestion_fails(
+        self, render: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EXISTING_COMMENTS", raising=False)
+        rule = PIN.items["pin-repo-not-found"]
+        text = render().replace(
+            rule,
+            rule.replace("Raise as `major`.", "Raise only as `suggestion`."),
+        )
+        assert missing_items(text, REVIEWER_INSTRUCTIONS) == ["pin-repo-not-found"]
+
     def test_wrapping_does_not_change_the_rule(self) -> None:
         text = "\n".join(
             line if line.startswith("## ") else line.replace(" ", "\n  ")
