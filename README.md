@@ -545,8 +545,17 @@ Recommended upgrade flow:
 Version policy:
 
 - Patch (`v1.0.x`): bug fixes, no behavior change for consumers.
-- Minor (`v1.x.0`): new optional inputs, additive reviewer features, prompt rules that lower the severity prescribed for a finding class — relaxing only, since raising a prescribed severity can newly block consumers.
-- Major (`v2.0.0`): input contract changes, breaking script signatures, severity threshold defaults shift, prompt rules that raise the severity prescribed for a finding class.
+- Minor (`v1.x.0`): new optional inputs, additive reviewer features, prompt rules that lower the severity prescribed for a finding class — relaxing only, since raising a prescribed severity can newly block consumers (one narrow exception below).
+- Major (`v2.0.0`): input contract changes, breaking script signatures, severity threshold defaults shift, prompt rules that raise the severity prescribed for a finding class (except the narrow case below).
+
+Exception to the severity rule: a prompt rule that raises a prescribed severity may ship as Minor only when all of the following hold.
+
+1. It corrects the reviewer so that it catches a defect it could already see — the finding class was already reported, from evidence the reviewer already received, only at a severity too low to block.
+2. No consumer has to change a workflow input, secret, or variable. A consumer prompt copy that still states the old severity is the consumer's own text, not an input; it must be removed from the tracked consumers before the severity-raising release is cut, after verifying that their current review pins already deliver the shared replacement policy from a published release. If needed, upgrade to that baseline first; see the [migration sequence](MIGRATION.md#shared-github-actions-sha-pins-guidance-at-3159). This keeps policy coverage during removal and avoids conflicting severities at upgrade for those tracked consumers.
+3. Where the raise can newly block a PR on something that is not a defect, it can be cleared on the PR itself, with no consumer change: the repository's owner, an org member or a collaborator replies to the finding with `By design:` and the reason, and resolves the thread. The round that raises it still withholds approval; later rounds do not count a major dispositioned that way (AT-2843). MIGRATION.md names each such case as residual risk with this step.
+4. The release notes state it as a behavior change, naming the finding class, its old and new severity, and the residual risk.
+
+AT-3166 is the case this was written for: an action pin that cannot be resolved from the run (`repo-not-found`) went from `suggestion` to `major`, and a valid private action of another owner is its false block. A raise that adds a new finding class, needs evidence the reviewer did not already receive, leaves a false block that cannot be cleared on the PR, or meets any condition only in part stays Major.
 
 The pilot wrapper `ignite-pilot-org/ai-dev-pr-review-wrapper` is retired (AT-3036), and this repo no longer keeps a release lockstep with it. Pilot-org repos are reviewed by the runner; see [automatic dispatch](https://github.com/ignite-corp/ai-dev-pr-review-runner#automatic-dispatch).
 
