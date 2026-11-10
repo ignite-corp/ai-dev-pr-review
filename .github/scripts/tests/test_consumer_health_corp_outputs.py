@@ -27,6 +27,7 @@ import os
 import shutil
 import stat
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +189,9 @@ def run_health_tail(
     prompt_guidance: Path = PROMPT_GUIDANCE,
     required_secrets: tuple[str, ...] = (),
     secrets: dict[str, object] | None = None,
+    runner_runs: object = None,
+    runner_jobs: dict[int, list[dict[str, Any]]] | None = None,
+    runner_annotations: dict[int, list[str]] | None = None,
 ) -> tuple[int, str]:
     """Run the health step's consumer loop with a stubbed ``gh``.
 
@@ -207,6 +211,12 @@ def run_health_tail(
     (``orgs/...`` or ``repos/...``, as the step requests it): a dict is
     served as its JSON, an int is that HTTP error, and a path not listed
     is a 404.
+    ``runner_runs`` is the runner's review.yml run listing, already in the
+    shape the step's ``--jq`` projects (a list of run objects; ``None`` serves
+    an empty listing, ``FETCH_FAILS`` fails the listing), and
+    ``runner_jobs`` the projected jobs per run id; a run id with no entry
+    fails its jobs fetch. ``runner_annotations`` is the projected message
+    list per job id; a job id with no entry fails its annotations fetch.
 
     Returns (exit code, combined stdout+stderr). The job summary the step
     writes is left at ``tmp_path / "summary.md"``.
@@ -247,6 +257,22 @@ def run_health_tail(
             )
         else:
             target.write_text(json.dumps(answer), encoding="utf-8")
+    runs_dir = tmp_path / "runner_runs"
+    runs_dir.mkdir()
+    runs_listing = runs_dir / "listing"
+    if runner_runs is FETCH_FAILS:
+        runs_listing.with_name("listing.fail").touch()
+    else:
+        runs = runner_runs if isinstance(runner_runs, list) else []
+        runs_listing.write_text(
+            "".join(json.dumps(r) + "\n" for r in runs), encoding="utf-8"
+        )
+    for job_id, messages in (runner_annotations or {}).items():
+        (runs_dir / f"{job_id}.ann").write_text(json.dumps(messages), encoding="utf-8")
+    for run_id, jobs in (runner_jobs or {}).items():
+        (runs_dir / f"{run_id}.jobs").write_text(
+            "".join(json.dumps(j) + "\n" for j in jobs), encoding="utf-8"
+        )
     payload_file = tmp_path / "gh_stdout"
     payload_file.write_text(gh_stdout, encoding="utf-8")
     gh_stub = bin_dir / "gh"
@@ -257,6 +283,22 @@ def run_health_tail(
                 # The selected-repositories listing is fetched with --paginate.
                 'if [ "$1" = "api" ] && [ "$2" = "--paginate" ] && [[ "$3" == */secrets/* ]]; then',
                 '  set -- api "$3"',
+                "fi",
+                'if [ "$1" = "api" ] && [ "$2" = "--paginate" ] && [[ "$3" == */actions/workflows/*/runs\\?* ]]; then',
+                f'  [ -e "{runs_dir}/listing.fail" ] && {{ echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }}',
+                f'  cat "{runs_listing}"; exit 0',
+                "fi",
+                'if [ "$1" = "api" ] && [ "$2" = "--paginate" ] && [[ "$3" == */actions/runs/*/jobs\\?* ]]; then',
+                '  id="${3#*/actions/runs/}"; id="${id%%/*}"',
+                f'  f="{runs_dir}/${{id}}.jobs"',
+                '  [ -f "$f" ] || { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }',
+                '  cat "$f"; exit 0',
+                "fi",
+                'if [ "$1" = "api" ] && [[ "$2" == */check-runs/*/annotations\\?* ]]; then',
+                '  id="${2#*/check-runs/}"; id="${id%%/*}"',
+                f'  f="{runs_dir}/${{id}}.ann"',
+                '  [ -f "$f" ] || { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }',
+                '  cat "$f"; exit 0',
                 "fi",
                 'if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then',
                 f'  cat "{payload_file}"',
@@ -308,6 +350,7 @@ def run_health_tail(
             f"RUNNER_WORKFLOW={RUNNER_WORKFLOW}",
             f"PIN_FRESHNESS={REPO_ROOT / '.github' / 'scripts' / 'pin_freshness.py'}",
             f"RELEASE_TAGS={release_tags}",
+            f"RUN_HEALTH={REPO_ROOT / '.github' / 'scripts' / 'review_run_health.py'}",
             _health_step_tail(workflow),
         ]
     )
@@ -628,7 +671,8 @@ class TestPromptGuidanceCheck:
         assert code == 0
         assert "[WARN] could not read the runner default prompts" in log
         assert (
-            "::notice::runner default prompts or review pin could not be fetched" in log
+            "::notice::runner default prompts, review pin or review runs could not be fetched"
+            in log
         )
         assert "recovery not confirmed" not in log
 
@@ -643,7 +687,9 @@ class TestPromptGuidanceCheck:
         assert code == 1
         assert "Consumer 1/1: OK" in log
         assert "[FLAG] runner .github/workflows/review.yml:" in log
-        assert "::error::Runner default prompts or review pin flagged" in log
+        assert (
+            "::error::Runner default prompts, review pin or review runs flagged" in log
+        )
 
     def test_an_unreadable_runner_workflow_is_a_notice(self, tmp_path: Path) -> None:
         code, log = run_health_tail(
@@ -655,7 +701,8 @@ class TestPromptGuidanceCheck:
         assert code == 0
         assert "[WARN] could not read the runner's .github/workflows/review.yml" in log
         assert (
-            "::notice::runner default prompts or review pin could not be fetched" in log
+            "::notice::runner default prompts, review pin or review runs could not be fetched"
+            in log
         )
 
     def test_an_absent_runner_workflow_flags(self, tmp_path: Path) -> None:
@@ -1066,6 +1113,172 @@ class TestDependabotSecretProbe:
             in log
         )
         assert "::notice::Dependabot secret probe failed" in log
+
+
+def _runner_run(run_id: int, minutes_ago: int, conclusion: str) -> dict[str, Any]:
+    created = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    return {
+        "id": run_id,
+        "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": "completed",
+        "conclusion": conclusion,
+    }
+
+
+def _failed_job(
+    run_id: int, name: str, step: str, job_id: int | None = None
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "id": job_id if job_id is not None else run_id * 10,
+        "name": name,
+        "conclusion": "failure",
+        "steps": [{"name": step, "conclusion": "failure"}],
+    }
+
+
+_SETUP_PYTHON = "Run actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
+_AGGREGATE_JOB = "review / aggregate / Aggregate & Verdict"
+_POSTED_BLOCK = (
+    "BLOCK_MERGE_ON_VERDICT is on and the verdict does not pass (request_changes)"
+    " -- failing the check so it blocks the merge; see the verdict comment"
+)
+
+
+def _verdict_step_jobs(run_id: int) -> list[dict[str, Any]]:
+    return [
+        _failed_job(
+            run_id, _AGGREGATE_JOB, "Aggregate and post verdict", run_id * 10 + 1
+        ),
+        _failed_job(
+            run_id,
+            "Complete this attempt's target check",
+            "Complete only the check created by start",
+            run_id * 10 + 2,
+        ),
+    ]
+
+
+# A runner run id is private; the tests use one no other log value contains.
+_RUN_ID_BASE = 987650000
+
+
+@requires_jq
+class TestRunnerReviewRuns:
+    """The runner's review runs, judged by review_run_health.py (AT-3383).
+
+    Drives the real shell and the real script through the stubbed ``gh``.
+    """
+
+    def _run(
+        self,
+        tmp_path: Path,
+        runs: object,
+        jobs: dict[int, list[dict[str, Any]]] | None = None,
+        annotations: dict[int, list[str]] | None = None,
+    ) -> tuple[int, str]:
+        return run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            runner_runs=runs,
+            runner_jobs=jobs,
+            runner_annotations=annotations,
+        )
+
+    def test_a_setup_python_streak_flags_names_the_step_and_fails(
+        self, tmp_path: Path
+    ) -> None:
+        ids = [_RUN_ID_BASE + n for n in range(6)]
+        runs = [_runner_run(i, n * 10, "failure") for n, i in enumerate(ids)]
+        jobs = {i: [_failed_job(i, "Start target check", _SETUP_PYTHON)] for i in ids}
+        code, log = self._run(tmp_path, runs, jobs)
+        assert code == 1
+        assert "[FLAG] runner review runs: 6/6 recent review runs failed" in log
+        assert f"most common: Start target check / {_SETUP_PYTHON}" in log
+        assert (
+            "::error::Runner default prompts, review pin or review runs flagged" in log
+        )
+        assert "One or more consumers flagged" not in log
+        assert str(_RUN_ID_BASE) not in log
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"`{RUNNER_WORKFLOW}` runs | FLAG: 6/6" in summary
+        assert str(_RUN_ID_BASE) not in summary
+
+    def test_a_healthy_runner_passes(self, tmp_path: Path) -> None:
+        runs = [_runner_run(_RUN_ID_BASE + n, n * 10, "success") for n in range(12)]
+        code, log = self._run(tmp_path, runs)
+        assert code == 0
+        assert "runner review runs: 0/12 recent review runs failed" in log
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert f"`{RUNNER_WORKFLOW}` runs | 0/12 recent review runs failed" in summary
+
+    def test_verdict_only_failures_do_not_flag(self, tmp_path: Path) -> None:
+        ids = [_RUN_ID_BASE + n for n in range(8)]
+        runs = [_runner_run(i, n * 10, "failure") for n, i in enumerate(ids)]
+        jobs = {i: _verdict_step_jobs(i) for i in ids}
+        annotations = {i * 10 + 1: [_POSTED_BLOCK] for i in ids}
+        code, log = self._run(tmp_path, runs, jobs, annotations)
+        assert code == 0
+        assert "0/8 recent review runs failed as infrastructure" in log
+        assert "8 verdict-only failure(s) not counted" in log
+        assert "BLOCK_MERGE_ON_VERDICT" not in log
+
+    def test_a_verdict_step_that_failed_to_post_flags(self, tmp_path: Path) -> None:
+        """Same jobs and steps as a blocked verdict, but no block annotation:
+        the posting failed, which is an outage (round 2, codex)."""
+        ids = [_RUN_ID_BASE + n for n in range(6)]
+        runs = [_runner_run(i, n * 10, "failure") for n, i in enumerate(ids)]
+        jobs = {i: _verdict_step_jobs(i) for i in ids}
+        annotations: dict[int, list[str]] = {i * 10 + 1: [] for i in ids}
+        code, log = self._run(tmp_path, runs, jobs, annotations)
+        assert code == 1
+        assert "[FLAG] runner review runs: 6/6 recent review runs failed" in log
+        assert f"most common: {_AGGREGATE_JOB} / Aggregate and post verdict" in log
+
+    def test_an_unreadable_annotation_is_a_notice_not_a_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        ids = [_RUN_ID_BASE + n for n in range(6)]
+        runs = [_runner_run(i, n * 10, "failure") for n, i in enumerate(ids)]
+        jobs = {i: _verdict_step_jobs(i) for i in ids}
+        code, log = self._run(tmp_path, runs, jobs, {})
+        assert code == 0
+        assert "[WARN] could not read the runner's review runs" in log
+        assert "[FLAG] runner review runs" not in log
+
+    def test_startup_failures_with_empty_job_listings_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """A run that started no job lists none; a successful fetch of that
+        empty list is an outage, not a run that was never read."""
+        ids = [_RUN_ID_BASE + n for n in range(5)]
+        runs = [_runner_run(i, n * 10, "startup_failure") for n, i in enumerate(ids)]
+        code, log = self._run(tmp_path, runs, {i: [] for i in ids})
+        assert code == 1
+        assert "[FLAG] runner review runs: 5/5 recent review runs failed" in log
+        assert "most common: no failed job (run did not start)" in log
+        assert "could not read the runner's review runs" not in log
+        assert str(_RUN_ID_BASE) not in log
+
+    def test_an_unreadable_run_listing_is_a_notice(self, tmp_path: Path) -> None:
+        code, log = self._run(tmp_path, FETCH_FAILS)
+        assert code == 0
+        assert "[WARN] could not read the runner's review runs" in log
+        assert (
+            "::notice::runner default prompts, review pin or review runs could not be fetched"
+            in log
+        )
+
+    def test_an_unreadable_jobs_listing_is_a_notice_not_a_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        """Without a failed run's jobs, outage and verdict look the same."""
+        runs = [_runner_run(_RUN_ID_BASE + n, n, "failure") for n in range(6)]
+        code, log = self._run(tmp_path, runs, {})
+        assert code == 0
+        assert "[WARN] could not read the runner's review runs" in log
+        assert "[FLAG] runner review runs" not in log
 
 
 def test_every_expression_opener_in_the_workflow_is_closed() -> None:

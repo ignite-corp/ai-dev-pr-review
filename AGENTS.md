@@ -51,6 +51,23 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
   mirror to the exact canonical blocks and reject omitted rules. Results go
   to the summary by entry index; runner flags raise their own error. Runner
   targets outside ignite-corp remain outside the fleet App's reach.
+- runner review run health (AT-3383): the runner's recent completed
+  `review.yml` runs, cancelled/skipped/stale excluded, judged by
+  `.github/scripts/review_run_health.py`. A failed run whose only failures
+  are the aggregate's verdict step and the finish job's completion step, and
+  whose verdict step carries the annotation `aggregate_reviews.py` writes for
+  a blocked verdict it posted, is a blocked verdict, not an outage, and is not
+  counted; every other failed run is an infrastructure failure, including the
+  same step failing to post. An empty window is reported as nothing to judge,
+  not as a pass. It flags on a streak of the newest
+  infrastructure failures or on their share of the sample, and names the
+  most common failed job and step. The window, sample size and thresholds,
+  with the measured history behind them, are the module's constants.
+  Consumer check 1 above would not have caught AT-3353: the runner is not a
+  consumer, and that check counts a blocked verdict as a failure. Run titles
+  name the target and are dropped by the fetch's `--jq` projection; run ids
+  are not printed. A fetch that fails is "not evaluated"; a flag raises the
+  runner's error.
 
 The `health` job of `consumer-health.yml` authenticates as the fleet-admin App
 below, not as the review-pipeline App.
@@ -81,7 +98,9 @@ like something else.
   Administration or Contents), `contents: read` (consumer workflow files, read
   by both `ruleset-audit.yml` and the health check, and the consumer and
   runner review prompts the health check matches), `actions: read` (consumer
-  run conclusions), `secrets: read` / `organization_secrets: read` /
+  run conclusions, and the runner's review runs and their jobs -- the
+  installation covers all ignite-corp repositories, measured 2026-11-10),
+  `secrets: read` / `organization_secrets: read` /
   `dependabot_secrets: read` / `organization_dependabot_secrets: read`
   (secret accessibility, repository- and org-level for each scope; the
   org-level Dependabot grant was added 2026-10-27 under AT-2888 -- re-read
@@ -90,7 +109,10 @@ like something else.
   rather than reading the secret as absent),
   `pull_requests: read` (Dependabot PR status, via a REST call; the
   reviewer-error streak uses GraphQL, which the reference does not map, so this
-  entry rests on the REST call alone). The live installation
+  entry rests on the REST call alone), `checks: read` (the runner's
+  aggregate job annotations, which tell a blocked verdict from a failed
+  post; measured 2026-11-10 the grant is `checks: write`, which includes
+  read). The live installation
   grant is broader than this list; if a decision turns on whether some
   permission is present, read `gh api orgs/ignite-corp/installations` instead
   of this file.
