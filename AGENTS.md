@@ -20,7 +20,16 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
 
 ### Daily consumer health
 `consumer-health.yml` runs daily (00:00 UTC) checking the tracked consumers:
-- recent ai-review.yml run conclusions
+- recent review-workflow runs (check 1): flags 2 or more infrastructure
+  failures in the consumer's last 3 runs. A failed run is classified by
+  `.github/scripts/review_run_health.py`, the same rule as the runner check
+  below (AT-3393): a blocked verdict is not counted, since
+  `BLOCK_MERGE_ON_VERDICT` fails a review that worked. A consumer's thin
+  trigger calls the orchestrator through `uses:`, so its aggregate job has
+  the same caller-prefixed name and no finish job (measured on every tracked
+  consumer's failed runs, 2026-11-10). A run listing, jobs or annotations
+  that cannot be fetched leave the entry "not evaluated", never OK; run ids
+  are not printed.
 - reusable workflow pin freshness: a SHA pin is resolved back to its release
   tag (`.github/scripts/pin_freshness.py`), and a version or SHA pin must name
   the latest release or the one MINOR before it. A floating `v1` is resolved to
@@ -64,10 +73,9 @@ This repo is PUBLIC. Ruleset IDs, ruleset bodies, and the tracked-consumer list 
   most common failed job and step. The window, sample size and thresholds,
   with the measured history behind them, are the module's constants.
   Consumer check 1 above would not have caught AT-3353: the runner is not a
-  consumer, and that check counts a blocked verdict as a failure. Run titles
-  name the target and are dropped by the fetch's `--jq` projection; run ids
-  are not printed. A fetch that fails is "not evaluated"; a flag raises the
-  runner's error.
+  consumer. Run titles name the target and are dropped by the fetch's `--jq`
+  projection; run ids are not printed. A fetch that fails is "not
+  evaluated"; a flag raises the runner's error.
 
 The `health` job of `consumer-health.yml` authenticates as the fleet-admin App
 below, not as the review-pipeline App.
@@ -98,7 +106,7 @@ like something else.
   Administration or Contents), `contents: read` (consumer workflow files, read
   by both `ruleset-audit.yml` and the health check, and the consumer and
   runner review prompts the health check matches), `actions: read` (consumer
-  run conclusions, and the runner's review runs and their jobs -- the
+  runs, and the runner's review runs, and the failed ones' jobs -- the
   installation covers all ignite-corp repositories, measured 2026-11-10),
   `secrets: read` / `organization_secrets: read` /
   `dependabot_secrets: read` / `organization_dependabot_secrets: read`
@@ -109,8 +117,8 @@ like something else.
   rather than reading the secret as absent),
   `pull_requests: read` (Dependabot PR status, via a REST call; the
   reviewer-error streak uses GraphQL, which the reference does not map, so this
-  entry rests on the REST call alone), `checks: read` (the runner's
-  aggregate job annotations, which tell a blocked verdict from a failed
+  entry rests on the REST call alone), `checks: read` (the runner's and
+  consumers' aggregate job annotations, which tell a blocked verdict from a failed
   post; measured 2026-11-10 the grant is `checks: write`, which includes
   read). The live installation
   grant is broader than this list; if a decision turns on whether some

@@ -506,6 +506,36 @@ jobs:
             echo "|---|---|"
           } >> "$SUMMARY"
 
+          # What review_run_health.py needs to tell a blocked verdict from an
+          # outage, for the runner's runs and a consumer's check 1 alike:
+          # the jobs of each failed run in $2, then the annotations of each
+          # job that failed at the verdict step, appended to $3. The verdict
+          # step exits 1 both on a deliberate block and on failing to post
+          # one; only the block writes its annotation. A run that started no
+          # job (startup_failure) lists none, so the fetch itself is recorded
+          # as a bare run_id: fetched-and-empty is an outage, never-fetched
+          # is not judged. Messages are matched by the script, never printed;
+          # run and job ids are integers the script printed, kept in files.
+          # $1 is the repository slug; the rest are extra select arguments.
+          # Non-zero when any fetch failed: the runs are then not judged.
+          fetch_review_run_jobs() {
+            local repo=$1 runs=$2 jobs=$3 failed_ids verdict_ids run_id job_id messages
+            shift 3
+            failed_ids=$(python3 "$RUN_HEALTH" select --runs "$runs" "$@") || return 1
+            for run_id in $failed_ids; do
+              gh api --paginate "repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" \
+                --jq '.jobs[] | {run_id, id, name, conclusion, steps: [.steps[]? | {name, conclusion}]}' >> "$jobs" \
+                || return 1
+              printf '{"run_id": %s}\n' "$run_id" >> "$jobs"
+            done
+            verdict_ids=$(python3 "$RUN_HEALTH" annotate --jobs "$jobs") || return 1
+            for job_id in $verdict_ids; do
+              messages=$(gh api "repos/${repo}/check-runs/${job_id}/annotations?per_page=100" \
+                --jq '[.[] | .message]') || return 1
+              printf '{"job_id": %s, "annotations": %s}\n' "$job_id" "$messages" >> "$jobs"
+            done
+          }
+
           total=${#CONSUMERS[@]}
           i=0
           for name in "${CONSUMERS[@]}"; do
@@ -568,22 +598,42 @@ jobs:
               echo "  workflow=${wf}"
 
               # 1. Recent review-workflow runs
+              # A listing that fails is not an empty one: it leaves the
+              # entry not evaluated below, never OK.
+              runs_listed=1
               runs_json=$(gh run list --repo "$slug" --workflow "$wf" --limit 3 \
-                --json databaseId,conclusion,headBranch,createdAt 2>/dev/null || echo '[]')
+                --json databaseId,status,conclusion,headBranch,createdAt 2>/dev/null) || runs_listed=0
 
-              considered_runs=$(jq --arg cutoff "$STALE_BEFORE" '
-                [ .[] | select(
-                  .createdAt > $cutoff
-                  or (.headBranch | test("^chore/add-anthropic-api-key$") | not)
-                ) ]
-              ' <<<"$runs_json")
-
-              fail_count=$(jq '[ .[] | select(.conclusion == "failure" or .conclusion == "startup_failure") ] | length' <<<"$considered_runs")
-              total_count=$(jq 'length' <<<"$considered_runs")
-              if [ "$total_count" -ge 1 ] && [ "$fail_count" -ge 2 ]; then
-                echo "  [FLAG] entry ${i}/${total}: >=2 recent review runs failed"
-                consumer_flags=$((consumer_flags + 1))
+              # A failed run is counted only when it failed as infrastructure
+              # (AT-3393). BLOCK_MERGE_ON_VERDICT fails a run whose review
+              # completed with a non-passing verdict, and on 2026-11-10 two
+              # such rounds flagged a repository whose reviews were working.
+              # review_run_health.py is the one home of that classification
+              # (AT-3383), over the runs listed here rather than the
+              # runner's window. Run ids stay in local files, never printed.
+              consumer_runs=$(mktemp)
+              consumer_jobs=$(mktemp)
+              if [ "$runs_listed" -eq 1 ] \
+                && jq -c --arg cutoff "$STALE_BEFORE" '
+                  .[] | select(
+                    .createdAt > $cutoff
+                    or (.headBranch | test("^chore/add-anthropic-api-key$") | not)
+                  ) | {id: .databaseId, created_at: .createdAt, status, conclusion}
+                ' <<<"$runs_json" > "$consumer_runs" \
+                && fetch_review_run_jobs "$slug" "$consumer_runs" "$consumer_jobs" --as-listed \
+                && run_counts=$(python3 "$RUN_HEALTH" count --runs "$consumer_runs" --jobs "$consumer_jobs"); then
+                read -r infra_count verdict_count <<<"$run_counts"
+                if [ "$infra_count" -ge 2 ]; then
+                  echo "  [FLAG] entry ${i}/${total}: >=2 recent review runs failed as infrastructure (${verdict_count} verdict-only failure(s) not counted)"
+                  consumer_flags=$((consumer_flags + 1))
+                elif [ "$verdict_count" -gt 0 ]; then
+                  echo "  recent review runs: ${infra_count} infrastructure failure(s), ${verdict_count} verdict-only failure(s) not counted"
+                fi
+              else
+                echo "  [WARN] entry ${i}/${total}: recent review runs could not be read or classified -- not evaluated this run"
+                consumer_scan_error=1
               fi
+              rm -f "$consumer_runs" "$consumer_jobs"
 
               # 2. Workflow pin freshness
               #
@@ -1002,40 +1052,8 @@ jobs:
             && gh api --paginate \
               "repos/${RUNNER_REPO}/actions/workflows/${RUNNER_WORKFLOW##*/}/runs?per_page=100&status=completed&created=>=${run_since}" \
               --jq '.workflow_runs[] | {id, created_at, status, conclusion}' > "$runner_runs" \
-            && failed_run_ids=$(python3 "$RUN_HEALTH" select --runs "$runner_runs"); then
+            && fetch_review_run_jobs "$RUNNER_REPO" "$runner_runs" "$runner_jobs"; then
             runs_read=1
-            for run_id in $failed_run_ids; do
-              if ! gh api --paginate "repos/${RUNNER_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
-                --jq '.jobs[] | {run_id, id, name, conclusion, steps: [.steps[]? | {name, conclusion}]}' >> "$runner_jobs"; then
-                runs_read=0
-                break
-              fi
-              # A run that started no job (startup_failure) lists none, so
-              # the projection above writes nothing for it. Record the fetch
-              # itself: fetched-and-empty is an infrastructure failure,
-              # never-fetched is not judged. run_id is an integer the script
-              # printed.
-              printf '{"run_id": %s}\n' "$run_id" >> "$runner_jobs"
-            done
-          fi
-          # The aggregate's verdict step exits 1 both on a deliberately
-          # blocked verdict and on failing to post one; only the block
-          # writes its annotation, so read the annotations of each such
-          # job. The messages are matched by the script, never printed;
-          # job_id is an integer the script printed, and the array is jq's.
-          if [ "$runs_read" -eq 1 ]; then
-            if verdict_job_ids=$(python3 "$RUN_HEALTH" annotate --jobs "$runner_jobs"); then
-              for job_id in $verdict_job_ids; do
-                if ! job_annotations=$(gh api "repos/${RUNNER_REPO}/check-runs/${job_id}/annotations?per_page=100" \
-                  --jq '[.[] | .message]'); then
-                  runs_read=0
-                  break
-                fi
-                printf '{"job_id": %s, "annotations": %s}\n' "$job_id" "$job_annotations" >> "$runner_jobs"
-              done
-            else
-              runs_read=0
-            fi
           fi
           if [ "$runs_read" -eq 0 ]; then
             echo "  [WARN] could not read the runner's review runs -- not evaluated this run"

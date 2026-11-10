@@ -53,11 +53,25 @@ no ``name:``, which GitHub labels with its command's first line; keep every
 runner and aggregate job and step name explicit and static. Annotation text
 is matched, never printed.
 
+Consumer check 1 (AT-3393)
+    consumer-health.yml's per-consumer check 1 flags 2 or more failures in
+    a consumer's last 3 review runs. It counted a blocked verdict as a
+    failure, so a PR whose rounds drew majors flagged its repository as if
+    reviews were down. It now asks this module the same verdict-versus-
+    outage question over its own listing: ``--as-listed`` takes the runs as
+    given, with no lookback window or sample cap, and ``count`` prints the
+    infrastructure and verdict-only failure counts; the threshold stays in
+    the workflow. A consumer calls the base orchestrator through ``uses:``,
+    so its aggregate job carries the same caller prefix as the runner's
+    (``review / aggregate / Aggregate & Verdict``, measured on every tracked
+    consumer's failed runs 2026-11-10) and has no finish job.
+
 Usage:
     review_run_health.py since [--now ISO]
-    review_run_health.py select --runs RUNS [--now ISO]
+    review_run_health.py select --runs RUNS [--now ISO | --as-listed]
     review_run_health.py annotate --jobs JOBS
     review_run_health.py judge --runs RUNS --jobs JOBS [--now ISO]
+    review_run_health.py count --runs RUNS --jobs JOBS
 
 RUNS is JSON lines of ``{"id", "created_at", "status", "conclusion"}`` (a
 JSON array is accepted too); JOBS is JSON lines of
@@ -69,11 +83,13 @@ fetched), plus one ``{"job_id", "annotations": [message, ...]}`` per job
 
 ``since`` prints the start of the lookback window, for the caller's
 ``created>=`` filter, so the window has one home. ``select`` prints the ids
-of the failed runs inside the sample, one per line, so the caller fetches
-jobs for those runs only. ``annotate`` prints the ids of the failed jobs
-whose annotations decide verdict versus outage. ``judge`` prints a
-one-line verdict; exit 0 = healthy, 1 = flag, 2 = input unusable (the check
-was not performed -- never read as healthy).
+of the failed runs inside the sample (with ``--as-listed``, inside the
+whole listing), one per line, so the caller fetches jobs for those runs
+only. ``annotate`` prints the ids of the failed jobs whose annotations
+decide verdict versus outage. ``judge`` prints a one-line verdict; exit 0 = healthy, 1 = flag, 2 = input unusable (the check
+was not performed -- never read as healthy). ``count`` judges every completed
+run in the listing and prints ``<infrastructure> <verdict-only>`` failure
+counts; exit 0, or 2 as ``judge`` does.
 """
 
 from __future__ import annotations
@@ -233,22 +249,34 @@ def _parse_time(value: object) -> datetime:
     return parsed
 
 
+def _completed_run(record: Record) -> Run | None:
+    """The run as judged, or None when it did not try to review anything."""
+    run_id = record.get("id")
+    if not isinstance(run_id, int) or isinstance(run_id, bool):
+        raise InputError("run has no integer id")
+    created = _parse_time(record.get("created_at"))
+    if record.get("status") != "completed":
+        return None
+    conclusion = record.get("conclusion")
+    if not isinstance(conclusion, str) or conclusion in EXCLUDED_CONCLUSIONS:
+        return None
+    return Run(run_id, created, conclusion in FAILED_CONCLUSIONS)
+
+
+def listed_runs(records: Iterable[Record]) -> list[Run]:
+    """Return every judged run in the listing, newest first.
+
+    No window and no cap: the caller already chose which runs to look at.
+    """
+    runs = [run for run in map(_completed_run, records) if run is not None]
+    runs.sort(key=lambda run: run.created_at, reverse=True)
+    return runs
+
+
 def sample_runs(records: Iterable[Record], now: datetime) -> list[Run]:
     """Return the judged runs, newest first."""
     cutoff = now - timedelta(hours=LOOKBACK_HOURS)
-    runs: list[Run] = []
-    for record in records:
-        run_id = record.get("id")
-        if not isinstance(run_id, int) or isinstance(run_id, bool):
-            raise InputError("run has no integer id")
-        created = _parse_time(record.get("created_at"))
-        if record.get("status") != "completed" or not cutoff <= created <= now:
-            continue
-        conclusion = record.get("conclusion")
-        if not isinstance(conclusion, str) or conclusion in EXCLUDED_CONCLUSIONS:
-            continue
-        runs.append(Run(run_id, created, conclusion in FAILED_CONCLUSIONS))
-    runs.sort(key=lambda run: run.created_at, reverse=True)
+    runs = [run for run in listed_runs(records) if cutoff <= run.created_at <= now]
     return runs[:SAMPLE_SIZE]
 
 
@@ -416,15 +444,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Judge whether the runner's review runs are failing."
     )
-    parser.add_argument("mode", choices=("since", "select", "annotate", "judge"))
+    parser.add_argument(
+        "mode", choices=("since", "select", "annotate", "judge", "count")
+    )
     parser.add_argument("--runs")
     parser.add_argument("--jobs")
-    parser.add_argument("--now", help="ISO 8601 time to judge at (default: now)")
+    when = parser.add_mutually_exclusive_group()
+    when.add_argument("--now", help="ISO 8601 time to judge at (default: now)")
+    when.add_argument(
+        "--as-listed",
+        action="store_true",
+        help="select from every run listed, with no window or cap",
+    )
     args = parser.parse_args(argv)
+    # A flag a mode would ignore is a caller's mistake; refuse it loudly.
+    if args.as_listed and args.mode != "select":
+        parser.error("--as-listed applies to select only (count is always as listed)")
+    if args.now is not None and args.mode in ("annotate", "count"):
+        parser.error(f"--now does not apply to {args.mode}")
     mode: str = args.mode
     runs_path: str | None = args.runs
     jobs_path: str | None = args.jobs
     now_text: str | None = args.now
+    as_listed: bool = args.as_listed
     try:
         now = _parse_time(now_text) if now_text else datetime.now(UTC)
         if mode == "since":
@@ -439,18 +481,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if runs_path is None:
             raise InputError(f"{mode} needs --runs")
-        runs = sample_runs(load_records(_read(runs_path)), now)
+        records = load_records(_read(runs_path))
+        runs = (
+            listed_runs(records)
+            if as_listed or mode == "count"
+            else sample_runs(records, now)
+        )
         if mode == "select":
             for run in runs:
                 if run.failed:
                     print(run.run_id)
             return 0
         if jobs_path is None:
-            raise InputError("judge needs --jobs")
+            raise InputError(f"{mode} needs --jobs")
         result = assess(runs, failed_jobs_by_run(load_records(_read(jobs_path))))
     except (InputError, OSError) as exc:
         print(f"review run health not judged: {exc}")
         return 2
+    if mode == "count":
+        print(f"{result.infra_failures} {result.verdict_failures}")
+        return 0
     print(result.describe())
     return 1 if result.flagged else 0
 

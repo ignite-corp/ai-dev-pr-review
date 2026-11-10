@@ -178,6 +178,18 @@ def _crashing_matcher(tmp_path: Path, crash_if: str) -> Path:
     return stub
 
 
+def _write_consumer_listing(runs_dir: Path, consumer_runs: object) -> Path:
+    """What the stubbed run listing serves for check 1; FETCH_FAILS leaves
+    a marker the stub fails on instead."""
+    listing = runs_dir / "consumer_listing"
+    if consumer_runs is FETCH_FAILS:
+        listing.with_name("consumer_listing.fail").touch()
+    else:
+        listed = consumer_runs if isinstance(consumer_runs, list) else []
+        listing.write_text(json.dumps(listed), encoding="utf-8")
+    return listing
+
+
 def run_health_tail(
     workflow: Path,
     tmp_path: Path,
@@ -192,6 +204,7 @@ def run_health_tail(
     runner_runs: object = None,
     runner_jobs: dict[int, list[dict[str, Any]]] | None = None,
     runner_annotations: dict[int, list[str]] | None = None,
+    consumer_runs: object = None,
 ) -> tuple[int, str]:
     """Run the health step's consumer loop with a stubbed ``gh``.
 
@@ -217,6 +230,10 @@ def run_health_tail(
     ``runner_jobs`` the projected jobs per run id; a run id with no entry
     fails its jobs fetch. ``runner_annotations`` is the projected message
     list per job id; a job id with no entry fails its annotations fetch.
+    ``consumer_runs`` is what ``gh run list`` answers for every consumer's
+    review workflow (check 1), in its ``--json`` field names; ``None`` is an
+    empty listing and ``FETCH_FAILS`` fails it. Its runs' jobs and annotations are served from
+    ``runner_jobs`` and ``runner_annotations`` too, keyed by id.
 
     Returns (exit code, combined stdout+stderr). The job summary the step
     writes is left at ``tmp_path / "summary.md"``.
@@ -273,6 +290,7 @@ def run_health_tail(
         (runs_dir / f"{run_id}.jobs").write_text(
             "".join(json.dumps(j) + "\n" for j in jobs), encoding="utf-8"
         )
+    consumer_listing = _write_consumer_listing(runs_dir, consumer_runs)
     payload_file = tmp_path / "gh_stdout"
     payload_file.write_text(gh_stdout, encoding="utf-8")
     gh_stub = bin_dir / "gh"
@@ -280,6 +298,10 @@ def run_health_tail(
         "\n".join(
             [
                 "#!/bin/bash",
+                'if [ "$1" = "run" ] && [ "$2" = "list" ]; then',
+                f'  [ -e "{runs_dir}/consumer_listing.fail" ] && {{ echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }}',
+                f'  cat "{consumer_listing}"; exit 0',
+                "fi",
                 # The selected-repositories listing is fetched with --paginate.
                 'if [ "$1" = "api" ] && [ "$2" = "--paginate" ] && [[ "$3" == */secrets/* ]]; then',
                 '  set -- api "$3"',
@@ -1279,6 +1301,175 @@ class TestRunnerReviewRuns:
         assert code == 0
         assert "[WARN] could not read the runner's review runs" in log
         assert "[FLAG] runner review runs" not in log
+
+
+# A consumer run id is private too; distinct from the runner's.
+_CONSUMER_RUN_ID_BASE = 876540000
+_CONSUMER_FLAG = ">=2 recent review runs failed"
+
+
+def _consumer_run(run_id: int, minutes_ago: int, conclusion: str) -> dict[str, Any]:
+    """A run as the run listing's ``--json`` names its fields."""
+    created = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    return {
+        "databaseId": run_id,
+        "status": "completed",
+        "conclusion": conclusion,
+        "headBranch": "task/AT-0000",
+        "createdAt": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _consumer_verdict_jobs(run_id: int) -> list[dict[str, Any]]:
+    """A consumer's blocked verdict: its thin trigger calls the base
+    orchestrator, so the aggregate carries the caller prefix and there is no
+    finish job (measured on the tracked consumers' runs, 2026-11-10)."""
+    return [
+        _failed_job(
+            run_id, _AGGREGATE_JOB, "Aggregate and post verdict", run_id * 10 + 1
+        )
+    ]
+
+
+@requires_jq
+class TestConsumerRecentRuns:
+    """Check 1 counts only infrastructure failures (AT-3393).
+
+    On 2026-11-10 the base entry flagged because two review rounds of one PR
+    drew majors and BLOCK_MERGE_ON_VERDICT failed both runs.
+    """
+
+    def _run(
+        self,
+        tmp_path: Path,
+        runs: list[dict[str, Any]],
+        jobs: dict[int, list[dict[str, Any]]] | None = None,
+        annotations: dict[int, list[str]] | None = None,
+    ) -> tuple[int, str]:
+        return run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            consumer_runs=runs,
+            runner_jobs=jobs,
+            runner_annotations=annotations,
+        )
+
+    def test_a_verdict_only_window_does_not_flag(self, tmp_path: Path) -> None:
+        ids = [_CONSUMER_RUN_ID_BASE + n for n in range(2)]
+        runs = [_consumer_run(_CONSUMER_RUN_ID_BASE + 9, 1, "success")]
+        runs += [_consumer_run(i, 10 + n, "failure") for n, i in enumerate(ids)]
+        jobs = {i: _consumer_verdict_jobs(i) for i in ids}
+        annotations = {i * 10 + 1: [_POSTED_BLOCK] for i in ids}
+        code, log = self._run(tmp_path, runs, jobs, annotations)
+        assert code == 0
+        assert _CONSUMER_FLAG not in log
+        assert (
+            "recent review runs: 0 infrastructure failure(s),"
+            " 2 verdict-only failure(s) not counted" in log
+        )
+        assert "Consumer 1/1: OK" in log
+        assert str(_CONSUMER_RUN_ID_BASE) not in log
+        assert "BLOCK_MERGE_ON_VERDICT" not in log
+
+    def test_an_infrastructure_window_flags(self, tmp_path: Path) -> None:
+        ids = [_CONSUMER_RUN_ID_BASE + n for n in range(3)]
+        runs = [_consumer_run(i, n, "failure") for n, i in enumerate(ids)]
+        prepare = "review / prepare / Prepare Review Context"
+        jobs = {i: [_failed_job(i, prepare, _SETUP_PYTHON)] for i in ids}
+        code, log = self._run(tmp_path, runs, jobs)
+        assert code == 1
+        assert (
+            f"[FLAG] entry 1/1: {_CONSUMER_FLAG} as infrastructure"
+            " (0 verdict-only failure(s) not counted)" in log
+        )
+        assert "::error::One or more consumers flagged" in log
+        assert str(_CONSUMER_RUN_ID_BASE) not in log
+
+    @pytest.mark.parametrize(
+        ("infra", "verdict", "flagged"),
+        [(1, 2, False), (2, 1, True)],
+        ids=["one-outage-two-verdicts", "two-outages-one-verdict"],
+    )
+    def test_a_mixed_window_counts_only_infrastructure(
+        self, tmp_path: Path, infra: int, verdict: int, flagged: bool
+    ) -> None:
+        """The outages here are verdict steps that never posted: the same
+        job and step as a blocked verdict, so only the annotation tells them
+        apart."""
+        ids = [_CONSUMER_RUN_ID_BASE + n for n in range(infra + verdict)]
+        runs = [_consumer_run(i, n, "failure") for n, i in enumerate(ids)]
+        jobs = {i: _consumer_verdict_jobs(i) for i in ids}
+        annotations = {
+            i * 10 + 1: (
+                ["Process completed with exit code 1."]
+                if n < infra
+                else [_POSTED_BLOCK]
+            )
+            for n, i in enumerate(ids)
+        }
+        code, log = self._run(tmp_path, runs, jobs, annotations)
+        assert (code == 1) is flagged
+        assert (_CONSUMER_FLAG in log) is flagged
+        if not flagged:
+            assert f"recent review runs: {infra} infrastructure failure(s)" in log
+        assert f"{verdict} verdict-only failure(s) not counted" in log
+
+    def test_runs_still_in_progress_are_not_classified(self, tmp_path: Path) -> None:
+        """The listing includes them with an empty conclusion; no jobs are
+        fetched for them, so the missing jobs fixture must not matter."""
+        runs = [
+            {**_consumer_run(_CONSUMER_RUN_ID_BASE + n, n, ""), "status": "in_progress"}
+            for n in range(3)
+        ]
+        code, log = self._run(tmp_path, runs)
+        assert code == 0
+        assert _CONSUMER_FLAG not in log
+        assert "recent review runs could not be read or classified" not in log
+        assert "Consumer 1/1: OK" in log
+
+    def test_unreadable_jobs_are_not_evaluated_not_ok(self, tmp_path: Path) -> None:
+        """Without a failed run's jobs, outage and verdict look the same."""
+        runs = [
+            _consumer_run(_CONSUMER_RUN_ID_BASE + n, n, "failure") for n in range(3)
+        ]
+        code, log = self._run(tmp_path, runs, {})
+        assert code == 0
+        assert (
+            "[WARN] entry 1/1: recent review runs could not be read or classified"
+            " -- not evaluated this run" in log
+        )
+        assert _CONSUMER_FLAG not in log
+        assert "Consumer 1/1: not evaluated" in log
+        assert NOT_EVALUATED_NOTICE in log
+
+    def test_an_unreadable_run_listing_is_not_evaluated_not_ok(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed listing used to read as an empty one, so OK."""
+        code, log = run_health_tail(
+            CONSUMER_HEALTH,
+            tmp_path,
+            gh_stdout=_healthy_verdicts(),
+            consumer_runs=FETCH_FAILS,
+        )
+        assert code == 0
+        assert (
+            "[WARN] entry 1/1: recent review runs could not be read or classified"
+            in log
+        )
+        assert "Consumer 1/1: OK" not in log
+        assert "Consumer 1/1: not evaluated" in log
+        assert NOT_EVALUATED_NOTICE in log
+
+    def test_an_unreadable_annotation_is_not_evaluated(self, tmp_path: Path) -> None:
+        ids = [_CONSUMER_RUN_ID_BASE + n for n in range(3)]
+        runs = [_consumer_run(i, n, "failure") for n, i in enumerate(ids)]
+        jobs = {i: _consumer_verdict_jobs(i) for i in ids}
+        code, log = self._run(tmp_path, runs, jobs, {})
+        assert code == 0
+        assert "recent review runs could not be read or classified" in log
+        assert _CONSUMER_FLAG not in log
 
 
 def test_every_expression_opener_in_the_workflow_is_closed() -> None:
