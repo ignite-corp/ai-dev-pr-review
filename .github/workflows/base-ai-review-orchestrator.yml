@@ -3,6 +3,11 @@ name: Base AI Code Review (orchestrator)
 on:
   workflow_call:
     inputs:
+      reviewers:
+        description: 'Ordered JSON array of distinct reviewers: claude, codex, gemini, copilot. Failed reviewers remain in the response denominator'
+        required: false
+        type: string
+        default: '["claude","codex","gemini"]'
       pr_number:
         description: "PR number to review (required when caller triggers via workflow_dispatch)"
         required: false
@@ -68,7 +73,9 @@ on:
       CODEX_ACCESS_TOKEN:
         required: false
       GOOGLE_AI_API_KEY:
-        required: true
+        required: false
+      COPILOT_GITHUB_TOKEN:
+        required: false
       ANTHROPIC_API_KEY:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -121,6 +128,7 @@ jobs:
     if: inputs.skip_reason == ''
     uses: ./.github/workflows/base-ai-review-prepare.yml
     with:
+      reviewers: ${{ inputs.reviewers }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       code-review-system-prompt-path: ${{ inputs.code-review-system-prompt-path }}
@@ -131,174 +139,204 @@ jobs:
       # the App token that reaches the target's PR from it (AT-2520).
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
-  # --- Parallel mode (default) ---
-  # Note: early_exit in parallel mode only affects aggregate verdict,
-  # not job execution. Use REVIEW_MODE=sequential to short-circuit.
-  review-gemini-p:
-    if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
+  # --- Parallel mode: selected slots run together. ---
+  review-1-p:
+    if: >-
+      ${{ vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_1 != '' }}
     needs: prepare
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
-      reviewer: gemini
+      reviewer: ${{ needs.prepare.outputs.reviewer_1 }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
-    secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Read only when target_repo names another repository (AT-2520); the
-      # claude jobs below forward it for the auth switch as well.
-      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-
-  review-codex-p:
-    if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
-    needs: prepare
-    uses: ./.github/workflows/base-ai-review-single.yml
-    with:
-      reviewer: codex
-      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
-      pr_number: ${{ inputs.pr_number || '' }}
-      target_repo: ${{ inputs.target_repo }}
-      head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_1 == 'claude' || needs.prepare.outputs.reviewer_1 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Reviewer key remains for cross-repo access and auth fallback.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_1 == 'claude' || needs.prepare.outputs.reviewer_1 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
 
-  review-claude-p:
-    if: vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false'
+  review-2-p:
+    if: >-
+      ${{ vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_2 != '' }}
     needs: prepare
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
-      reviewer: claude
+      reviewer: ${{ needs.prepare.outputs.reviewer_2 }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
-      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_2 == 'claude' || needs.prepare.outputs.reviewer_2 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Reviewer key remains for cross-repo access and auth fallback.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_2 == 'claude' || needs.prepare.outputs.reviewer_2 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
 
-  # --- Sequential mode (Claude -> Codex -> Gemini) ---
-  review-claude-s:
-    if: vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false'
+  review-3-p:
+    if: >-
+      ${{ vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_3 != '' }}
     needs: prepare
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
-      reviewer: claude
+      reviewer: ${{ needs.prepare.outputs.reviewer_3 }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
-      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_3 == 'claude' || needs.prepare.outputs.reviewer_3 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Reviewer key remains for cross-repo access and auth fallback.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_3 == 'claude' || needs.prepare.outputs.reviewer_3 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
 
-  # Sequential gating (AT-2125). Each downstream reviewer job:
-  #   - `!cancelled()` rather than the implicit success(): a reviewer that
-  #     FAILS must not take the reviewers after it down with it, but a
-  #     cancelled run must not start new reviewer jobs either -- `always()`
-  #     would (the aggregate comment below measured that on run
-  #     33615176056). The `${{ }}` wrapper is required: a bare leading `!`
-  #     is a YAML tag indicator. AT-2092 reverted `!cancelled()` on the
-  #     *aggregate* job because a skipped aggregate reports no required
-  #     context; a skipped reviewer job reports nothing anyone requires, so
-  #     that reasoning does not transfer here.
-  #   - `(result == 'failure' || outputs.early_exit != 'true')` per upstream
-  #     reviewer: a job that failed is tolerated (its outputs are empty
-  #     anyway); a job that finished with early_exit=true short-circuits the
-  #     chain, which is the one legitimate reason to skip. The failure
-  #     clause was originally written for codex only (in review-gemini-s);
-  #     the wrapper broke both directions in AT-2114, and this is base
-  #     following the wrapper's shape (docs/pilot-usage.md before AT-3036).
-  #
-  # What this tolerance does NOT cover, so nobody reads it as protection
-  # against a reviewer outage: the reviewer step is continue-on-error, so
+  review-4-p:
+    if: >-
+      ${{ vars.REVIEW_MODE != 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_4 != '' }}
+    needs: prepare
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: ${{ needs.prepare.outputs.reviewer_4 }}
+      pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_4 == 'claude' || needs.prepare.outputs.reviewer_4 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_4 == 'claude' || needs.prepare.outputs.reviewer_4 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
+
+  # --- Sequential mode: selected slots run in configured priority order. ---
+  review-1-s:
+    if: >-
+      ${{ !cancelled() && vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_1 != '' }}
+    needs: prepare
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: ${{ needs.prepare.outputs.reviewer_1 }}
+      pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_1 == 'claude' || needs.prepare.outputs.reviewer_1 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_1 == 'claude' || needs.prepare.outputs.reviewer_1 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
+
+  # Failure tolerance, so nobody reads it as protection against an outage:
   # a dead reviewer step still concludes `success`, carrying the
-  # `failed` verdict artifact its always() net wrote -- codex's too since
-  # AT-2603, whose verify step used to turn a dead step into `failure`.
-  # Neither conclusion decides anything here, since a `failure` is
-  # tolerated anyway. It surfaces in the aggregate's per-reviewer roster
-  # instead; the note above 'Run Claude review' in base-ai-review-single.yml
-  # has the per-reviewer mechanisms.
-  review-codex-s:
+  # `failed` verdict artifact its always() net wrote. The aggregate reports
+  # that reviewer as missing without reducing the configured denominator.
+  # See the note above 'Run Claude review' in base-ai-review-single.yml.
+  # !cancelled() defeats implicit success() after upstream failures, but
+  # prevents starting new reviewers on cancellation. Each prior slot's
+  # successful early exit stops the chain; a failed job never stops it.
+  review-2-s:
     if: >-
-      ${{ !cancelled() &&
-      vars.REVIEW_MODE == 'sequential' &&
-      needs.prepare.outputs.skip == 'false' &&
-      (needs.review-claude-s.result == 'failure' || needs.review-claude-s.outputs.early_exit != 'true') }}
-    needs: [prepare, review-claude-s]
+      ${{ !cancelled() && vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_2 != '' && (needs.review-1-s.result == 'failure' || needs.review-1-s.outputs.early_exit != 'true') }}
+    needs: [prepare, review-1-s]
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
-      reviewer: codex
-      review-job-timeout-minutes: ${{ inputs.review-job-timeout-minutes }}
+      reviewer: ${{ needs.prepare.outputs.reviewer_2 }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_2 == 'claude' || needs.prepare.outputs.reviewer_2 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Reviewer key remains for cross-repo access and auth fallback.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
-      AUTH_APP_PRIVATE_KEY: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_2 == 'claude' || needs.prepare.outputs.reviewer_2 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
 
-  # Same shape as review-codex-s above, one clause per upstream reviewer.
-  # Until AT-2125 the claude clause was `result == 'success'`, so a failed
-  # claude job skipped gemini while a failed codex job did not.
-  review-gemini-s:
+  review-3-s:
     if: >-
-      ${{ !cancelled() &&
-      vars.REVIEW_MODE == 'sequential' &&
-      needs.prepare.outputs.skip == 'false' &&
-      (needs.review-claude-s.result == 'failure' || needs.review-claude-s.outputs.early_exit != 'true') &&
-      (needs.review-codex-s.result == 'failure' || needs.review-codex-s.outputs.early_exit != 'true') }}
-    needs: [prepare, review-claude-s, review-codex-s]
+      ${{ !cancelled() && vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_3 != '' && (needs.review-1-s.result == 'failure' || needs.review-1-s.outputs.early_exit != 'true') && (needs.review-2-s.result == 'failure' || needs.review-2-s.outputs.early_exit != 'true') }}
+    needs: [prepare, review-1-s, review-2-s]
     uses: ./.github/workflows/base-ai-review-single.yml
     with:
-      reviewer: gemini
+      reviewer: ${{ needs.prepare.outputs.reviewer_3 }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_3 == 'claude' || needs.prepare.outputs.reviewer_3 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Read only when target_repo names another repository (AT-2520).
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_3 == 'claude' || needs.prepare.outputs.reviewer_3 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
+
+  review-4-s:
+    if: >-
+      ${{ !cancelled() && vars.REVIEW_MODE == 'sequential' && needs.prepare.outputs.skip == 'false' && needs.prepare.outputs.reviewer_4 != '' && (needs.review-1-s.result == 'failure' || needs.review-1-s.outputs.early_exit != 'true') && (needs.review-2-s.result == 'failure' || needs.review-2-s.outputs.early_exit != 'true') && (needs.review-3-s.result == 'failure' || needs.review-3-s.outputs.early_exit != 'true') }}
+    needs: [prepare, review-1-s, review-2-s, review-3-s]
+    uses: ./.github/workflows/base-ai-review-single.yml
+    with:
+      reviewer: ${{ needs.prepare.outputs.reviewer_4 }}
+      pr_number: ${{ inputs.pr_number || '' }}
+      target_repo: ${{ inputs.target_repo }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
+      claude-timeout-minutes: ${{ inputs.claude-timeout-minutes }}
+      review-job-timeout-minutes: ${{ (needs.prepare.outputs.reviewer_4 == 'claude' || needs.prepare.outputs.reviewer_4 == 'codex') && inputs.review-job-timeout-minutes || 15 }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+      AUTH_APP_PRIVATE_KEY: ${{ (needs.prepare.outputs.reviewer_4 == 'claude' || needs.prepare.outputs.reviewer_4 == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}
 
   # --- Aggregate ---
   aggregate:
     needs:
       - prepare
-      - review-gemini-p
-      - review-codex-p
-      - review-claude-p
-      - review-gemini-s
-      - review-codex-s
-      - review-claude-s
+      - review-1-p
+      - review-2-p
+      - review-3-p
+      - review-4-p
+      - review-1-s
+      - review-2-s
+      - review-3-s
+      - review-4-s
     # NOTE: deliberately gated on nothing about the jobs above. This job's name
     # is a required status context on the consumer rulesets, and a job that does
     # not run produces no context at all -- which leaves the check Pending
@@ -351,6 +389,7 @@ jobs:
     if: always()
     uses: ./.github/workflows/base-ai-review-aggregate.yml
     with:
+      reviewers: ${{ inputs.reviewers }}
       skip_reason: ${{ inputs.skip_reason }}
       pr_number: ${{ inputs.pr_number || '' }}
       target_repo: ${{ inputs.target_repo }}
@@ -373,8 +412,25 @@ jobs:
       policy_skipped: ${{ needs.prepare.outputs.policy_skipped }}
       excluded_count: ${{ needs.prepare.outputs.excluded_count }}
       excluded_paths: ${{ needs.prepare.outputs.excluded_paths }}
-      claude_result: ${{ needs.review-claude-p.result != 'skipped' && needs.review-claude-p.result || needs.review-claude-s.result }}
-      codex_result: ${{ needs.review-codex-p.result != 'skipped' && needs.review-codex-p.result || needs.review-codex-s.result }}
-      gemini_result: ${{ needs.review-gemini-p.result != 'skipped' && needs.review-gemini-p.result || needs.review-gemini-s.result }}
+      claude_result: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.result || needs.review-1-p.result)) ||
+        (needs.prepare.outputs.reviewer_2 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.result || needs.review-2-p.result)) ||
+        (needs.prepare.outputs.reviewer_3 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.result || needs.review-3-p.result)) ||
+        (needs.prepare.outputs.reviewer_4 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.result || needs.review-4-p.result)) || '' }}
+      codex_result: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.result || needs.review-1-p.result)) ||
+        (needs.prepare.outputs.reviewer_2 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.result || needs.review-2-p.result)) ||
+        (needs.prepare.outputs.reviewer_3 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.result || needs.review-3-p.result)) ||
+        (needs.prepare.outputs.reviewer_4 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.result || needs.review-4-p.result)) || '' }}
+      gemini_result: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.result || needs.review-1-p.result)) ||
+        (needs.prepare.outputs.reviewer_2 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.result || needs.review-2-p.result)) ||
+        (needs.prepare.outputs.reviewer_3 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.result || needs.review-3-p.result)) ||
+        (needs.prepare.outputs.reviewer_4 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.result || needs.review-4-p.result)) || '' }}
+      copilot_result: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.result || needs.review-1-p.result)) ||
+        (needs.prepare.outputs.reviewer_2 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.result || needs.review-2-p.result)) ||
+        (needs.prepare.outputs.reviewer_3 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.result || needs.review-3-p.result)) ||
+        (needs.prepare.outputs.reviewer_4 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.result || needs.review-4-p.result)) || '' }}
     secrets:
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}

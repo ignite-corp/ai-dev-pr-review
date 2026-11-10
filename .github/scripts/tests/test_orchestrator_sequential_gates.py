@@ -1,8 +1,8 @@
 """Job-level gating of the orchestrator's sequential mode (AT-2125).
 
-Before AT-2125 the two guards in `review-gemini-s` were asymmetric: a failed
+Before AT-2125 the two guards in `review-3-s` were asymmetric: a failed
 codex job was tolerated (`result == 'failure' || early_exit != 'true'`) while
-claude had to be `success`, and `review-codex-s` carried an implicit
+claude had to be `success`, and `review-2-s` carried an implicit
 success() that skipped it on any claude failure. One dead reviewer therefore
 took the reviewers after it down with it -- in the claude direction only.
 
@@ -81,6 +81,9 @@ def _evaluate(
     than evaluating to something plausible.
     """
     jobs = needs or {}
+    slots = {
+        str(i): name for i, name in enumerate(("claude", "codex", "gemini", ""), 1)
+    }
     expr = condition.strip()
     if expr.startswith("${{") and expr.endswith("}}"):
         expr = expr[3:-2]
@@ -91,6 +94,11 @@ def _evaluate(
     expr = re.sub(r"needs\.([\w-]+)\.result", r' jobs["\1"].result ', expr)
     expr = re.sub(
         r"needs\.([\w-]+)\.outputs\.early_exit", r' jobs["\1"].early_exit ', expr
+    )
+    expr = re.sub(
+        r"needs\.prepare\.outputs\.reviewer_(\d)",
+        lambda match: repr(slots[match[1]]),
+        expr,
     )
     leftovers = re.findall(
         r"needs\.|vars\.|!(?!=)|always\(\)|success\(\)|failure\(\)", expr
@@ -119,40 +127,45 @@ class TestEvaluatorSanity:
 
     def test_rejects_unknown_needs_field(self) -> None:
         with pytest.raises(AssertionError):
-            _evaluate("needs.review-claude-s.outputs.other != 'x'")
+            _evaluate("needs.review-1-s.outputs.other != 'x'")
 
     def test_implicit_success_is_not_modelled(self) -> None:
         """A condition without a status function has an implicit success()."""
-        condition = _condition("review-codex-s")
+        condition = _condition("review-2-s")
         assert "cancelled()" in condition
 
 
 class TestParallelModeUntouched:
     """AT-2125 is confined to the `vars.REVIEW_MODE == 'sequential'` jobs."""
 
-    @pytest.mark.parametrize(
-        "job", ["review-gemini-p", "review-codex-p", "review-claude-p"]
-    )
+    @pytest.mark.parametrize("job", ["review-3-p", "review-2-p", "review-1-p"])
     def test_parallel_job_condition_is_unchanged(self, job: str) -> None:
-        assert _condition(job) == _PARALLEL_CONDITION
+        assert _condition(job) == (
+            "${{ "
+            + _PARALLEL_CONDITION
+            + f" && needs.prepare.outputs.reviewer_{job.split('-')[1]} != '' }}"
+            + "}"
+        )
 
-    @pytest.mark.parametrize(
-        "job", ["review-gemini-p", "review-codex-p", "review-claude-p"]
-    )
+    @pytest.mark.parametrize("job", ["review-3-p", "review-2-p", "review-1-p"])
     def test_parallel_job_needs_only_prepare(self, job: str) -> None:
         assert _jobs()[job]["needs"] == "prepare"
 
     def test_sequential_head_condition_is_unchanged(self) -> None:
-        assert _condition("review-claude-s") == _SEQUENTIAL_HEAD_CONDITION
+        assert _condition("review-1-s") == (
+            "${{ !cancelled() && "
+            + _SEQUENTIAL_HEAD_CONDITION
+            + " && needs.prepare.outputs.reviewer_1 != '' }}"
+        )
 
 
 class TestSequentialGatesAreSymmetric:
-    @pytest.mark.parametrize("job", ["review-codex-s", "review-gemini-s"])
+    @pytest.mark.parametrize("job", ["review-2-s", "review-3-s"])
     def test_no_reviewer_is_required_to_succeed(self, job: str) -> None:
-        """The defect: `needs.review-claude-s.result == 'success'`."""
+        """The defect: `needs.review-1-s.result == 'success'`."""
         assert "== 'success'" not in _condition(job)
 
-    @pytest.mark.parametrize("job", ["review-codex-s", "review-gemini-s"])
+    @pytest.mark.parametrize("job", ["review-2-s", "review-3-s"])
     def test_downstream_job_suppresses_the_implicit_success_check(
         self, job: str
     ) -> None:
@@ -163,7 +176,7 @@ class TestSequentialGatesAreSymmetric:
             "always() lets a cancelled run start new jobs"
         )
 
-    @pytest.mark.parametrize("job", ["review-codex-s", "review-gemini-s"])
+    @pytest.mark.parametrize("job", ["review-2-s", "review-3-s"])
     def test_negated_status_function_is_wrapped_in_expression_braces(
         self, job: str
     ) -> None:
@@ -174,8 +187,8 @@ class TestSequentialGatesAreSymmetric:
     def test_gemini_has_one_clause_per_upstream_reviewer_in_the_same_shape(
         self,
     ) -> None:
-        condition = _condition("review-gemini-s")
-        for reviewer in ("claude", "codex"):
+        condition = _condition("review-3-s")
+        for reviewer in ("1", "2"):
             clause = (
                 f"(needs.review-{reviewer}-s.result == 'failure' || "
                 f"needs.review-{reviewer}-s.outputs.early_exit != 'true')"
@@ -202,11 +215,11 @@ class TestSequentialGatesAreSymmetric:
 
 
 class TestCodexGate:
-    """`review-codex-s` against every `review-claude-s` outcome."""
+    """`review-2-s` against every `review-1-s` outcome."""
 
     def _runs(self, claude: Job, **state: Any) -> bool:
         return _evaluate(
-            _condition("review-codex-s"), needs={"review-claude-s": claude}, **state
+            _condition("review-2-s"), needs={"review-1-s": claude}, **state
         )
 
     def test_runs_after_a_normal_claude_review(self) -> None:
@@ -241,12 +254,12 @@ class TestCodexGate:
 
 
 class TestGeminiGate:
-    """`review-gemini-s` against every claude/codex outcome pair."""
+    """`review-3-s` against every claude/codex outcome pair."""
 
     def _runs(self, claude: Job, codex: Job, **state: Any) -> bool:
         return _evaluate(
-            _condition("review-gemini-s"),
-            needs={"review-claude-s": claude, "review-codex-s": codex},
+            _condition("review-3-s"),
+            needs={"review-1-s": claude, "review-2-s": codex},
             **state,
         )
 
@@ -302,15 +315,13 @@ class TestOriginalDefectIsGone:
     _OLD_GEMINI = (
         "${{ always() && vars.REVIEW_MODE == 'sequential' && "
         "needs.prepare.outputs.skip == 'false' && "
-        "needs.review-claude-s.result == 'success' && "
-        "needs.review-claude-s.outputs.early_exit != 'true' && "
-        "(needs.review-codex-s.result == 'failure' || "
-        "needs.review-codex-s.outputs.early_exit != 'true') }}"
+        "needs.review-1-s.result == 'success' && "
+        "needs.review-1-s.outputs.early_exit != 'true' && "
+        "(needs.review-2-s.result == 'failure' || "
+        "needs.review-2-s.outputs.early_exit != 'true') }}"
     )
 
     def test_old_gemini_guard_skipped_on_a_claude_failure(self) -> None:
         old = self._OLD_GEMINI.replace("always()", "!cancelled()")
-        assert not _evaluate(
-            old, needs={"review-claude-s": FAILED, "review-codex-s": OK}
-        )
-        assert _evaluate(old, needs={"review-claude-s": OK, "review-codex-s": FAILED})
+        assert not _evaluate(old, needs={"review-1-s": FAILED, "review-2-s": OK})
+        assert _evaluate(old, needs={"review-1-s": OK, "review-2-s": FAILED})

@@ -246,7 +246,7 @@ def test_both_reviewer_modes_forward_token_and_control_plane_key() -> None:
         (ROOT / ".github/workflows/base-ai-review-orchestrator.yml").read_text()
     )
     assert not doc[True]["workflow_call"]["secrets"]["CODEX_ACCESS_TOKEN"]["required"]
-    for name in ["review-codex-p", "review-codex-s"]:
+    for name in [f"review-{i}-{mode}" for mode in ("p", "s") for i in range(1, 5)]:
         secrets = doc["jobs"][name]["secrets"]
         assert secrets["CODEX_ACCESS_TOKEN"] == "${{ secrets.CODEX_ACCESS_TOKEN }}"
         assert (
@@ -330,7 +330,9 @@ def test_workflow_job_budget_preserves_larger_caller_values(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("job_name", ["review-codex-p", "review-codex-s"])
+@pytest.mark.parametrize(
+    "job_name", [f"review-{i}-{mode}" for mode in ("p", "s") for i in range(1, 5)]
+)
 @pytest.mark.parametrize(("caller_minutes", "expected"), [(15, 26), (45, 45)])
 def test_orchestrator_forwards_codex_budget_to_single_workflow(
     job_name: str,
@@ -341,20 +343,25 @@ def test_orchestrator_forwards_codex_budget_to_single_workflow(
         (ROOT / ".github/workflows/base-ai-review-orchestrator.yml").read_text()
     )
     upstream = doc["jobs"][job_name]["with"]
+    slot = upstream["reviewer"][4:-3]
+    forwarded = upstream["review-job-timeout-minutes"][4:-3]
+    forwarded = forwarded.replace(slot, repr("codex")).replace(
+        "inputs.review-job-timeout-minutes", str(caller_minutes)
+    )
     assert (
-        upstream["review-job-timeout-minutes"]
-        == "${{ inputs.review-job-timeout-minutes }}"
+        eval(
+            forwarded.replace("&&", "and").replace("||", "or"), {"__builtins__": {}}, {}
+        )
+        == caller_minutes
     )
     single = yaml.safe_load(SINGLE.read_text())["jobs"]["review"]
     expression = single["timeout-minutes"].removeprefix("${{").removesuffix("}}")
-    expression = expression.replace("inputs.reviewer", repr(upstream["reviewer"]))
+    expression = expression.replace("inputs.reviewer", repr("codex"))
     expression = expression.replace(
         "inputs.review-job-timeout-minutes", str(caller_minutes)
     )
     expression = expression.replace("&&", "and").replace("||", "or")
     assert eval(expression, {"__builtins__": {}}, {}) == expected
-    for name in ["review-gemini-p", "review-gemini-s"]:
-        assert "review-job-timeout-minutes" not in doc["jobs"][name]["with"]
 
 
 @pytest.mark.parametrize(
@@ -566,6 +573,15 @@ def test_only_completed_agent_messages_can_recover_a_nonfinal_verdict(
 # Resolve only the secret expressions used by these call boundaries. Unknown
 # syntax fails rather than silently pretending it forwards an empty credential.
 def _secret_value(expression: str, supplied: dict[str, str]) -> str:
+    if "needs.prepare.outputs.reviewer_" in expression:
+        expression = re.sub(
+            r"needs\.prepare\.outputs\.reviewer_\d", repr("codex"), expression
+        )
+        assert re.fullmatch(
+            r"\$\{\{ \('codex' == 'claude' \|\| 'codex' == 'codex'\) && secrets.AUTH_APP_PRIVATE_KEY \|\| '' \}\}",
+            expression,
+        ), expression
+        return supplied.get("AUTH_APP_PRIVATE_KEY", "")
     match = re.fullmatch(
         r"\$\{\{ (secrets\.[A-Z_]+(?: \|\| secrets\.[A-Z_]+)*) \}\}", expression
     )
@@ -592,19 +608,20 @@ def test_auth_alias_is_confined_to_four_auth_review_jobs() -> None:
         is False
     )
     jobs = orchestrator["jobs"]
-    auth_jobs = {
-        "review-claude-p",
-        "review-claude-s",
-        "review-codex-p",
-        "review-codex-s",
-    }
+    auth_jobs = {f"review-{i}-{mode}" for mode in ("p", "s") for i in range(1, 5)}
     assert {
         name for name, job in jobs.items() if "AUTH_APP_PRIVATE_KEY" in json.dumps(job)
     } == auth_jobs
     for name in auth_jobs:
+        forwarded = jobs[name]["secrets"]["AUTH_APP_PRIVATE_KEY"]
+        slot = jobs[name]["with"]["reviewer"][4:-3]
         assert (
-            jobs[name]["secrets"]["AUTH_APP_PRIVATE_KEY"]
-            == "${{ secrets.AUTH_APP_PRIVATE_KEY }}"
+            forwarded
+            == "${{ ("
+            + slot
+            + " == 'claude' || "
+            + slot
+            + " == 'codex') && secrets.AUTH_APP_PRIVATE_KEY || '' }}"
         )
     for filename in ["base-ai-review-prepare.yml", "base-ai-review-aggregate.yml"]:
         assert (
@@ -654,12 +671,7 @@ def test_auth_selection_and_actual_approval_presence_shell(
     assert check["env"]["AUTH_APP_KEY_PRESENT"] == (
         "${{ (" + mint["with"]["private-key"][4:-3] + ") != '' }}"
     )
-    for name in [
-        "review-codex-p",
-        "review-codex-s",
-        "review-claude-p",
-        "review-claude-s",
-    ]:
+    for name in [f"review-{i}-{mode}" for mode in ("p", "s") for i in range(1, 5)]:
         forwarded = {
             key: _secret_value(value, supplied)
             for key, value in jobs[name]["secrets"].items()

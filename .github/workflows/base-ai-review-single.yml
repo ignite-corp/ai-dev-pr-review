@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       reviewer:
-        description: "Reviewer name: claude, gemini, or codex"
+        description: "Reviewer name: claude, codex, gemini, or copilot"
         required: true
         type: string
       head_sha:
@@ -39,7 +39,9 @@ on:
       CODEX_ACCESS_TOKEN:
         required: false
       GOOGLE_AI_API_KEY:
-        required: true
+        required: false
+      COPILOT_GITHUB_TOKEN:
+        required: false
       ANTHROPIC_API_KEY:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -85,7 +87,7 @@ jobs:
           REVIEWER: ${{ inputs.reviewer }}
         run: |
           case "$REVIEWER" in
-            claude|gemini|codex) ;;
+            claude|gemini|codex|copilot) ;;
             *) echo "Invalid reviewer: $REVIEWER"; exit 1 ;;
           esac
 
@@ -557,7 +559,7 @@ jobs:
       # each reviewer's always() net emits a failed verdict (claude AT-1837,
       # gemini AT-2539, codex AT-2603, before which it failed the job). What
       # that costs the chaining guard is written where the guard is:
-      # base-ai-review-orchestrator.yml, the note above review-codex-s.
+      # base-ai-review-orchestrator.yml, the note above review-2-s.
       - name: Run Claude review
         if: inputs.reviewer == 'claude'
         id: claude-review
@@ -812,14 +814,15 @@ jobs:
 
       # --- Gemini ---
       - name: Setup Python (Gemini)
-        if: inputs.reviewer == 'gemini'
+        if: inputs.reviewer == 'gemini' || inputs.reviewer == 'copilot'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: "${{ runner.temp }}/ai-dev-pr-review/.github/scripts/.python-version"
 
-      - name: Install dependencies (Gemini)
-        if: inputs.reviewer == 'gemini'
-        run: pip install -r "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/requirements.txt"
+      - name: Install dependencies (Gemini / Copilot)
+        if: inputs.reviewer == 'gemini' || inputs.reviewer == 'copilot'
+        working-directory: ${{ runner.temp }}
+        run: python -I -m pip --isolated install -r "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/requirements.txt"
 
       # review-gemini.json is a path the PR under review can commit, for
       # the reason given above 'Clear Claude verdict file' (AT-2614).
@@ -1668,6 +1671,83 @@ jobs:
             error_detail: $detail
           } + (if $cause == "" then {} else {error_cause: $cause} end)' > review-codex.json
           jq -e -s "$OBJECT_FILTER" review-codex.json >/dev/null
+
+      # Native asset and checksum from github/copilot-cli's v1.0.105 release
+      # and SHA256SUMS.txt. Install outside the PR and verify before execution.
+      # No SDK runtime downloader, package shim or credential is involved.
+      - name: Install trusted Copilot CLI
+        if: inputs.reviewer == 'copilot'
+        timeout-minutes: 3
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          INSTALL="${RUNNER_TEMP}/lens-copilot-cli"
+          rm -rf -- "$INSTALL"
+          mkdir -m 700 -- "$INSTALL"
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 120 \
+            --proto '=https' --tlsv1.2 \
+            https://github.com/github/copilot-cli/releases/download/v1.0.105/copilot-linux-x64.tar.gz \
+            --output "$INSTALL/copilot.tar.gz"
+          echo 'aba1f06f27bc0447656647f76e0a4cf58b4b2a341c75ff04a750982b6aeb6bd2  '"$INSTALL/copilot.tar.gz" | sha256sum --check --status
+          tar --extract --gzip --file "$INSTALL/copilot.tar.gz" --directory "$INSTALL"
+          test -f "$INSTALL/copilot"
+          test ! -L "$INSTALL/copilot"
+          chmod 700 "$INSTALL/copilot"
+
+      # Why continue-on-error and its cost: the note above 'Run Claude
+      # review'. Copilot's always() net below owns failures before/during its run.
+      - name: Run Copilot review
+        if: inputs.reviewer == 'copilot'
+        id: copilot-review
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_CLI_PATH: ${{ runner.temp }}/lens-copilot-cli/copilot
+          THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
+          EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
+        run: |
+          set -euo pipefail
+          rm -rf -- review-copilot.json
+          python -I - <<'PYTHON'
+          import os
+          import runpy
+          import sys
+          from pathlib import Path
+
+          scripts = Path(os.environ["RUNNER_TEMP"]) / "ai-dev-pr-review/.github/scripts"
+          sys.path.insert(0, str(scripts))
+          runpy.run_path(str(scripts / "review_copilot.py"), run_name="__main__")
+          PYTHON
+
+      # A dependency/install failure skips the run step. Its precommitted
+      # verdict is just as untrusted as one left by a timed-out/cancelled run.
+      # Only a completed adapter run owns a verdict; replace everything else.
+      - name: Verify Copilot verdict file
+        if: inputs.reviewer == 'copilot' && always()
+        env:
+          STEP_OUTCOME: ${{ steps.copilot-review.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$STEP_OUTCOME" = success ] && [ ! -L review-copilot.json ] \
+            && [ -f review-copilot.json ] \
+            && jq -e -s 'length == 1 and (.[0] | type == "object")' review-copilot.json >/dev/null 2>&1; then
+            exit 0
+          fi
+          rm -rf -- review-copilot.json
+          # Host-owned fixed text, never stderr or PR-supplied error messages.
+          # This net also works when setup-python or the scripts checkout failed.
+          NET=$(mktemp ./copilot-verdict.XXXXXX)
+          trap 'rm -f -- "$NET"' EXIT
+          jq -n '{
+            summary: "Copilot review failed: invocation_incomplete",
+            status: "failed",
+            early_exit: false,
+            issues: [],
+            error: "invocation_incomplete"
+          }' > "$NET"
+          mv -fT -- "$NET" review-copilot.json
 
       # --- Common: Post inline comments ---
       - name: Post inline comments

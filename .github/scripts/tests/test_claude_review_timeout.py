@@ -89,7 +89,7 @@ _GUARD_HEADROOM_ENV = "MIN_HEADROOM_MINUTES"
 # a default must not move what the guard requires, and the other way round.
 _MIN_JOB_HEADROOM_MINUTES = 5
 
-_CLAUDE_JOBS = ("review-claude-p", "review-claude-s")
+_SLOT_JOBS = tuple(f"review-{i}-{mode}" for mode in ("p", "s") for i in range(1, 5))
 
 
 def _load(name: str) -> dict[Any, Any]:
@@ -368,22 +368,24 @@ def test_other_reviewer_step_caps_are_unchanged() -> None:
         assert steps[name]["timeout-minutes"] == _OTHER_REVIEWER_STEP_MINUTES, name
 
 
-def test_orchestrator_forwards_step_to_claude_and_job_to_claude_and_codex() -> None:
+def test_orchestrator_forwards_caps_for_the_provider_in_each_slot() -> None:
     jobs = _load("base-ai-review-orchestrator.yml")["jobs"]
-    # Positive control: a renamed or dropped claude job would otherwise send
-    # every job down the else branch and the forwarding would go unchecked.
-    assert set(_CLAUDE_JOBS) <= jobs.keys(), sorted(jobs)
-    for job_name, job in jobs.items():
-        passed = dict(job.get("with") or {})
-        if job_name in _CLAUDE_JOBS:
-            assert passed.get(_STEP_INPUT) == "${{ inputs.%s }}" % _STEP_INPUT, job_name
-            assert passed.get(_JOB_INPUT) == "${{ inputs.%s }}" % _JOB_INPUT, job_name
-        elif job_name in {"review-codex-p", "review-codex-s"}:
-            assert _STEP_INPUT not in passed, job_name
-            assert passed.get(_JOB_INPUT) == "${{ inputs.%s }}" % _JOB_INPUT, job_name
-        else:
-            assert _STEP_INPUT not in passed, job_name
-            assert _JOB_INPUT not in passed, job_name
+    for name in _SLOT_JOBS:
+        passed = jobs[name]["with"]
+        assert passed[_STEP_INPUT] == "${{ inputs.claude-timeout-minutes }}"
+        slot = passed["reviewer"][4:-3]
+        expression = passed[_JOB_INPUT][4:-3]
+        for provider, expected in (
+            ("claude", 25),
+            ("codex", 25),
+            ("gemini", 15),
+            ("copilot", 15),
+        ):
+            evaluated = expression.replace(slot, repr(provider)).replace(
+                "inputs.review-job-timeout-minutes", "25"
+            )
+            evaluated = evaluated.replace("&&", "and").replace("||", "or")
+            assert eval(evaluated, {"__builtins__": {}}, {}) == expected
 
 
 def test_consumer_thin_trigger_example_leaves_the_caps_at_their_defaults() -> None:

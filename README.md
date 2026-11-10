@@ -35,13 +35,14 @@ The boundary between the Actions, local and cross-repo paths is recorded in [`do
 
 ## Required consumer-repo secrets
 
-`GOOGLE_AI_API_KEY` is required. Codex needs `CODEX_ACCESS_TOKEN` or `OPENAI_API_KEY`; keep both for quota fallback. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly — `secrets: inherit` does NOT work cross-org, same-org or not.
+`GOOGLE_AI_API_KEY` is required for the default three-reviewer roster; a roster without Gemini does not require it. Codex needs `CODEX_ACCESS_TOKEN` or `OPENAI_API_KEY`; keep both for quota fallback. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly — `secrets: inherit` does NOT work cross-org, same-org or not.
 
 | Secret | Required | Used by | Notes |
 |---|---|---|---|
+| `COPILOT_GITHUB_TOKEN` | when selected | Copilot reviewer | Explicit account token; see [source workflow integration](docs/copilot-review.md). |
 | `CODEX_ACCESS_TOKEN` | preferred | Codex reviewer | Workspace access token; see [Codex authentication](docs/codex-auth.md). |
 | `OPENAI_API_KEY` | fallback | Codex reviewer | Required for billed fallback or API-only installs. Codex CLI logs in via stdin. |
-| `GOOGLE_AI_API_KEY` | yes | Gemini reviewer | Org or repo secret. |
+| `GOOGLE_AI_API_KEY` | when selected | Gemini reviewer | Org or repo secret. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | one of these two | Claude reviewer | Claude Pro/Max subscription OAuth token (`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | one of these two | Claude reviewer | Standard `sk-ant-` API key. |
 | `AUTH_APP_PRIVATE_KEY` | no | Claude/Codex auth control | Optional alias for the existing App key, with `REVIEWER_APP_ID`; preferred over `REVIEWER_APP_PRIVATE_KEY` for central auth switching. Never forwarded to prepare or aggregate. Same-repository callers may pass only this alias to keep auth control separate from App approval; see [credential boundaries](docs/codex-auth.md#configuration-and-availability). Cross-repository reporting still requires the reviewer key. |
@@ -226,6 +227,7 @@ All workflows accept `workflow_call` inputs:
 
 | Input | Type | Required | Default | Notes |
 |---|---|---|---|---|
+| `reviewers` | string | false | `["claude","codex","gemini"]` | Source workflow ordered JSON roster. Supported IDs: `claude`, `codex`, `gemini`, `copilot`. Failed reviewers remain in the denominator. Requires a new release and caller adoption; the current release does not expose this input. See [reviewer selection](docs/reviewer-roster.md). |
 | `pr_number` | string | false | `""` | Required only when triggered via `workflow_dispatch`. On `pull_request`, the orchestrator reads `github.event.pull_request.number`. |
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | Path INSIDE THE CONSUMER REPO to the per-repo system prompt. The prepare workflow `git show`s this from the PR's base branch (not from PR head) to prevent prompt injection. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | Same path semantics. |

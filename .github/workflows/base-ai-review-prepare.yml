@@ -3,6 +3,11 @@ name: Base AI Review (prepare)
 on:
   workflow_call:
     inputs:
+      reviewers:
+        description: 'Ordered JSON array of distinct reviewers: claude, codex, gemini, copilot. Failed reviewers remain in the response denominator'
+        required: false
+        type: string
+        default: '["claude","codex","gemini"]'
       pr_number:
         type: string
         required: false
@@ -31,6 +36,21 @@ on:
         required: false
         description: "Private key of the reviewer GitHub App; read only when target_repo names another repository (AT-2520)"
     outputs:
+      reviewers:
+        description: "Validated ordered reviewer list"
+        value: ${{ jobs.prepare.outputs.reviewers }}
+      reviewer_1:
+        description: "Reviewer in configured slot 1, empty when unused"
+        value: ${{ jobs.prepare.outputs.reviewer_1 }}
+      reviewer_2:
+        description: "Reviewer in configured slot 2, empty when unused"
+        value: ${{ jobs.prepare.outputs.reviewer_2 }}
+      reviewer_3:
+        description: "Reviewer in configured slot 3, empty when unused"
+        value: ${{ jobs.prepare.outputs.reviewer_3 }}
+      reviewer_4:
+        description: "Reviewer in configured slot 4, empty when unused"
+        value: ${{ jobs.prepare.outputs.reviewer_4 }}
       skip:
         description: "Whether to skip review: the PR is too large, or every changed file is policy-excluded. The reviewer jobs gate on this; size_skipped and policy_skipped say which"
         value: ${{ jobs.prepare.outputs.skip }}
@@ -97,6 +117,11 @@ jobs:
     env:
       LENS_TARGET_REPOSITORY: ${{ inputs.target_repo || github.repository }}
     outputs:
+      reviewers: ${{ steps.roster.outputs.reviewers }}
+      reviewer_1: ${{ steps.roster.outputs.reviewer_1 }}
+      reviewer_2: ${{ steps.roster.outputs.reviewer_2 }}
+      reviewer_3: ${{ steps.roster.outputs.reviewer_3 }}
+      reviewer_4: ${{ steps.roster.outputs.reviewer_4 }}
       # A boolean expression renders as the string `true` / `false`, which is
       # what the orchestrator's `== 'false'` gates compare against. The policy
       # step does not run on a size skip, so its output is empty there and
@@ -332,6 +357,32 @@ jobs:
           path: .ai-dev-pr-review
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Validate ordered reviewer roster
+        id: roster
+        env:
+          REVIEWERS: ${{ inputs.reviewers }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(".ai-dev-pr-review/.github/scripts").resolve()))
+          from reviewer_roster import configured_reviewers
+
+          try:
+              reviewers = configured_reviewers()
+          except ValueError:
+              print("::error::Invalid reviewers: expected a nonempty ordered JSON list of distinct supported reviewers")
+              raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("reviewers=" + json.dumps(reviewers, separators=(",", ":")) + "\n")
+              for index in range(4):
+                  name = reviewers[index] if index < len(reviewers) else ""
+                  output.write(f"reviewer_{index + 1}={name}\n")
+          PYTHON
 
       # Default prompts for a target that ships none (AT-2520), owned by the
       # CALLER: inside a reusable workflow github.repository and github.sha

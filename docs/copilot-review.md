@@ -1,8 +1,17 @@
-# Standalone Copilot reviewer
+# Optional Copilot reviewer
 
-The Copilot adapter is not connected to the local driver, Actions jobs or
-aggregator roster. The active pipeline still has three reviewers. This step
-establishes the adapter boundary before workflow integration.
+The source Actions workflows can select Copilot through the ordered
+`reviewers` input, for example `["copilot","claude","codex","gemini"]`.
+The default remains `["claude","codex","gemini"]`. Selection alone does not
+provision an account: the caller must explicitly forward the optional
+`COPILOT_GITHUB_TOKEN` secret. A selected reviewer whose credential or runtime
+is unavailable fails and remains in the configured response denominator.
+The local driver and external runner continue dispatching their existing three.
+
+This is source workflow wiring. Published v1.21.0 provides the compatible
+adapter and roster helpers that these workflows execute; it does not publish
+this new workflow interface. A new release and explicit caller adoption are
+still required. No production four-provider service round has been verified.
 
 Install `.github/scripts/requirements.txt` (Copilot SDK 1.0.28), and provision a
 trusted Copilot CLI 1.0.105 executable outside the PR checkout. The adapter
@@ -43,5 +52,27 @@ The runtime receives isolated directories and a minimal environment, with no
 ambient login or inherited provider credentials. Filesystem tools, custom tools
 and configuration discovery are disabled; all review data is supplied in memory.
 The review has a five-minute limit; control and teardown operations have
-five-second limits. Runtime compatibility and review quality still need an
-end-to-end integration check before this reviewer joins the roster.
+five-second limits. The official native Linux x64 archive's checksum and
+isolated `--version` execution were verified without credentials. SDK behavior and workflow failure
+paths have credential-free tests; account authentication, service quota, and
+review quality still need an explicitly authorized end-to-end service check.
+
+Actions installs the native Linux x64 executable outside the PR checkout from
+[the official v1.0.105 release](https://github.com/github/copilot-cli/releases/tag/v1.0.105).
+Its pinned SHA-256, confirmed against the release API digest and the official
+[SHA256SUMS.txt](https://github.com/github/copilot-cli/releases/download/v1.0.105/SHA256SUMS.txt),
+is `aba1f06f27bc0447656647f76e0a4cf58b4b2a341c75ff04a750982b6aeb6bd2`.
+The workflow verifies that digest before extracting or running the executable;
+the adapter independently checks the version in its isolated runtime environment.
+Dependency installation uses isolated Python outside the PR directory. Only the
+Copilot review step receives the account credential; installation receives none.
+
+The workflow uploads `review-copilot.json` through the common artifact path and
+posts findings through the same released inline-comment entrypoint as the other
+reviewers. If setup failed or the run was skipped, interrupted, or timed out,
+its always-running failure step replaces any PR-supplied verdict file, directory,
+or symlink with a fixed failure result. Completed adapter failures retain their
+sanitized reason codes. Parallel execution starts every selected reviewer;
+sequential execution follows the configured order and stops after an earlier
+reviewer's successful early exit. An early exit never lowers the formal
+approval response threshold. See [reviewer selection](reviewer-roster.md).

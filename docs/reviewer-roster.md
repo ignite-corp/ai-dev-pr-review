@@ -1,4 +1,4 @@
-# Aggregate reviewer selection foundation
+# Reviewer selection
 
 The aggregate script accepts `REVIEWERS` from the trusted operator environment
 as a JSON array of distinct reviewer IDs. For example:
@@ -22,24 +22,47 @@ The response rules remain `ceil(N/2)` for a sufficient review and
 `ceil(N/2)+1` for automatic approval, with at least three selected reviewers
 required for automatic approval. Findings remain separate from response counts.
 
-This is aggregate support only. Current Actions workflows, the local driver
-and the runner still dispatch three reviewers and do not expose or propagate
-this selection. The local driver explicitly pins the aggregate roster to its
-dispatched default three, ignoring ambient `REVIEWERS` until selected dispatch
-is wired. Leave `REVIEWERS` unset on the Actions and runner paths until they
-dispatch the same selected list. The full-roster PR response gate
+The source Actions orchestrator exposes the same selection as its `reviewers`
+workflow input, defaulting to `["claude","codex","gemini"]`. Prepare validates
+it with the released parser and emits four ordered slots. Parallel mode starts
+the selected slots together; sequential mode follows that exact array order,
+continuing after failures and stopping on a successful prior early exit.
+Cancellation starts no further reviewers. The aggregate receives the trusted
+selection and each selected provider's own job conclusion; unselected artifacts
+cannot supply responses. Invalid input fails the required aggregate check and
+cannot enable approval. There is no availability-based roster reduction.
+
+```yaml
+with:
+  reviewers: '["copilot","claude","codex","gemini"]'
+secrets:
+  COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+  # Forward the existing credentials for the other selected reviewers too.
+```
+
+The input adds no approval-count, minimum/maximum-roster, model-selection, or
+new execution-mode setting. The existing `REVIEW_MODE` continues to select
+parallel or sequential execution. Copilot is optional and requires its explicit
+account credential; a roster without Gemini does not require a Google key.
+
+The local driver explicitly pins the aggregate roster to its dispatched default
+three, ignoring ambient `REVIEWERS`. The external runner's existing caller has
+not adopted this optional input. No runner or consumer rollout is included.
+The full-roster PR response gate
 continues to require every expected reviewer, independently of approval quorum.
 Its unresolved-thread and folded-finding checks remain independent of the
 selected roster. Historical disposition labels recognize all supported
 reviewers, including a reviewer omitted from the current selection.
 
 This foundation adds no adaptive roster changes or new aggregate state for
-carrying prior open findings forward. Workflow integration must carry valid
-outstanding findings across any roster change and continue withholding approval
-until blocking findings are dispositioned. A roster change is not a disposition
-of those findings. The broader integration remains pending.
+carrying prior open findings forward. Existing issue/disposition rules and
+withholding for unresolved majors remain in force. A roster change is not a disposition of prior findings. This change
+does not add historical finding carryover or replace consumer unresolved-thread
+and folded-finding gates.
 
-Compatible scripts must ship through the manual release process before new
-workflow jobs or consumers can depend on them: the reusable workflows execute
-scripts from their pinned release, not the current source tree. Copilot workflow
-execution, credential forwarding and caller adoption belong to later changes.
+The published v1.21.0 helpers already support this source workflow wiring;
+the reusable workflows keep that fixed helper release pin. New helper files
+from the source PR are not assumed to exist in that released checkout. The new
+workflow interface itself still requires a subsequent release and explicit
+caller adoption. No production four-provider service round, account provisioning,
+secret or variable change, or automatic activation is claimed by these tests.
