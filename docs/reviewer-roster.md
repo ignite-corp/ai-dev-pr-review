@@ -60,9 +60,8 @@ withholding for unresolved majors remain in force. A roster change is not a disp
 does not add historical finding carryover or replace consumer unresolved-thread
 and folded-finding gates.
 
-The published v1.21.0 helpers already support this source workflow wiring;
-the reusable workflows keep that fixed helper release pin. New helper files
-from the source PR are not assumed to exist in that released checkout. The new
-workflow interface itself still requires a subsequent release and explicit
-caller adoption. No production four-provider service round, account provisioning,
+The workflow interface is published from v1.22.0. Its helpers are the
+v1.21.0 ones (prepare and aggregate stay pinned there; single moves to v1.22.0
+for a docstring-only change), so no new helper file is assumed. Callers adopt
+the input explicitly. No production four-provider service round, account provisioning,
 secret or variable change, or automatic activation is claimed by these tests.

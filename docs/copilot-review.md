@@ -8,10 +8,8 @@ provision an account: the caller must explicitly forward the optional
 is unavailable fails and remains in the configured response denominator.
 The local driver and external runner continue dispatching their existing three.
 
-This is source workflow wiring. Published v1.21.0 provides the compatible
-adapter and roster helpers that these workflows execute; it does not publish
-this new workflow interface. A new release and explicit caller adoption are
-still required. No production four-provider service round has been verified.
+This workflow interface is published from v1.22.0; callers adopt it
+explicitly. No production four-provider service round has been verified.
 
 Install `.github/scripts/requirements.txt` (Copilot SDK 1.0.28), and provision a
 trusted Copilot CLI 1.0.105 executable outside the PR checkout. The adapter
