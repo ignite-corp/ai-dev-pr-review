@@ -474,14 +474,30 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+      # The token's one use is `gh pr review` in aggregate_reviews.py, so it
+      # gets what the cross run's target token already posts reviews with:
+      # `pull-requests: write`, and `contents: read`. That the approval still
+      # counts toward a required review is reasoned, not measured: GitHub
+      # re-evaluates a standing approval after this token is revoked at job
+      # end, so the count rests on the App's own write access, which the
+      # installation keeps. No repository with a required review has yet
+      # taken an approval from a narrowed token (AT-3394, 2026-11-11); if the
+      # first one after release does not count it, request
+      # `permission-contents: write` here. Unnarrowed, the token carried every
+      # permission the installation holds, and a permission later added to
+      # the App reached it without any change here (AT-3394). The pin is the
+      # target mint's: v1.12.0 reads `INPUT_PERMISSION_*` while the runner
+      # exports `INPUT_PERMISSION-*`, so it ignores every permission-* input.
       - name: Mint reviewer App token
         id: reviewer_token
         if: ${{ steps.target.outputs.cross != 'true' && vars.REVIEWER_APP_ID != '' && steps.reviewer_key.outputs.present == 'true' }}
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         continue-on-error: true
         with:
           app-id: ${{ vars.REVIEWER_APP_ID }}
           private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
 
       - name: Aggregate and post verdict
         if: inputs.skip_reason == ''

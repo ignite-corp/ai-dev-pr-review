@@ -140,6 +140,15 @@ like something else.
 - Auth-control installation tokens are scoped to the `ai-dev-pr-review`
   repository, while the organization-variable permission remains org-wide.
   Raw keys are action inputs, not reviewer model environment variables.
+- Every mint of this App names its permissions, so a permission added to the
+  App does not reach a token unasked (AT-3394): the auth-control mints
+  request `organization_actions_variables: write` alone, and the aggregate's
+  approval mint `contents: read` and `pull_requests: write`, as the target
+  mints do. `test_app_token_mint_permissions.py` fails a mint that names
+  none, or whose create-github-app-token pin is not on its list of releases
+  confirmed to apply those inputs (v1.12.0 ignores them); a pin bump re-reads
+  the release's `dist/main.cjs` and extends that list. This narrows the
+  tokens the workflows mint, not what the key can mint.
 - Installed on **both ignite-corp and ignite-pilot-org**. This bullet gives the
   permissions the cross-org question turns on, not the full grant: it holds
   `pull_requests: write` on each, so it is the only one of the two that can act

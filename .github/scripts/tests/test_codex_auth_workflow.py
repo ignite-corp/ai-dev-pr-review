@@ -663,7 +663,7 @@ def test_auth_selection_and_actual_approval_presence_shell(
     assert mint["with"]["app-id"] == "${{ vars.REVIEWER_APP_ID }}"
     assert (
         mint["uses"]
-        == "actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547"
+        == "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
     )
     assert "steps.auth_key.outputs.present == 'true'" in mint["if"]
     check = _step("Check auth App key present (auth switch)")
