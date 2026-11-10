@@ -227,7 +227,7 @@ All workflows accept `workflow_call` inputs:
 
 | Input | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `reviewers` | string | false | `["claude","codex","gemini"]` | Source workflow ordered JSON roster. Supported IDs: `claude`, `codex`, `gemini`, `copilot`. Failed reviewers remain in the denominator. Requires a new release and caller adoption; the current release does not expose this input. See [reviewer selection](docs/reviewer-roster.md). |
+| `reviewers` | string | false | `["claude","codex","gemini"]` | Source workflow ordered JSON roster. Supported IDs: `claude`, `codex`, `gemini`, `copilot`. Failed reviewers remain in the denominator. Available from v1.22.0; callers adopt it explicitly. See [reviewer selection](docs/reviewer-roster.md). |
 | `pr_number` | string | false | `""` | Required only when triggered via `workflow_dispatch`. On `pull_request`, the orchestrator reads `github.event.pull_request.number`. |
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | Path INSIDE THE CONSUMER REPO to the per-repo system prompt. The prepare workflow `git show`s this from the PR's base branch (not from PR head) to prevent prompt injection. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | Same path semantics. |

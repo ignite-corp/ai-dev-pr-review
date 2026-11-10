@@ -215,7 +215,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 | 입력 | 타입 | 필수 | 기본값 | 비고 |
 |---|---|---|---|---|
-| `reviewers` | string | false | `["claude","codex","gemini"]` | 소스 워크플로의 순서 있는 리뷰어 JSON 배열. 지원 ID: `claude`, `codex`, `gemini`, `copilot`. 실패한 리뷰어도 분모에 남습니다. 새 릴리스와 호출부 채택이 필요하며, 현재 릴리스에는 이 입력이 없습니다. [리뷰어 선택](docs/reviewer-roster.md) 참고. |
+| `reviewers` | string | false | `["claude","codex","gemini"]` | 소스 워크플로의 순서 있는 리뷰어 JSON 배열. 지원 ID: `claude`, `codex`, `gemini`, `copilot`. 실패한 리뷰어도 분모에 남습니다. v1.22.0부터 제공되며, 호출부가 명시적으로 채택해야 합니다. [리뷰어 선택](docs/reviewer-roster.md) 참고. |
 | `pr_number` | string | false | `""` | `workflow_dispatch`로 트리거될 때만 필수. `pull_request`에서는 orchestrator가 `github.event.pull_request.number`를 읽음. |
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | 레포별 시스템 프롬프트의 **소비자 레포 내부** 경로. prepare 워크플로우가 프롬프트 인젝션 방지를 위해 PR head가 아닌 PR의 base 브랜치에서 `git show`로 읽음. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | 동일한 경로 의미. |
