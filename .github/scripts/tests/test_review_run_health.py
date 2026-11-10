@@ -388,6 +388,110 @@ def test_cli_startup_failures_with_fetched_empty_jobs_flag(
     assert f"most common: {h.NO_FAILED_JOB}" in capsys.readouterr().out
 
 
+def test_listed_runs_keep_old_runs_and_drop_unfinished_ones() -> None:
+    """Consumer check 1 chose its own runs: no window, no cap (AT-3393)."""
+    runs = [
+        _run(1, h.LOOKBACK_HOURS * 60 * 7, "failure"),
+        _run(2, 1, "success"),
+        {**_run(3, 2, "failure"), "status": "in_progress"},
+        _run(4, 3, "cancelled"),
+    ]
+    runs += [_run(n, 100 + n, "success") for n in range(10, 10 + h.SAMPLE_SIZE)]
+    listed = h.listed_runs(runs)
+    assert [r.run_id for r in listed[:2]] == [2, 10]
+    assert listed[-1].run_id == 1
+    assert len(listed) == h.SAMPLE_SIZE + 2
+
+
+def _cli_count(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    runs: list[dict[str, object]],
+    jobs: list[dict[str, object]],
+) -> tuple[int, str]:
+    runs_file = _write_jsonl(tmp_path / "runs.jsonl", runs)
+    jobs_file = _write_jsonl(tmp_path / "jobs.jsonl", jobs)
+    code = h.main(["count", "--runs", runs_file, "--jobs", jobs_file])
+    return code, capsys.readouterr().out.strip()
+
+
+def _consumer_verdict_jobs(run_id: int) -> list[dict[str, object]]:
+    """A consumer's blocked verdict has no finish job beside it."""
+    return [
+        _job(run_id, AGGREGATE_JOB, h.VERDICT_STEP),
+        _annotation(run_id, POSTED_BLOCK),
+    ]
+
+
+def test_cli_count_a_verdict_only_window_counts_no_infrastructure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The 2026-11-10 base entry: two rounds of one PR blocked on majors,
+    days older than the runner's window, which count ignores."""
+    old = h.LOOKBACK_HOURS * 60 * 3
+    runs = [
+        _run(1, old, "success"),
+        _run(2, old + 8, "failure"),
+        _run(3, old + 16, "failure"),
+    ]
+    fetched: list[dict[str, object]] = [{"run_id": 2}, {"run_id": 3}]
+    jobs = _consumer_verdict_jobs(2) + _consumer_verdict_jobs(3) + fetched
+    assert _cli_count(tmp_path, capsys, runs, jobs) == (0, "0 2")
+
+
+def test_cli_count_an_infrastructure_window_counts_every_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = [_run(n, n, "failure") for n in (1, 2)] + [_run(3, 3, "startup_failure")]
+    jobs = _outage_jobs(1) + _outage_jobs(2) + [{"run_id": 3}]
+    assert _cli_count(tmp_path, capsys, runs, jobs) == (0, "3 0")
+
+
+def test_cli_count_a_mixed_window_counts_only_infrastructure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runs = [_run(1, 1, "failure"), _run(2, 2, "failure"), _run(3, 3, "failure")]
+    jobs = _outage_jobs(1) + _consumer_verdict_jobs(2) + _consumer_verdict_jobs(3)
+    assert _cli_count(tmp_path, capsys, runs, jobs) == (0, "1 2")
+
+
+def test_cli_count_without_job_data_is_not_judged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out = _cli_count(tmp_path, capsys, [_run(1, 1, "failure")], [])
+    assert code == 2
+    assert "not judged" in out
+
+
+def test_cli_select_as_listed_ignores_the_window(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = h.LOOKBACK_HOURS * 60 * 2
+    runs = [_run(1, old, "failure"), _run(2, 1, "success")]
+    runs_file = _write_jsonl(tmp_path / "runs.jsonl", runs)
+    now = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert h.main(["select", "--runs", runs_file, "--now", now]) == 0
+    assert capsys.readouterr().out.split() == []
+    assert h.main(["select", "--as-listed", "--runs", runs_file]) == 0
+    assert capsys.readouterr().out.split() == ["1"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["select", "--runs", "r", "--now", "2026-11-10T00:00:00Z", "--as-listed"],
+        ["judge", "--runs", "r", "--jobs", "j", "--as-listed"],
+        ["count", "--runs", "r", "--jobs", "j", "--as-listed"],
+        ["count", "--runs", "r", "--jobs", "j", "--now", "2026-11-10T00:00:00Z"],
+    ],
+    ids=["now-and-as-listed", "judge-as-listed", "count-as-listed", "count-now"],
+)
+def test_cli_refuses_a_flag_the_mode_would_ignore(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        h.main(argv)
+    assert raised.value.code == 2
+
+
 def test_cli_missing_job_data_is_not_judged(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
