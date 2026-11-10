@@ -240,8 +240,8 @@ jobs:
     if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      # Needed for .github/scripts/pin_freshness.py and prompt_guidance.py
-      # (stdlib only, no install).
+      # Needed for .github/scripts/pin_freshness.py, prompt_guidance.py and
+      # review_run_health.py (stdlib only, no install).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Mint App token
@@ -308,6 +308,7 @@ jobs:
           RUNNER_REPO="ignite-corp/ai-dev-pr-review-runner"
           RUNNER_PROMPT_DIR="default-prompts"
           RUNNER_WORKFLOW=".github/workflows/review.yml"
+          RUN_HEALTH="${GITHUB_WORKSPACE}/.github/scripts/review_run_health.py"
 
           # Stale cutoff for known-bad startup_failure runs
           STALE_BEFORE="2026-06-09T00:00:00Z"
@@ -909,11 +910,11 @@ jobs:
             echo "::endgroup::"
           done
 
-          # The runner's default prompts and its review pin, after the
-          # consumers: the runner is not a consumer, so it neither counts in
-          # scan_errors nor takes an entry index, and a flag here raises its
-          # own error rather than the consumers' one.
-          echo "::group::Runner default prompts and review pin"
+          # The runner's default prompts, its review pin and its review runs,
+          # after the consumers: the runner is not a consumer, so it neither
+          # counts in scan_errors nor takes an entry index, and a flag here
+          # raises its own error rather than the consumers' one.
+          echo "::group::Runner default prompts, review pin and review runs"
           runner_not_evaluated=0
           runner_flag=0
           if [ "$prompt_check" -eq 0 ]; then
@@ -984,6 +985,79 @@ jobs:
             fi
           fi
           echo "| ${RUNNER_REPO} \`${RUNNER_WORKFLOW}\` pin | ${pin_result} |" >> "$SUMMARY"
+
+          # The runner's review runs (AT-3383). The prompts and pin above
+          # can be fine while every review fails: on 2026-11-09 a runner
+          # image change failed 62 reviews in a row at setup-python and this
+          # job stayed green. review_run_health.py tells an infrastructure
+          # failure from a review whose verdict blocked the run, and names
+          # the failing job and step. Run titles carry the target repository,
+          # so the --jq projection drops them before anything is written; run
+          # ids stay in local variables and files, never in the log.
+          run_health_result="not evaluated"
+          runner_runs=$(mktemp)
+          runner_jobs=$(mktemp)
+          runs_read=0
+          if run_since=$(python3 "$RUN_HEALTH" since) \
+            && gh api --paginate \
+              "repos/${RUNNER_REPO}/actions/workflows/${RUNNER_WORKFLOW##*/}/runs?per_page=100&status=completed&created=>=${run_since}" \
+              --jq '.workflow_runs[] | {id, created_at, status, conclusion}' > "$runner_runs" \
+            && failed_run_ids=$(python3 "$RUN_HEALTH" select --runs "$runner_runs"); then
+            runs_read=1
+            for run_id in $failed_run_ids; do
+              if ! gh api --paginate "repos/${RUNNER_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
+                --jq '.jobs[] | {run_id, id, name, conclusion, steps: [.steps[]? | {name, conclusion}]}' >> "$runner_jobs"; then
+                runs_read=0
+                break
+              fi
+              # A run that started no job (startup_failure) lists none, so
+              # the projection above writes nothing for it. Record the fetch
+              # itself: fetched-and-empty is an infrastructure failure,
+              # never-fetched is not judged. run_id is an integer the script
+              # printed.
+              printf '{"run_id": %s}\n' "$run_id" >> "$runner_jobs"
+            done
+          fi
+          # The aggregate's verdict step exits 1 both on a deliberately
+          # blocked verdict and on failing to post one; only the block
+          # writes its annotation, so read the annotations of each such
+          # job. The messages are matched by the script, never printed;
+          # job_id is an integer the script printed, and the array is jq's.
+          if [ "$runs_read" -eq 1 ]; then
+            if verdict_job_ids=$(python3 "$RUN_HEALTH" annotate --jobs "$runner_jobs"); then
+              for job_id in $verdict_job_ids; do
+                if ! job_annotations=$(gh api "repos/${RUNNER_REPO}/check-runs/${job_id}/annotations?per_page=100" \
+                  --jq '[.[] | .message]'); then
+                  runs_read=0
+                  break
+                fi
+                printf '{"job_id": %s, "annotations": %s}\n' "$job_id" "$job_annotations" >> "$runner_jobs"
+              done
+            else
+              runs_read=0
+            fi
+          fi
+          if [ "$runs_read" -eq 0 ]; then
+            echo "  [WARN] could not read the runner's review runs -- not evaluated this run"
+            runner_not_evaluated=1
+          elif run_health=$(python3 "$RUN_HEALTH" judge --runs "$runner_runs" --jobs "$runner_jobs"); then
+            echo "  runner review runs: ${run_health}"
+            run_health_result="${run_health}"
+          else
+            case $? in
+              1)
+                echo "  [FLAG] runner review runs: ${run_health}"
+                runner_flag=1
+                run_health_result="FLAG: ${run_health}"
+                ;;
+              *)
+                echo "  [WARN] runner review runs: ${run_health} -- not evaluated this run"
+                runner_not_evaluated=1
+                ;;
+            esac
+          fi
+          rm -f "$runner_runs" "$runner_jobs"
+          echo "| ${RUNNER_REPO} \`${RUNNER_WORKFLOW}\` runs | ${run_health_result} |" >> "$SUMMARY"
           echo "::endgroup::"
 
           # Informational notes (always printed, never failure)
@@ -1004,7 +1078,7 @@ jobs:
             echo "::notice::${prompt_paths_unread} consumer(s) declare a prompt path this check does not read -- prompt availability not evaluated for them"
           fi
           if [ "$runner_not_evaluated" -ne 0 ]; then
-            echo "::notice::runner default prompts or review pin could not be fetched -- not evaluated"
+            echo "::notice::runner default prompts, review pin or review runs could not be fetched -- not evaluated"
           fi
           if [ "$dependabot_org_denied" -gt 0 ]; then
             echo "::notice::org-level Dependabot secrets could not be read (HTTP 403) -- usually the fleet App lacks the organization permission \"Dependabot secrets\" (organization_dependabot_secrets: read); a rate limit also answers 403; org level not read for ${dependabot_org_denied} secret check(s)"
@@ -1014,7 +1088,7 @@ jobs:
           fi
 
           if [ "$runner_flag" -ne 0 ]; then
-            echo "::error::Runner default prompts or review pin flagged"
+            echo "::error::Runner default prompts, review pin or review runs flagged"
           fi
           if [ "$any_flag" -ne 0 ]; then
             echo "::error::One or more consumers flagged"
