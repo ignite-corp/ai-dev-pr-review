@@ -71,13 +71,10 @@ TARGET_HEAD_STEP = "Resolve target PR head"
 HEAD_SHA_GUARD = "Require head_sha on a cross run"
 TARGET_CHECKOUT = "Checkout caller repo (PR head)"
 HELPER_CHECKOUT_REPO = "ignite-corp/ai-dev-pr-review"
-# The pin every cross-owner mint in this repo uses (consumer-health.yml);
-# single.yml's auth-switch mint keeps its own.
+# The pin every mint in this repo uses (consumer-health.yml); the auth-switch
+# mint left v1.12.0, which ignores permission-* inputs (AT-3394).
 APP_TOKEN_PIN = (
     "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
-)
-AUTH_SWITCH_PIN = (
-    "actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547"
 )
 
 # Sites that stay on the CALLER on purpose. Keyed by (file, step name,
@@ -322,9 +319,10 @@ class TestDefaultIsTodaysBehaviour:
 
     def test_auth_switch_mint_stays_on_corp_control_repository(self) -> None:
         mint = _step(SINGLE, "Mint corp App token (auth switch)")
-        assert mint["uses"] == AUTH_SWITCH_PIN
+        assert mint["uses"] == APP_TOKEN_PIN
         assert mint["with"]["owner"] == "ignite-corp"
         assert mint["with"]["repositories"] == "ai-dev-pr-review"
+        assert mint["with"]["permission-organization-actions-variables"] == "write"
 
 
 class TestAggregatePostingIdentity:

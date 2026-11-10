@@ -787,7 +787,15 @@ jobs:
           vars.REVIEWER_APP_ID != '' &&
           steps.auth_key.outputs.present == 'true'
         continue-on-error: true
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        # switch_claude_auth.py and codex_review_auth.py call only
+        # /orgs/ignite-corp/actions/variables, so the token gets that one
+        # permission and nothing on any repository (AT-3394). The input is
+        # not declared in the action's action.yml, so the runner warns
+        # "Unexpected input"; the action still forwards every
+        # INPUT_PERMISSION-* it is given (actions/create-github-app-token
+        # #359). Why not the v1.12.0 pin: base-ai-review-aggregate.yml,
+        # above 'Mint reviewer App token'.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ vars.REVIEWER_APP_ID }}
           private-key: ${{ secrets.AUTH_APP_PRIVATE_KEY || secrets.REVIEWER_APP_PRIVATE_KEY }}
@@ -795,6 +803,7 @@ jobs:
           # Org-variable grants remain organization-wide. Limit the token
           # to the control repository, excluding other consumer repositories.
           repositories: ai-dev-pr-review
+          permission-organization-actions-variables: write
 
       - name: Switch Claude auth on usage limit
         if: >-

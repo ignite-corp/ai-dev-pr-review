@@ -265,11 +265,10 @@ jobs:
       # installations do not hold it (run 38830491912), and asking for a
       # permission the installation lacks fails the mint. The pin is the
       # one the cross-owner mint in consumer-health.yml uses.
-      # single.yml's auth-switch mint keeps its own pin and
-      # `owner: ignite-corp`: that token writes a corp org variable, not
-      # the target. Skipped, not continue-on-error: with no target token
-      # the checkout below would reach for github.token and fail on the
-      # target anyway.
+      # single.yml's auth-switch mint keeps `owner: ignite-corp`: that
+      # token writes a corp org variable, not the target. Skipped, not
+      # continue-on-error: with no target token the checkout below would
+      # reach for github.token and fail on the target anyway.
       - name: Mint target App token
         id: target_token
         if: steps.target.outputs.cross == 'true'
