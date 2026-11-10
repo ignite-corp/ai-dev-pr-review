@@ -57,6 +57,11 @@ on:
         description: "PR number to review (required for manual trigger)"
         required: true
         type: string
+      reviewers:
+        description: "Ordered reviewer JSON array; Copilot requires its account secret"
+        required: false
+        type: string
+        default: '["claude","codex","gemini"]'
 
 permissions:
   contents: read
@@ -130,6 +135,7 @@ jobs:
       # the test.
       skip_reason: ${{ needs.guard.outputs.skip_reason || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository) && 'fork PR -- the org secrets the reviewers need are not available to it' || '' }}
       pr_number: ${{ inputs.pr_number || '' }}
+      reviewers: ${{ inputs.reviewers || '["claude","codex","gemini"]' }}
       # This repo has no .github/prompts; reuse the starter templates that
       # consumers copy from examples/prompts.
       code-review-system-prompt-path: examples/prompts/code-review-system.md
@@ -154,6 +160,7 @@ jobs:
       OPENAI_API_KEY: ${{ (needs.guard.outputs.skip_reason != '' || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository)) && 'unused-review-skipped' || secrets.OPENAI_API_KEY }}
       GOOGLE_AI_API_KEY: ${{ (needs.guard.outputs.skip_reason != '' || (github.event_name != 'workflow_dispatch' && github.event.pull_request.head.repo.full_name != github.repository)) && 'unused-review-skipped' || secrets.GOOGLE_AI_API_KEY }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       # Used by the claude job's usage-limit auth-switch post-step (AT-1606);

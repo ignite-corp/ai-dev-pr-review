@@ -84,6 +84,9 @@ AUTH_SWITCH_PIN = (
 # location); a `github.repository` or `GH_TOKEN` anywhere else must use the
 # target-first expression. Every entry says why.
 CALLER_SIDE: dict[tuple[str, str, str], str] = {
+    (SINGLE.name, "Run Copilot review", "env:COPILOT_GITHUB_TOKEN"): (
+        "the caller-supplied Copilot account credential, never a target API token"
+    ),
     (
         PREPARE.name,
         RESOLVE_STEP,
@@ -169,6 +172,9 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
 # the target token": each names a credential that is wrong in any other
 # spelling.
 CALLER_SIDE_VALUE: dict[tuple[str, str, str], str] = {
+    (SINGLE.name, "Run Copilot review", "env:COPILOT_GITHUB_TOKEN"): (
+        "${{ secrets.COPILOT_GITHUB_TOKEN }}"
+    ),
     (
         SINGLE.name,
         "Authenticate Codex CLI with preferred credential",
@@ -370,7 +376,7 @@ class TestOrchestratorThreading:
         called = {
             name: job for name, job in _jobs(ORCHESTRATOR).items() if "uses" in job
         }
-        assert len(called) == 8, sorted(called)
+        assert len(called) == 10, sorted(called)
         for name, job in called.items():
             assert job["with"].get("target_repo") == TARGET_INPUT, (
                 f"job {name} does not pass target_repo"

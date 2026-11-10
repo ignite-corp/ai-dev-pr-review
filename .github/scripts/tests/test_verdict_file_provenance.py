@@ -35,6 +35,7 @@ import yaml
 # exists to catch -- a fourth reviewer whose committed verdict file no clear
 # step removes.
 from github_pr_support import REVIEWER_NAMES
+from reviewer_roster import SUPPORTED_REVIEWERS
 
 _WORKFLOWS = Path(__file__).resolve().parents[2] / "workflows"
 _SINGLE = _WORKFLOWS / "base-ai-review-single.yml"
@@ -579,7 +580,7 @@ def test_aggregate_clears_every_verdict_file_before_the_first_download() -> None
 
     The clear's roster is written out by hand in the shell loop -- the step
     runs before `setup-python`, so the workflow cannot import the constant
-    at runtime -- and is held to `REVIEWER_NAMES` here instead. A name added
+    at runtime -- and is held to `SUPPORTED_REVIEWERS` here instead. A name added
     to that constant reaches `load_reviews()` and the loop alike; a name
     added to it and not the loop is AT-2614 reopened for that reviewer.
     """
@@ -595,7 +596,7 @@ def test_aggregate_clears_every_verdict_file_before_the_first_download() -> None
     clears = [
         i
         for i, step in enumerate(steps)
-        if any(_clears(step, reviewer) for reviewer in REVIEWER_NAMES)
+        if any(_clears(step, reviewer) for reviewer in SUPPORTED_REVIEWERS)
     ]
     assert clears, "no aggregate step clears any review-<name>.json file"
     clear = min(clears)
@@ -604,12 +605,12 @@ def test_aggregate_clears_every_verdict_file_before_the_first_download() -> None
     # behind it at all, was not. One word here makes the removal advisory
     # and the PR's committed file reaches load_reviews() on a green suite.
     _assert_not_advisory(steps[clear], "aggregate clear")
-    assert _loop_roster(steps[clear]) == set(REVIEWER_NAMES), (
+    assert _loop_roster(steps[clear]) == set(SUPPORTED_REVIEWERS), (
         "the aggregate clear's hand-written roster has drifted from "
-        "github_pr_support.REVIEWER_NAMES, which is what aggregate_reviews."
+        "reviewer_roster.SUPPORTED_REVIEWERS, which is what aggregate_reviews."
         "REVIEWERS reads review-<name>.json out of the CWD for"
     )
-    assert all(_clears(steps[clear], reviewer) for reviewer in REVIEWER_NAMES), (
+    assert all(_clears(steps[clear], reviewer) for reviewer in SUPPORTED_REVIEWERS), (
         "the aggregate's clear step does not remove every review-<name>.json"
     )
     assert checkout < clear < min(downloads), (

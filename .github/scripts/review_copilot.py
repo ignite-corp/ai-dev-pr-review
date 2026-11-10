@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone, included-quota Copilot review; not wired into the reviewer roster."""
+"""Included-quota Copilot review for the optional selected Actions roster."""
 
 from __future__ import annotations
 

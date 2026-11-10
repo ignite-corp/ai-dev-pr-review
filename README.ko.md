@@ -35,13 +35,14 @@ Actions·로컬·cross-repo 경로 사이의 경계는 [`docs/tasks/AT-2564/desi
 
 ## 소비자 레포에 필요한 시크릿
 
-`GOOGLE_AI_API_KEY`는 필수입니다. Codex 리뷰어는 `CODEX_ACCESS_TOKEN` 또는 `OPENAI_API_KEY` 중 하나 이상이 필요하며, 구독 한도 소진 시 API로 전환하려면 둘 다 설정하세요([Codex 인증](docs/codex-auth.md) 참고). Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
+기본 3인 구성에서는 `GOOGLE_AI_API_KEY`가 필수이며, Gemini를 선택하지 않으면 필요하지 않습니다. Codex 리뷰어는 `CODEX_ACCESS_TOKEN` 또는 `OPENAI_API_KEY` 중 하나 이상이 필요하며, 구독 한도 소진 시 API로 전환하려면 둘 다 설정하세요([Codex 인증](docs/codex-auth.md) 참고). Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
 
 | 시크릿 | 필수 | 사용처 | 비고 |
 |---|---|---|---|
+| `COPILOT_GITHUB_TOKEN` | 선택 시 | Copilot 리뷰어 | 명시적으로 선택한 Copilot 계정 토큰. [소스 워크플로 연결](docs/copilot-review.md) 참고. |
 | `CODEX_ACCESS_TOKEN` | 우선 사용 | Codex 리뷰어 | 워크스페이스 액세스 토큰. [Codex 인증](docs/codex-auth.md) 참고. |
 | `OPENAI_API_KEY` | API 전환 시 | Codex 리뷰어 | 구독 한도 소진 후 유료 API 전환 또는 API 전용 구성에 필요. |
-| `GOOGLE_AI_API_KEY` | 예 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
+| `GOOGLE_AI_API_KEY` | 선택 시 | Gemini 리뷰어 | 조직 또는 레포 시크릿. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 둘 중 하나 | Claude 리뷰어 | Claude Pro/Max 구독 OAuth 토큰(`claude setup-token`). |
 | `ANTHROPIC_API_KEY` | 둘 중 하나 | Claude 리뷰어 | 일반 `sk-ant-` API 키. |
 | `AUTH_APP_PRIVATE_KEY` | no | Claude/Codex auth control | Optional alias for the existing App key, with `REVIEWER_APP_ID`; preferred over `REVIEWER_APP_PRIVATE_KEY` for central auth switching. Never forwarded to prepare or aggregate. Same-repository callers may pass only this alias to keep auth control separate from App approval; see [credential boundaries](docs/codex-auth.md#configuration-and-availability). Cross-repository reporting still requires the reviewer key. |
@@ -214,6 +215,7 @@ uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator
 
 | 입력 | 타입 | 필수 | 기본값 | 비고 |
 |---|---|---|---|---|
+| `reviewers` | string | false | `["claude","codex","gemini"]` | 소스 워크플로의 순서 있는 리뷰어 JSON 배열. 지원 ID: `claude`, `codex`, `gemini`, `copilot`. 실패한 리뷰어도 분모에 남습니다. 새 릴리스와 호출부 채택이 필요하며, 현재 릴리스에는 이 입력이 없습니다. [리뷰어 선택](docs/reviewer-roster.md) 참고. |
 | `pr_number` | string | false | `""` | `workflow_dispatch`로 트리거될 때만 필수. `pull_request`에서는 orchestrator가 `github.event.pull_request.number`를 읽음. |
 | `code-review-system-prompt-path` | string | false | `.github/prompts/code-review-system.md` | 레포별 시스템 프롬프트의 **소비자 레포 내부** 경로. prepare 워크플로우가 프롬프트 인젝션 방지를 위해 PR head가 아닌 PR의 base 브랜치에서 `git show`로 읽음. |
 | `code-review-checklist-path` | string | false | `.github/prompts/code-review-checklist.md` | 동일한 경로 의미. |

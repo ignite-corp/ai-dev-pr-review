@@ -3,6 +3,11 @@ name: Base AI Review (aggregate)
 on:
   workflow_call:
     inputs:
+      reviewers:
+        description: 'Ordered JSON array of distinct reviewers: claude, codex, gemini, copilot. Failed reviewers remain in the response denominator'
+        required: false
+        type: string
+        default: '["claude","codex","gemini"]'
       head_sha:
         type: string
         required: false
@@ -112,6 +117,11 @@ on:
         required: false
         default: ""
         description: "Conclusion of the gemini reviewer job (success/failure/cancelled/skipped)"
+      copilot_result:
+        type: string
+        required: false
+        default: ""
+        description: "Conclusion of the copilot reviewer job (success/failure/cancelled/skipped)"
       skip_reason:
         type: string
         required: false
@@ -384,7 +394,7 @@ jobs:
           # self-review, where this YAML comes from the PR and the scripts
           # from the release tag.
           legacy=(verdict-openai.json verdict-codex.json)
-          for reviewer in claude gemini codex; do
+          for reviewer in claude gemini codex copilot; do
             # rm -rf, not rm -f: a directory committed at that name
             # fails a plain rm, which under the runner's bash -e takes
             # this step down and leaves the PR with no verdict posted at
@@ -424,6 +434,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: review-codex
+        continue-on-error: true
+
+      - name: Download Copilot review
+        if: inputs.skip_reason == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: review-copilot
         continue-on-error: true
 
       - if: inputs.skip_reason == ''
@@ -533,6 +550,8 @@ jobs:
           # Neither reaches the thresholds: main() short-circuits on both
           # before apply_verdict_rules.
           PR_AUTHOR: ${{ inputs.pr_author || github.event.pull_request.user.login || '' }}
+          REVIEWERS: ${{ inputs.reviewers }}
+          REVIEWER_RESULT_COPILOT: ${{ inputs.copilot_result }}
           REVIEWER_RESULT_CLAUDE: ${{ inputs.claude_result }}
           REVIEWER_RESULT_CODEX: ${{ inputs.codex_result }}
           REVIEWER_RESULT_GEMINI: ${{ inputs.gemini_result }}
