@@ -342,6 +342,36 @@ jobs:
           token: ${{ steps.target_token.outputs.token || github.token }}
           persist-credentials: false
 
+      # A token for the scripts checkout below (AT-3116). In a reusable
+      # workflow the checkout's default token is the CALLER's github.token,
+      # which reads this repository only while it is public. The reviewer
+      # App token is scoped to this one repository with `contents: read`
+      # and nothing else. Skipped when the key is not forwarded -- secrets
+      # cannot be read in an `if:`, hence the one-bit step -- and
+      # continue-on-error, so either way the checkout falls back to
+      # github.token: a public tree is still read, and a private one fails
+      # at the checkout as it would have without this step. The same two
+      # steps sit before the scripts checkout in single.yml and
+      # aggregate.yml; this comment is their one home, and
+      # test_control_repo_checkout_token.py holds them equal.
+      - name: Check reviewer App key present (scripts checkout)
+        id: scripts_key
+        env:
+          REVIEWER_APP_KEY_PRESENT: ${{ secrets.REVIEWER_APP_PRIVATE_KEY != '' }}
+        run: echo "present=${REVIEWER_APP_KEY_PRESENT}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint scripts App token
+        id: scripts_token
+        if: vars.REVIEWER_APP_ID != '' && steps.scripts_key.outputs.present == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ignite-corp
+          repositories: ai-dev-pr-review
+          permission-contents: read
+
       # Checkout this reusable repo for the helper scripts.
       # WARNING: ref below is hardcoded to this release's tag. When cutting a new
       # version, FIRST bump this literal to the new tag in a release PR, THEN tag
@@ -355,6 +385,7 @@ jobs:
           ref: v1.21.0
           path: .ai-dev-pr-review
           fetch-depth: 1
+          token: ${{ steps.scripts_token.outputs.token || github.token }}
           persist-credentials: false
 
       - name: Validate ordered reviewer roster

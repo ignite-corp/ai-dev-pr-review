@@ -71,6 +71,11 @@ TARGET_HEAD_STEP = "Resolve target PR head"
 HEAD_SHA_GUARD = "Require head_sha on a cross run"
 TARGET_CHECKOUT = "Checkout caller repo (PR head)"
 HELPER_CHECKOUT_REPO = "ignite-corp/ai-dev-pr-review"
+HELPER_CHECKOUT = "Checkout ai-dev-pr-review scripts (pinned to release tag)"
+# The helper checkout reads this repository, never the target, so its token
+# is the one minted for this repository (AT-3116), falling back to the
+# caller's github.token as before.
+SCRIPTS_TOKEN_EXPR = "${{ steps.scripts_token.outputs.token || github.token }}"
 # The pin every mint in this repo uses (consumer-health.yml); the auth-switch
 # mint left v1.12.0, which ignores permission-* inputs (AT-3394).
 APP_TOKEN_PIN = (
@@ -163,6 +168,12 @@ CALLER_SIDE: dict[tuple[str, str, str], str] = {
         "not a GitHub token: the Anthropic subscription credential, which names no "
         "repository"
     ),
+    **{
+        (path.name, HELPER_CHECKOUT, "with:token"): (
+            "reads this control repository, not the target (AT-3116)"
+        )
+        for path in JOB_FILES
+    },
 }
 
 # Caller-side token sites whose value is one exact thing, not merely "not
@@ -197,6 +208,10 @@ CALLER_SIDE_VALUE: dict[tuple[str, str, str], str] = {
     (SINGLE.name, "Switch Claude auth on usage limit", "env:GH_TOKEN"): (
         "${{ steps.auth_token_corp.outputs.token }}"
     ),
+    **{
+        (path.name, HELPER_CHECKOUT, "with:token"): SCRIPTS_TOKEN_EXPR
+        for path in JOB_FILES
+    },
 }
 
 _EXPRESSION = re.compile(r"\$\{\{(.+?)\}\}")
@@ -303,7 +318,7 @@ class TestDefaultIsTodaysBehaviour:
         assert "continue-on-error" not in mint
 
     @pytest.mark.parametrize("path", JOB_FILES, ids=lambda p: p.name)
-    def test_helper_checkout_is_untouched(self, path: Path) -> None:
+    def test_helper_checkout_reads_only_this_repository(self, path: Path) -> None:
         helpers = [
             s
             for s in _steps(path)
@@ -311,10 +326,13 @@ class TestDefaultIsTodaysBehaviour:
             and s["with"].get("repository") == HELPER_CHECKOUT_REPO
         ]
         assert len(helpers) == 1, f"{path.name}: expected one helper checkout"
-        assert "token" not in helpers[0]["with"]
+        # Not the target token: the helper tree is this repository's
+        # release, never the repository under review (AT-3116).
+        assert helpers[0]["with"]["token"] == SCRIPTS_TOKEN_EXPR
         assert helpers[0]["with"]["path"] == ".ai-dev-pr-review"
-        # Its default token is github.token, and it sits in the same
-        # workspace the reviewers walk (round 6).
+        # Its token -- the scripts App token, or github.token when none was
+        # minted (AT-3116) -- sits in the same workspace the reviewers walk
+        # (round 6).
         assert helpers[0]["with"]["persist-credentials"] is False
 
     def test_auth_switch_mint_stays_on_corp_control_repository(self) -> None:
@@ -628,8 +646,9 @@ class TestJobThreading:
         # checkout that takes the target token refuses to persist it; the
         # steps that still fetch (prepare) get the credential through their
         # own env instead. EVERY checkout, not only the target-token ones:
-        # the helper clone's default token is the caller's github.token, in
-        # the same tree one directory over (round 6).
+        # the helper clone's token -- the scripts App token, or the caller's
+        # github.token when none was minted (AT-3116) -- sits in the same
+        # tree one directory over (round 6).
         checkouts = [
             s
             for s in _steps(path)
