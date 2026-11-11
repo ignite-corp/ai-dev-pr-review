@@ -402,7 +402,7 @@ def test_local_reused_workdir_gets_fresh_nonce_and_aggregate_only_clears_old_non
     monkeypatch.setattr(driver, "policy_gate", lambda *a: {"POLICY_SKIPPED": "false"})
     posted_identities = []
     monkeypatch.setattr(
-        driver, "run_review_stage", lambda *a: posted_identities.append(a[-1])
+        driver, "run_review_stage", lambda *a: posted_identities.append(a[5])
     )
     config = driver.LocalConfig.load()
     args = driver.parse_args(["o/r", "179"])

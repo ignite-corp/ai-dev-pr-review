@@ -24,6 +24,8 @@ from pathlib import Path
 
 import yaml
 
+from reviewer_roster import REVIEWERS_ENV, parse_reviewers
+
 WORKFLOW_DIR = Path(__file__).resolve().parent.parent / "workflows"
 WORKFLOW_GLOB = "base-ai-review-*.yml"
 ORCHESTRATOR_YML = WORKFLOW_DIR / "base-ai-review-orchestrator.yml"
@@ -158,6 +160,17 @@ class LocalConfig:
             return int(raw)
         except ValueError:
             raise ConfigError(f"Invalid {name}: {raw!r} (must be integer)") from None
+
+    def reviewers(self) -> tuple[str, ...]:
+        """Operator selection, resolved once by the driver before any PR access."""
+        raw = self.get(REVIEWERS_ENV) if self.is_overridden(REVIEWERS_ENV) else None
+        try:
+            return parse_reviewers(raw)
+        except ValueError:
+            raise ConfigError(
+                "Invalid REVIEWERS: expected a nonempty ordered JSON array"
+                " of distinct supported reviewers"
+            ) from None
 
     def get_unsigned_int(self, name: str) -> int:
         """An integer held to the workflow's own `^[0-9]+$`.

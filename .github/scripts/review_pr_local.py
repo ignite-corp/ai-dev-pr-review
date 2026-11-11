@@ -55,6 +55,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,6 @@ from github_pr_support import (
     DELETIONS_SIZE_AXIS,
     DELETIONS_SIZE_VAR,
     REVIEW_MARKER,
-    REVIEWER_NAMES,
     SIZE_WARN_PERCENT_DEFAULT,
     SIZE_WARN_PERCENT_MAX,
     SIZE_WARN_PERCENT_MIN,
@@ -93,7 +93,8 @@ from local_review_config import (
 )
 from local_reviewer_support import DRIVER_ENV_MARKER, reviewer_env_allowlist
 from review_coordinates import check_reviewer_coordinates
-from reviewer_roster import REVIEWERS_ENV
+from review_status import write_verdict_json
+from reviewer_roster import DEFAULT_REVIEWERS, REVIEWERS_ENV, SUPPORTED_REVIEWERS
 from reviewer_prompts import MAX_EXISTING_THREADS, MAX_THREAD_BODY_CHARS
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -105,24 +106,17 @@ POLICY_RESULT = ".review-context/lens-ignore.json"
 POLICY_FIELDS = ("policy_skipped", "excluded_count", "excluded_paths")
 THREADS_FILE = ".review-context/unresolved-threads.json"
 REVIEW_MODE_SEQUENTIAL = "sequential"
-# The order base-ai-review-orchestrator.yml chains the sequential jobs in.
-SEQUENTIAL_ORDER = ("claude", "codex", "gemini")
 REVIEWER_SCRIPTS = {
     "claude": "review_claude_local.py",
     "codex": "review_codex_local.py",
     "gemini": "review_gemini.py",
+    "copilot": "review_copilot.py",
 }
-# Deny by default (see design-record 1-4): a reviewer added to REVIEWER_NAMES and
-# missed here would never run in sequential mode and would report the
-# initial "skipped" -- a silent gap, not an error. A raise and not an
-# `assert`, because `python -O` drops asserts.
-if set(SEQUENTIAL_ORDER) != set(REVIEWER_NAMES) or set(REVIEWER_SCRIPTS) != set(
-    REVIEWER_NAMES
-):
+# Every supported identity must have a trusted script. Selection is per run.
+if set(REVIEWER_SCRIPTS) != set(SUPPORTED_REVIEWERS):
     raise RuntimeError(
-        "the reviewer tables disagree with REVIEWER_NAMES:"
-        f" names={sorted(REVIEWER_NAMES)}"
-        f" sequential={sorted(SEQUENTIAL_ORDER)}"
+        "the reviewer tables disagree with SUPPORTED_REVIEWERS:"
+        f" names={sorted(SUPPORTED_REVIEWERS)}"
         f" scripts={sorted(REVIEWER_SCRIPTS)}"
     )
 # Anchored at BOTH ends: `$` alone also matches just before a trailing
@@ -135,7 +129,7 @@ REPO_RE = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
 # than re-exported by hand.
 # Everything a run writes into the work tree, removed before each run so a
 # stale verdict is never read as this run's output. The reviewer-owned names
-# are built from REVIEWER_NAMES rather than respelled: a name that drifts
+# are built from SUPPORTED_REVIEWERS rather than respelled: a name that drifts
 # between a shim and this tuple promotes the previous run's verdict as this
 # run's answer, the failure the tuple exists to stop (design-record 3-6, R12).
 RUN_ARTIFACTS = (
@@ -148,8 +142,8 @@ RUN_ARTIFACTS = (
     "verdict-openai.json",
     "verdict-codex.json",
     ".review-context",
-    *(f"review-{name}.json" for name in REVIEWER_NAMES),
-    *(f"{name}-review.log" for name in REVIEWER_NAMES),
+    *(f"review-{name}.json" for name in SUPPORTED_REVIEWERS),
+    *(f"{name}-review.log" for name in SUPPORTED_REVIEWERS),
 )
 # What every reviewer READS and none of them authors. Split out so the check
 # below can be an equality: a name added to RUN_ARTIFACTS belongs to one
@@ -173,11 +167,12 @@ REVIEWER_ARTIFACTS = {
             "verdict-codex.json",
         ),
         "gemini": (),
+        "copilot": (),
     }.items()
 }
 _OWNED = [name for names in REVIEWER_ARTIFACTS.values() for name in names]
 if (
-    set(REVIEWER_ARTIFACTS) != set(REVIEWER_NAMES)
+    set(REVIEWER_ARTIFACTS) != set(SUPPORTED_REVIEWERS)
     or len(_OWNED) != len(set(_OWNED))
     or set(_OWNED) | set(SHARED_ARTIFACTS) != set(RUN_ARTIFACTS)
 ):
@@ -419,9 +414,11 @@ def initial_policy() -> dict[str, str]:
     return {"POLICY_SKIPPED": "false", "EXCLUDED_COUNT": "", "EXCLUDED_PATHS": ""}
 
 
-def initial_conclusions() -> dict[str, str]:
+def initial_conclusions(
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS,
+) -> dict[str, str]:
     """What the aggregate is told about a reviewer that never reported."""
-    return {name: "skipped" for name in REVIEWER_NAMES}
+    return {name: "skipped" for name in reviewers}
 
 
 def initial_size() -> dict[str, str]:
@@ -1408,6 +1405,61 @@ def reviewer_timeout_sec(name: str) -> int:
     return max(_REVIEWER_TIMEOUT_FLOOR_SEC, budget + _REVIEWER_TIMEOUT_MARGIN_SEC)
 
 
+def copilot_cli_env(work: Path, env: dict[str, str]) -> dict[str, str] | None:
+    """Resolve the operator executable and reject all PR-owned targets."""
+    # main places the review worktree directly under the per-PR run root.
+    run_dir = work.parent
+    resolved: Path | None = None
+    try:
+        cli = Path(env.get("COPILOT_CLI_PATH", ""))
+        resolved = cli.resolve(strict=True)
+        safe = (
+            cli.is_absolute()
+            and resolved.is_file()
+            and not Path(os.path.abspath(cli)).is_relative_to(
+                Path(os.path.abspath(run_dir))
+            )
+            and not resolved.is_relative_to(run_dir.resolve())
+        )
+    except (OSError, RuntimeError, ValueError):
+        safe = False
+    if not safe or resolved is None:
+        # No executable, including --version, may run from the PR run root.
+        # A recorded failure follows the adapter's successful-process /
+        # failed-review contract, so the provenance pass keeps its cause.
+        write_verdict_json(
+            work / "review-copilot.json",
+            {
+                "summary": "Copilot review failed: cli_path_invalid",
+                "status": "failed",
+                "early_exit": False,
+                "issues": [],
+                "error": "cli_path_invalid",
+            },
+        )
+        print("  copilot: failure -- cli_path_invalid")
+        return None
+    return {**env, "COPILOT_CLI_PATH": str(resolved)}
+
+
+def reviewer_argv(name: str) -> list[str]:
+    """Use only trusted script imports for the configuration-free adapter."""
+    script = str(SCRIPT_DIR / REVIEWER_SCRIPTS[name])
+    if name == "copilot":
+        # Ignore ambient Python startup/module paths, then add only the
+        # operator's trusted scripts; never import from the PR working tree.
+        return [
+            sys.executable,
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv[1]); "
+            "runpy.run_path(sys.argv[2],run_name='__main__')",
+            str(SCRIPT_DIR),
+            script,
+        ]
+    return [sys.executable, script]
+
+
 def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
     """Run one reviewer; return the conclusion aggregate_reviews.py reads.
 
@@ -1416,6 +1468,11 @@ def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
     writes a `failed` verdict (AT-1837, AT-2539, AT-2603).
     Here the exit code is in hand.
     """
+    if name == "copilot":
+        checked = copilot_cli_env(work, env)
+        if checked is None:
+            return "success"
+        env = checked
     log = work / f"{name}-review.log"
     timeout_sec = reviewer_timeout_sec(name)
     returncode: int | None = None
@@ -1426,7 +1483,7 @@ def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
             # has to reach the CLI the shim starts, and `run` exposes no pid
             # to address it by. See kill_reviewer_group.
             process = subprocess.Popen(
-                [sys.executable, str(SCRIPT_DIR / REVIEWER_SCRIPTS[name])],
+                reviewer_argv(name),
                 cwd=work,
                 env=env,
                 stdout=handle,
@@ -1452,25 +1509,8 @@ def run_reviewer(name: str, work: Path, env: dict[str, str]) -> str:
         )
         print(f"  {name}: failure (not started: {exc})")
         return "failure"
-    # A REVIEWER THE DRIVER KILLED IS A FAILURE WHATEVER IS ON DISK.
-    # `returncode` stays None on that path, so the `or wrote_verdict` term
-    # decided it alone -- and that file is not a verdict anything has
-    # checked: the CLI writes it directly (`accept_direct_write` in both
-    # shims), and the shim's own json.loads / isinstance gate and
-    # stamp_model_status are downstream of where the SIGTERM landed. Called
-    # a success it was worse than cosmetic: in sequential mode
-    # run_reviewers reads `early_exit: true` out of exactly that file and
-    # skips every reviewer after it, so a killed shim could reduce the run
-    # to no review at all and report it as one that ran.
-    #
-    # "WHATEVER IS ON DISK" is only half true of this function: the string
-    # returned here is not what aggregate_reviews.py loads, which is the
-    # file. Both halves are enforced by
-    # test_a_killed_reviewers_file_is_not_left_for_the_aggregate and not by
-    # this sentence -- the file is disowned once, at the end of the round,
-    # in disown_unauthored_verdicts, because the killed reviewer is one of
-    # three ways an unauthored file reaches that slot and clearing it here
-    # would answer one of them.
+    # Killed reviewers own no verdict: disown_unauthored_verdicts clears
+    # their files before aggregation and prevents sequential early exit.
     wrote_verdict = (work / f"review-{name}.json").is_file()
     if killed:
         conclusion = "failure"
@@ -1553,7 +1593,8 @@ def reviewer_env(
     env["EXISTING_COMMENTS"] = existing
     if config.path is not None:
         env[CONFIG_PATH_ENV] = str(config.path.resolve())
-    env[f"{name.upper()}_MODEL"] = config.get(f"{name.upper()}_MODEL")
+    if name != "copilot":
+        env[f"{name.upper()}_MODEL"] = config.get(f"{name.upper()}_MODEL")
     # Computed from the env that was actually built, not from `allowed`, so
     # a name the driver sets here is never reported as withheld and the
     # line cannot drift from what the child receives.
@@ -1609,7 +1650,9 @@ def reviewer_conclusion(
         return "failure"
 
 
-def print_run_identity(config: LocalConfig) -> None:
+def print_run_identity(
+    config: LocalConfig, reviewers: tuple[str, ...] = DEFAULT_REVIEWERS
+) -> None:
     """Say which model each reviewer will use, and where the value came from.
 
     The one preserved run used claude-sonnet-4-6 while CI's org variable
@@ -1623,7 +1666,10 @@ def print_run_identity(config: LocalConfig) -> None:
     than "local follows the workflow default".
     """
     parts: list[str] = []
-    for name in REVIEWER_NAMES:
+    for name in reviewers:
+        if name == "copilot":
+            parts.append("copilot=auto (fixed)")
+            continue
         key = f"{name.upper()}_MODEL"
         source = "operator" if config.is_overridden(key) else "workflow default"
         parts.append(f"{name}={config.get(key)} ({source})")
@@ -1709,7 +1755,7 @@ def disown_unauthored_verdicts(
     a `finally` where one may already be in flight -- and there it is
     simply not read, which is the behaviour wanted.
 
-    ONE RULE, ONE PLACE, over REVIEWER_NAMES and not over `pinned`: a
+    ONE RULE, ONE PLACE, over SUPPORTED_REVIEWERS and not over `pinned`: a
     verdict counted as a reviewer's must be one `pinned` entitled that
     reviewer to -- present when the round ended with the bytes that
     reviewer left. Everything else in that slot is someone else's writing,
@@ -1749,7 +1795,7 @@ def disown_unauthored_verdicts(
     covering the two `break`s had just closed by the other two routes.
     """
     intact = True
-    for name in REVIEWER_NAMES:
+    for name in SUPPORTED_REVIEWERS:
         current = file_digest(work / f"review-{name}.json")
         if not current:
             continue
@@ -1760,7 +1806,7 @@ def disown_unauthored_verdicts(
             print(
                 f"::error::review-{name}.json is in the review tree though"
                 f" the {name} reviewer authored no verdict in this run"
-                f" ({conclusions[name]}); only something else in this run can"
+                f" ({conclusions.get(name, 'skipped')}); only something else in this run can"
                 " have written it, and it has been discarded",
                 file=sys.stderr,
             )
@@ -1776,7 +1822,12 @@ def disown_unauthored_verdicts(
     return intact
 
 
-def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) -> bool:
+def run_reviewers(
+    work: Path,
+    config: LocalConfig,
+    conclusions: dict[str, str],
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS,
+) -> bool:
     """Run the reviewers one at a time, agent config stripped before each.
 
     The conclusions dict belongs to the CALLER: returning it instead lost
@@ -1784,17 +1835,12 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
     then called the run Approved -- "no verdict" became "a false verdict",
     the worse of the two (see design-record 1-3).
 
-    ONE REVIEWER'S PROCESS GROUP AT A TIME, in either mode: the three share
-    this tree and two can write to it, so overlapping them lets one's writes
-    land under another's read. A process GROUP and not "never two
-    processes", because a group is the largest thing this can address -- a
-    descendant that calls setsid escapes, and that is the stated residual.
+    One process group at a time in both modes protects the shared tree.
+    Descendants that call setsid can escape this existing boundary.
 
-    The modes differ only in gating: `parallel` (default) runs every
-    reviewer, since an operator on the default expects three reviews and not
-    however many run before one bails; `sequential` stops at the first
-    early_exit (AT-2125). Both take this one loop, so the provenance the
-    three steps below establish holds in either.
+    `parallel` runs every selected reviewer; `sequential` stops at the first
+    successful early_exit. Both preserve the operator's selected order and
+    the provenance checks below (AT-2125).
 
     WHAT THE LOOP ESTABLISHES: a verdict counted as a reviewer's was absent
     when that reviewer started (clear_reviewer_slot) and unchanged when the
@@ -1807,7 +1853,7 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
     """
     thread_count, existing = load_threads(work)
     sequential = config.get("REVIEW_MODE") == REVIEW_MODE_SEQUENTIAL
-    order = SEQUENTIAL_ORDER if sequential else REVIEWER_NAMES
+    order = reviewers
     inputs = shared_input_digests(work)
     pinned: dict[str, str] = {}
     intact = True
@@ -1858,10 +1904,12 @@ def run_reviewers(work: Path, config: LocalConfig, conclusions: dict[str, str]) 
     return intact
 
 
-def check_coordinates(work: Path) -> None:
+def check_coordinates(
+    work: Path, reviewers: tuple[str, ...] = DEFAULT_REVIEWERS
+) -> None:
     """Screen every reviewer's line numbers before anything is posted."""
     print("Checking reviewer coordinates:")
-    for name in REVIEWER_NAMES:
+    for name in reviewers:
         counts = check_reviewer_coordinates(work, name)
         if any(counts.values()):
             print(
@@ -1900,6 +1948,7 @@ def post_inline_comments(
     config: LocalConfig,
     bot_login: str,
     inline_run_id: str = "",
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS,
 ) -> None:
     """Post each reviewer's findings, one reviewer at a time.
 
@@ -1909,7 +1958,7 @@ def post_inline_comments(
     previous reviewer just posted.
     """
     env = inline_comment_env(repo, pr_number, config, bot_login, inline_run_id)
-    for name in REVIEWER_NAMES:
+    for name in reviewers:
         review_file = work / f"review-{name}.json"
         if not review_file.is_file():
             print(f"No review file found: {review_file.name}")
@@ -1957,6 +2006,7 @@ def aggregate_env(
     conclusions: dict[str, str],
     prepare_result: str = "success",
     inline_run_id: str = "",
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS,
 ) -> dict[str, str]:
     return script_env(
         {
@@ -1982,9 +2032,8 @@ def aggregate_env(
             ),
             "MAJOR_CONSENSUS_MIN": config.get("MAJOR_CONSENSUS_MIN"),
             "REVIEW_MODE": config.get("REVIEW_MODE"),
-            # Match the default roster this driver actually dispatches until
-            # selected-roster dispatch is wired; never inherit ambient input.
-            REVIEWERS_ENV: json.dumps(REVIEWER_NAMES),
+            # Use the selection frozen before PR access, never ambient state.
+            REVIEWERS_ENV: json.dumps(reviewers),
             # Pinned off, and this assignment IS the guarantee: there is no
             # App token to mint and the operator cannot approve their own
             # PR. Nothing in local_review_config enforces it -- that module
@@ -1997,7 +2046,7 @@ def aggregate_env(
             **policy,
             **{
                 f"REVIEWER_RESULT_{name.upper()}": conclusions[name]
-                for name in REVIEWER_NAMES
+                for name in reviewers
             },
         },
         repo,
@@ -2261,6 +2310,7 @@ class ReviewOutcome:
     pr_author: str
     cwd: Path | None
     inline_run_id: str = ""
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS
 
 
 def report_stage_failure(stage: str, exc: BaseException) -> None:
@@ -2304,6 +2354,7 @@ def run_review_stage(
     conclusions: dict[str, str],
     bot_login: str,
     inline_run_id: str = "",
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS,
 ) -> None:
     """Context, reviewers, coordinate screening, inline comments.
 
@@ -2314,13 +2365,13 @@ def run_review_stage(
     anchoring public comments on a file a reviewer wrote.
     """
     append_prior_context(work, args.repo, args.pr_number)
-    print_run_identity(config)
-    if not run_reviewers(work, config, conclusions):
+    print_run_identity(config, reviewers)
+    if not run_reviewers(work, config, conclusions, reviewers):
         print("Skipping the coordinate screen and the inline comments.")
         return
-    check_coordinates(work)
+    check_coordinates(work, reviewers)
     post_inline_comments(
-        work, args.repo, args.pr_number, config, bot_login, inline_run_id
+        work, args.repo, args.pr_number, config, bot_login, inline_run_id, reviewers
     )
 
 
@@ -2330,6 +2381,7 @@ def review_pr(
     work: Path,
     config: LocalConfig,
     args: argparse.Namespace,
+    reviewers: tuple[str, ...] = DEFAULT_REVIEWERS,
 ) -> ReviewOutcome:
     """Prepare the tree and run the reviewers, reporting what each stage did.
 
@@ -2340,8 +2392,13 @@ def review_pr(
     why the policy gate -- running on a tree already on the head -- is not
     in the prepare block it once shared (see design-record 1-3).
     """
+    outcome = partial(ReviewOutcome, reviewers=reviewers)
     bot_login = ""
-    size, policy, conclusions = initial_size(), initial_policy(), initial_conclusions()
+    size, policy, conclusions = (
+        initial_size(),
+        initial_policy(),
+        initial_conclusions(reviewers),
+    )
     try:
         inline_run_id = f"local-{uuid4().hex}"
         bot_login, refs, size_skipped, size = pre_review(run_dir, config, args)
@@ -2350,26 +2407,20 @@ def review_pr(
         # No cwd: the run directory is the first thing tried, so it may be
         # what failed. main() falls back to it and the aggregate reports a
         # missing one rather than assuming it is there.
-        return ReviewOutcome(
-            "failure", bot_login, size, policy, conclusions, "", "", None
-        )
+        return outcome("failure", bot_login, size, policy, conclusions, "", "", None)
 
     if size_skipped:
         # The workflow's refs step does not run on a size skip, so the
         # aggregate receives neither head nor author; an empty author
         # selects the stricter human thresholds, which is intended.
-        return ReviewOutcome(
-            "success", bot_login, size, policy, conclusions, "", "", run_dir
-        )
+        return outcome("success", bot_login, size, policy, conclusions, "", "", run_dir)
 
     try:
         ensure_clone(run_dir, clone, args.repo)
         prepare(clone, work, args.repo, args.pr_number, refs, args)
     except Exception as exc:
         report_stage_failure("prepare", exc)
-        return ReviewOutcome(
-            "failure", bot_login, size, policy, conclusions, "", "", run_dir
-        )
+        return outcome("failure", bot_login, size, policy, conclusions, "", "", run_dir)
 
     # From here the head is settled and is reported whatever else fails.
     try:
@@ -2380,14 +2431,14 @@ def review_pr(
         if policy["POLICY_SKIPPED"] != "true":
             try:
                 run_review_stage(
-                    work, config, args, conclusions, bot_login, inline_run_id
+                    work, config, args, conclusions, bot_login, inline_run_id, reviewers
                 )
             except Exception as exc:
                 # Prepare succeeded, so PREPARE_RESULT stays `success` and
                 # the head it settled is reported. Too few verdicts is
                 # already the aggregate's own failing verdict.
                 report_stage_failure("review", exc)
-    return ReviewOutcome(
+    return outcome(
         "success",
         bot_login,
         size,
@@ -2408,6 +2459,7 @@ def main(argv: list[str] | None = None) -> int:
         raise DriverError(f"Invalid PR_NUMBER: {args.pr_number}")
 
     config = LocalConfig.load(args.config)
+    reviewers = config.reviewers()
     run_dir = resolve_run_dir(args)
     # The clone is long-lived and shared by every run for this PR; the
     # review tree is a worktree cut from it, fresh each run, never inside it.
@@ -2415,7 +2467,7 @@ def main(argv: list[str] | None = None) -> int:
     work = run_dir / "review"
     print(f"Run directory: {run_dir}")
 
-    outcome = review_pr(run_dir, clone, work, config, args)
+    outcome = review_pr(run_dir, clone, work, config, args, reviewers)
     return aggregate(
         outcome.cwd or run_dir,
         aggregate_env(
@@ -2430,6 +2482,7 @@ def main(argv: list[str] | None = None) -> int:
             conclusions=outcome.conclusions,
             prepare_result=outcome.prepare_result,
             inline_run_id=outcome.inline_run_id,
+            reviewers=outcome.reviewers,
         ),
     )
 

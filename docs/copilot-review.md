@@ -6,10 +6,13 @@ The default remains `["claude","codex","gemini"]`. Selection alone does not
 provision an account: the caller must explicitly forward the optional
 `COPILOT_GITHUB_TOKEN` secret. A selected reviewer whose credential or runtime
 is unavailable fails and remains in the configured response denominator.
-The local driver and external runner continue dispatching their existing three.
+The source local driver accepts the same ordered roster through `REVIEWERS`
+in its process environment or existing settings file. Its default remains
+the existing three. The external runner has not adopted optional selection.
 
 This workflow interface is published from v1.22.0; callers adopt it
 explicitly. No production four-provider service round has been verified.
+The local integration is source-only until a release publishes it.
 
 Install `.github/scripts/requirements.txt` (Copilot SDK 1.0.28), and provision a
 trusted Copilot CLI 1.0.105 executable outside the PR checkout. The adapter
@@ -18,6 +21,18 @@ version and never downloads a runtime. Do not use a PR-provided executable.
 Use the native executable: the runtime receives `PATH=/usr/bin:/bin`, so
 launchers that depend on Node or another interpreter from a toolcache or user
 installation are not supported by this invocation contract.
+
+For a local pipeline run, export both `COPILOT_GITHUB_TOKEN` and
+`COPILOT_CLI_PATH`, then select Copilot with
+`REVIEWERS='["copilot","claude","codex","gemini"]'` before invoking
+`review_pr_local.py` as described in [local review](local-review.md).
+The driver reads neither Copilot value from the settings file and never
+discovers login files or provisions credentials. Both names are reserved from
+other reviewers even when named in general passthrough. Before any executable
+or version probe starts, the driver rejects relative paths, paths anywhere in
+the per-PR run directory (including its clone, review worktree, and artifacts),
+and outside symlinks resolving into that directory. The adapter is launched
+from trusted scripts with isolated Python imports.
 
 In a directory containing prepared `context.md` and `pr.diff`, run the trusted
 adapter with `COPILOT_GITHUB_TOKEN` supplied through the environment:

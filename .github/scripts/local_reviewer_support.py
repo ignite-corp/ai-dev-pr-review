@@ -179,6 +179,7 @@ REVIEWER_ENV_EXTRA: dict[str, tuple[str, ...]] = {
     # Both read by name in review_gemini.py -- that module already decides
     # gemini authenticates with this key, so forwarding it decides nothing.
     "gemini": ("GOOGLE_AI_API_KEY", "GEMINI_MAX_OUTPUT_TOKENS"),
+    "copilot": ("COPILOT_GITHUB_TOKEN", "COPILOT_CLI_PATH"),
 }
 ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
@@ -227,6 +228,8 @@ def reviewer_env_allowlist(name: str, config: LocalConfig) -> set[str]:
     allowed = set(REVIEWER_ENV_ALLOWLIST)
     allowed.update(REVIEWER_ENV_EXTRA.get(name, ()))
     allowed.update(passthrough_names(config))
+    if name != "copilot":
+        allowed.difference_update(REVIEWER_ENV_EXTRA["copilot"])
     return allowed
 
 

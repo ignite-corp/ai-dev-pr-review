@@ -45,8 +45,16 @@ new execution-mode setting. The existing `REVIEW_MODE` continues to select
 parallel or sequential execution. Copilot is optional and requires its explicit
 account credential; a roster without Gemini does not require a Google key.
 
-The local driver explicitly pins the aggregate roster to its dispatched default
-three, ignoring ambient `REVIEWERS`. The external runner's existing caller has
+The source local driver reads `REVIEWERS` from the environment, then its existing
+settings file, and defaults through the shared parser to the existing three.
+It freezes an immutable selection before GitHub access and passes it through
+dispatch, coordinates, inline posting and aggregation. Both modes use one
+process group at a time to protect the shared tree: `parallel` runs every
+selection, while `sequential` stops on a successful early exit. Failed selected
+reviewers remain expected; unselected files cannot supply responses. Local
+automatic approval remains disabled. This local integration is source-only
+until published; see [local review](local-review.md).
+The external runner's existing caller has
 not adopted this optional input. No runner or consumer rollout is included.
 The full-roster PR response gate
 continues to require every expected reviewer, independently of approval quorum.
@@ -60,8 +68,8 @@ withholding for unresolved majors remain in force. A roster change is not a disp
 does not add historical finding carryover or replace consumer unresolved-thread
 and folded-finding gates.
 
-The workflow interface is published from v1.22.0. Its helpers are the
-v1.21.0 ones (prepare and aggregate stay pinned there; single moves to v1.22.0
-for a docstring-only change), so no new helper file is assumed. Callers adopt
+The workflow interface is published from v1.22.0. Source prepare and aggregate
+helpers remain pinned to v1.21.0; single uses v1.22.1, including its auth fix.
+No new helper file is assumed. Callers adopt
 the input explicitly. No production four-provider service round, account provisioning,
 secret or variable change, or automatic activation is claimed by these tests.
