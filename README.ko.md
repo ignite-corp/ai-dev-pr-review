@@ -663,7 +663,7 @@ cp -R plugins/pr-response-cycle/skills/pr-response-cycle ~/.claude/skills/
 
 ## 기여
 
-이 레포에 이슈와 PR을 여세요. 공개 레포의 CI / 테스트는 v1.0.0 범위 밖입니다. `CONTRIBUTING.md`(예정)가 생기면 참고하세요.
+버그나 제안은 GitHub 이슈로 열어 주세요. 메인테이너가 이슈마다 자체 트래커로 옮긴 뒤, 그 위치를 남기고 이슈를 닫습니다. 작업 진행은 이슈에서 추적하지 않습니다. PR도 환영합니다. 공개 레포의 CI / 테스트는 v1.0.0 범위 밖입니다. `CONTRIBUTING.md`(예정)가 생기면 참고하세요.
 
 ## 라이선스
 

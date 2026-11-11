@@ -711,7 +711,7 @@ Then invoke `/pr-response-cycle` in Claude Code, or just say "process the review
 
 ## Contributing
 
-Open issues and PRs against this repo. CI / tests for the public repo are out of scope for v1.0.0; see `CONTRIBUTING.md` (TBD) once it exists.
+For a bug or a suggestion, open a GitHub issue. Maintainers triage each issue into their own tracker and close it with a pointer there; work is not tracked on the issue itself. PRs are welcome. CI / tests for the public repo are out of scope for v1.0.0; see `CONTRIBUTING.md` (TBD) once it exists.
 
 ## License
 

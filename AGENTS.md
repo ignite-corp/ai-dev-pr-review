@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## Tracker
+
+LENS work is tracked in Jira project `AT`, with the `[LENS]` summary prefix
+and the `lens` label. Commits carry the key: `type(AT-<n>): ...`.
+
+This repo is public, so outside reports may arrive as GitHub issues. Each one
+is triaged into an AT ticket, and the issue is closed with a comment pointing
+at that ticket. Work is not tracked on the issue: it is not assigned, labelled
+for progress, or used for status.
+
+Why: the owner's decision of 2026-11-11. Nine issues opened in 2026-06/07
+(#32-#39, #63) stayed open for months after their work had been done under AT
+keys; they were groomed and closed that day.
+
 ## Fleet Management Doctrine (AT-1270)
 
 This repo owns reviewer infrastructure AND consumer fleet management for the tracked consumers.
