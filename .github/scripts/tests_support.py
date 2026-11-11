@@ -523,6 +523,10 @@ def _run_aggregate(
     monkeypatch.setattr(
         aggregate_reviews, "_fetch_disposition_threads", fetch_dispositions
     )
+    # Nor any quoted reply (AT-3428).
+    monkeypatch.setattr(
+        aggregate_reviews, "_fetch_quoted_dispositions", fetch_dispositions
+    )
     # _head_is_stale compares HEAD_SHA with the live head; the fake PR's is HEAD_SHA.
     monkeypatch.setattr(aggregate_reviews, "_head_is_stale", lambda: False)
     with patch("aggregate_reviews.post_verdict") as post_verdict:

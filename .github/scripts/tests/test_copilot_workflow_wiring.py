@@ -304,6 +304,7 @@ def test_actual_roster_outputs_artifacts_and_aggregate_denominator_agree(
         "_fetch_fold_comments",
         "_fetch_inline_posts",
         "_fetch_disposition_threads",
+        "_fetch_quoted_dispositions",
     ):
         monkeypatch.setattr(aggregate, method, lambda *args: [])
     post = Mock(return_value=True)
