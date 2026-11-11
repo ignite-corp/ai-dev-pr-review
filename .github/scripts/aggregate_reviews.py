@@ -38,7 +38,7 @@ import sys
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, NamedTuple, TypeGuard
+from typing import Any, NamedTuple, TypeGuard, cast
 
 # The payload-shape pair is written once, in github_pr_support, so the two
 # reviewer shims can gate their direct-write path on the SAME test this
@@ -79,7 +79,7 @@ from github_pr_support import (
 # The posting step's own thread matcher (stdlib-only, like this script): a
 # re-raised major is the same finding a thread holds exactly when the
 # posting step would have deduplicated it against that thread (AT-2843).
-from post_inline_comments import is_duplicate, normalize_body
+from post_inline_comments import DEDUP_STRONG_JACCARD, is_duplicate, normalize_body
 from reviewer_roster import SUPPORTED_REVIEWERS, configured_reviewers
 
 logger = logging.getLogger(__name__)
@@ -1154,13 +1154,8 @@ def _parse_disposition_threads(
         prefix = next((p for p in _DISPOSITION_PREFIXES if reply.startswith(p)), None)
         if prefix is None:
             continue
-        if human[-1]["association"] not in _DISPOSING_ASSOCIATIONS:
-            login = human[-1]["login"]
-            key = (repo.casefold(), login.casefold())
-            if key not in permission_cache:
-                permission_cache[key] = _repository_writer(repo, login)
-            if not permission_cache[key]:
-                continue
+        if not _trusted_disposer(human[-1], repo, permission_cache):
+            continue
         kept.append(
             {
                 "path": node.get("path") or "",
@@ -1200,17 +1195,31 @@ def _fetch_disposition_threads(repo: str, pr_number: str) -> list[dict[str, Any]
 
 
 def _dispositioned_majors(
-    available: dict[str, dict[str, Any]], threads: list[dict[str, Any]]
+    available: dict[str, dict[str, Any]],
+    threads: list[dict[str, Any]],
+    quoted: list[dict[str, Any]] | None = None,
 ) -> dict[tuple[str, int], str]:
-    """This round's majors an earlier round's thread already disposes of (AT-2843).
+    """This round's majors an earlier round already disposes of (AT-2843, AT-3428).
 
     A major matches a thread when the posting step would deduplicate it
     against that thread -- ``post_inline_comments.is_duplicate``, same
     file and near-identical text, line distance ignored at the strong
     threshold because a rebase moves lines -- which is also why a re-raised
     major opens no new thread: the old one is the only place its
-    disposition can be. A major with no file has no thread and stays
-    counted. Keyed (reviewer, issue index) into ``available``.
+    disposition can be.
+
+    A major no thread holds -- folded into a fold comment, or with no file
+    or no line -- matches ``quoted``, the replies
+    ``_parse_quoted_dispositions`` read, at the strong threshold alone, on
+    its description's first line, which is what a fold comment or a verdict
+    renders. The newest reply that addresses it decides, so a later one
+    can withdraw. A reply bound to a verdict answers only a major without
+    a line. A major that any posting-step thread matches (``holds``
+    entries, resolved or not, opened before or after the reply) is the
+    thread route's alone: the finding is answered on its thread, as the
+    skill's Stage 1 says, and a thread that stays open or is reopened
+    outranks a quoted reply. Keyed (reviewer, issue index) into
+    ``available``.
 
     Read everywhere a major counts: the verdict rules (so two reviewers
     re-raising a dispositioned major reach no consensus), the approve
@@ -1220,32 +1229,433 @@ def _dispositioned_majors(
     out: dict[tuple[str, int], str] = {}
     for name, review in available.items():
         for index, issue in enumerate(review.get("issues", [])):
-            if issue.get("severity") != "major" or not issue.get("file"):
+            if issue.get("severity") != "major":
                 continue
             try:
                 line = int(issue["line"]) if issue.get("line") is not None else None
             except (TypeError, ValueError):
                 line = None
-            for thread in threads:
-                if is_duplicate(
-                    issue["file"], issue.get("description"), [thread], line=line
-                ):
-                    out[(name, index)] = thread["disposition"]
-                    break
+            path = issue.get("file") or ""
+            if path:
+                for thread in threads:
+                    if is_duplicate(
+                        path, issue.get("description"), [thread], line=line
+                    ):
+                        out[(name, index)] = thread["disposition"]
+                        break
+            if (name, index) in out:
+                continue
+            # Any thread the posting step opened for this major holds it,
+            # resolved or not and whenever it was opened: its own replies
+            # decide, so a quoted reply cannot clear a major a thread keeps
+            # open or reopened.
+            if path and any(
+                is_duplicate(path, issue.get("description"), [held], line=line)
+                for held in quoted or []
+                if held.get("holds")
+            ):
+                continue
+            first_line = str(issue.get("description") or "").split("\n", 1)[0]
+            has_line = bool(path) and line is not None
+            # A verdict-bound reply names no marker, so it reaches only a
+            # major that has no fold comment or thread to name; a
+            # fold-bound one reaches its finding re-raised without a line
+            # too, as a thread does.
+            addressing = [
+                entry
+                for entry in quoted or []
+                if not entry.get("holds")
+                and (entry["has_line"] or not has_line)
+                and _strong_match(path, first_line, entry)
+            ]
+            if not addressing:
+                continue
+            # Chronological, so on a tie the later quote in one comment wins.
+            newest = addressing[0]
+            for entry in addressing:
+                if entry["created_at"] >= newest["created_at"]:
+                    newest = entry
+            if newest["disposition"]:
+                out[(name, index)] = _QuotedDisposition(newest["disposition"])
     return out
+
+
+class _QuotedDisposition(str):
+    """A disposition read from a quoted-response issue comment, not a thread.
+
+    A ``str`` so every reader of the map keeps treating it as one; the type
+    is only what the body reads to say which route answered the major.
+    """
+
+
+# A quoted-response disposition (AT-3428): the issue comment the
+# pr-response-cycle skill's Stage 4 posts for an item that has no thread
+# (worked example: ignite-corp/ai-dev-pr-review#188, comment 6015452260).
+# The skill's `cutoff_marker`: a fold comment's whole first line is the
+# marker's HTML comment.
+_FOLD_MARKER_LINE_RE = re.compile(
+    r"^<!--\s*(?P<marker>(?:round-cutoff|inline-fallback)-\S+?)\s*-->$"
+)
+# The skill's `finding_key` decoder, both renderings: the fold comment's
+# `**<path>:<line>** -- <icon> **<severity>** (<reviewer>): <description>`
+# and the verdict's `**<severity>** [`<location>`] -- <description>`, read
+# after any `>` quoting, indentation and up to two bullet or icon tokens.
+_QUOTE_PREFIX_RE = re.compile(r"^[ \t]*(?:>[ \t]*)+")
+_QUOTE_BULLETS_RE = re.compile(r"^(?:[-*+!?][ \t]+){0,2}")
+_FOLD_ITEM_RE = re.compile(
+    r"^\*\*(?P<loc>.+?:[0-9]+)\*\* -- \S+ "
+    r"\*\*(?P<sev>critical|major|minor|suggestion)\*\* \([^()\r\n]*\): (?P<desc>.+)$"
+)
+_VERDICT_ITEM_RE = re.compile(
+    r"^\*\*(?P<sev>critical|major|minor|suggestion)\*\*"
+    r"(?: `(?P<loc>[^`]+)`)? -- (?P<desc>.+)$"
+)
+_LOCATION_LINE_RE = re.compile(r"^(?P<path>.*):(?P<line>[0-9]+)$")
+# The verdict's own line for a standing major, as the skill's gate selects it.
+_VERDICT_MAJOR_PREFIX = f"- {SEVERITY_ICONS['major']} **major**"
+
+
+def _decode_finding(line: str) -> re.Match[str] | None:
+    """A finding of any severity rendered on ``line``, quoted or not."""
+    text = _QUOTE_PREFIX_RE.sub("", line.replace("\r", ""))
+    text = _QUOTE_BULLETS_RE.sub("", text.lstrip(" \t")).rstrip(" \t")
+    return _FOLD_ITEM_RE.match(text) or _VERDICT_ITEM_RE.match(text)
+
+
+def _decode_major(line: str) -> dict[str, Any] | None:
+    """The major rendered on ``line``, quoted or not, in ``is_duplicate``'s shape.
+
+    Only a major decodes: a quote of a minor disposes of no major. The
+    location splits into path and line only where a number follows the
+    last colon, as the skill's key does -- a path may contain colons.
+    """
+    match = _decode_finding(line)
+    if match is None or match.group("sev") != "major":
+        return None
+    loc = match.group("loc") or ""
+    at = _LOCATION_LINE_RE.match(loc)
+    return {
+        "path": at.group("path") if at else loc,
+        "has_line": at is not None,
+        "line": None,
+        "body": normalize_body(match.group("desc")),
+    }
+
+
+def _strong_match(path: str, description: str, item: dict[str, Any]) -> bool:
+    """``is_duplicate`` at its strong threshold alone, line distance ignored."""
+    return is_duplicate(
+        path,
+        description,
+        [{"path": item["path"], "line": None, "body": item["body"]}],
+        line=None,
+        threshold=DEDUP_STRONG_JACCARD,
+        strong_threshold=DEDUP_STRONG_JACCARD,
+    )
+
+
+def _quote_replies(body: str) -> list[tuple[dict[str, Any], str]]:
+    """Each quoted major in a comment, with the line that answers it.
+
+    The skill's format quotes one item per ``>`` line and explains its
+    disposition "separately on the following line"; #188's example puts a
+    blank line between. So the answer is the first line after the quote
+    that is neither blank nor quoted -- unless another quoted finding comes
+    first: then this one has no answer of its own, and the next one's does
+    not reach back to it. A quote is any line ``_QUOTE_PREFIX_RE`` opens,
+    indented or not, the same rule ``_decode_major`` strips by.
+    """
+    lines = body.replace("\r", "").split("\n")
+    out: list[tuple[dict[str, Any], str]] = []
+    for index, line in enumerate(lines):
+        if not _QUOTE_PREFIX_RE.match(line):
+            continue
+        item = _decode_major(line)
+        if item is None:
+            continue
+        answer = ""
+        for rest in lines[index + 1 :]:
+            if not rest.strip():
+                continue
+            if _QUOTE_PREFIX_RE.match(rest):
+                if _decode_finding(rest) is not None:
+                    break
+                continue
+            answer = rest.strip()
+            break
+        out.append((item, answer))
+    return out
+
+
+def _first_line(body: str) -> str:
+    return body.replace("\r", "").split("\n", 1)[0]
+
+
+def _producer_comment(body: str) -> bool:
+    """True for a comment this pipeline shapes: a fold comment or a verdict.
+
+    Under the local driver both are a User's, so identity cannot exclude
+    them; their first line can, as the skill's reply scan does.
+    """
+    first = _first_line(body)
+    return bool(_FOLD_MARKER_LINE_RE.match(first)) or first == REVIEW_MARKER
+
+
+def _trusted_disposer(
+    comment: dict[str, Any], repo: str, permission_cache: dict[tuple[str, str], bool]
+) -> bool:
+    """The one author rule both routes share: a trusted association, or a verified writer."""
+    if comment["association"] in _DISPOSING_ASSOCIATIONS:
+        return True
+    key = (repo.casefold(), comment["login"].casefold())
+    if key not in permission_cache:
+        permission_cache[key] = _repository_writer(repo, comment["login"])
+    return permission_cache[key]
+
+
+def _parse_quoted_dispositions(
+    comments: list[dict[str, Any]],
+    verdicts: list[dict[str, Any]],
+    *,
+    repo: str = "",
+    permission_cache: dict[tuple[str, str], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Every quoted reply that addresses a major, disposing of it or not.
+
+    The thread path's trust rules, carried to the skill's quoted-response
+    contract (AT-3428). A ``>`` line in a comment addresses a major when
+    all hold:
+
+    * the comment is a person's (``author_type`` ``User``) and is not
+      itself a fold comment or a verdict;
+    * the quote is bound to a source the pipeline wrote and the comment
+      postdates. A quote with a ``path:line`` location binds to a fold
+      comment authored by ``INLINE_BOT_LOGIN`` whose marker the comment
+      names -- the skill's bounded match, so ``-r1`` is not ``-r10`` --
+      and whose items include it. A quote with no line -- a major no fold
+      comment and no thread can carry -- binds to a verdict authored by
+      ``BOT_LOGIN`` that lists it as a standing major, the skill's
+      ``major_dispositions`` route, which names no marker;
+    * the quote decodes as a major and matches the source item at
+      ``is_duplicate``'s strong threshold.
+
+    It disposes of the major only when the line answering the quote opens
+    with a ``_DISPOSITION_PREFIXES`` prefix and the comment's author is
+    OWNER, MEMBER or COLLABORATOR, or a verified repository writer. Every
+    other addressing quote is kept with ``disposition`` None:
+    ``_dispositioned_majors`` reads the newest per major, so an untrusted
+    or prefix-less later reply withdraws the disposition, as on a thread.
+    """
+    if permission_cache is None:
+        permission_cache = {}
+    folds: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for comment in comments:
+        marker = _FOLD_MARKER_LINE_RE.match(_first_line(comment["body"]))
+        if marker is None or not trusted_post_author(comment, INLINE_BOT_LOGIN):
+            continue
+        items = [
+            item
+            for line in comment["body"].replace("\r", "").split("\n")[1:]
+            if (item := _decode_major(line)) is not None and item["has_line"]
+        ]
+        folds.append((marker.group("marker"), comment["created_at"], items))
+    lineless = [
+        (verdict["created_at"], item)
+        for verdict in verdicts
+        if _first_line(verdict["body"]) == REVIEW_MARKER
+        and trusted_post_author(verdict, BOT_LOGIN)
+        for line in verdict["body"].replace("\r", "").split("\n")
+        if line.startswith(_VERDICT_MAJOR_PREFIX)
+        and (item := _decode_major(line)) is not None
+        and not item["has_line"]
+    ]
+    entries: list[dict[str, Any]] = []
+    for comment in comments:
+        if (
+            comment["author_type"] != "User"
+            or not comment["login"]
+            or _producer_comment(comment["body"])
+        ):
+            continue
+        at = comment["created_at"]
+        sources = [
+            item
+            for marker, posted_at, items in folds
+            if posted_at < at
+            and re.search(
+                rf"(?<![0-9A-Za-z_-]){re.escape(marker)}(?![0-9A-Za-z_-])",
+                comment["body"],
+            )
+            for item in items
+        ] + [item for posted_at, item in lineless if posted_at < at]
+        for quoted, answer in _quote_replies(comment["body"]):
+            if not any(
+                source["has_line"] == quoted["has_line"]
+                and _strong_match(source["path"], source["body"], quoted)
+                for source in sources
+            ):
+                continue
+            prefix = next(
+                (p for p in _DISPOSITION_PREFIXES if answer.startswith(p)), None
+            )
+            disposition: str | None = None
+            if prefix is not None and _trusted_disposer(
+                comment, repo, permission_cache
+            ):
+                disposition = f"{prefix.rstrip(':')} by `{comment['login']}`"
+            entries.append({**quoted, "created_at": at, "disposition": disposition})
+    return entries
+
+
+def _gh_rows(endpoint: str, jq_filter: str, label: str) -> list[list[str]] | None:
+    """Every row of a paginated REST listing; None on any failure.
+
+    None, not a partial list: a missing page could hold the newer reply
+    that withdraws a disposition, so a read that did not complete is not
+    read as one that found nothing. Each refusal says which listing and
+    why, so a withheld approval can be traced to it; ``label`` names the
+    listing without the repository, which this public log does not print.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", "--paginate", endpoint, "--jq", jq_filter],
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SEC,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        print(f"Warning: {label} listing did not complete", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        print(f"Warning: {label} listing failed", file=sys.stderr)
+        return None
+    rows: list[list[str]] = []
+    for line in result.stdout.splitlines():
+        try:
+            row: object = json.loads(line)
+        except ValueError:
+            row = None
+        values = (
+            [v for v in cast("list[object]", row) if isinstance(v, str)]
+            if isinstance(row, list)
+            else []
+        )
+        if (
+            not isinstance(row, list)
+            or len(values) != _DISPOSITION_ROW_FIELDS
+            or len(values) != len(cast("list[object]", row))
+            or not values[3]
+        ):
+            print(
+                f"Warning: {label} listing returned a malformed row;"
+                " no quoted disposition is read this round",
+                file=sys.stderr,
+            )
+            return None
+        rows.append(values)
+    return rows
+
+
+# login, author type, association, timestamp, body -- in that order.
+_DISPOSITION_ROW_FIELDS = 5
+_DISPOSITION_ROW = (
+    '[.user.login // "", .user.type // "", .author_association // "", {at},'
+    ' .body // ""] | @json'
+)
+
+
+def _fetch_quoted_dispositions(repo: str, pr_number: str) -> list[dict[str, Any]]:
+    """The PR's quoted replies to majors; [] on any failure, which withholds."""
+    if not pr_number.isdigit() or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9_.-]+", repo
+    ):
+        return []
+    comments = _gh_rows(
+        f"repos/{repo}/issues/{pr_number}/comments",
+        ".[] | " + _DISPOSITION_ROW.format(at=".created_at // null"),
+        "issue comment",
+    )
+    # A pending review has no submitted_at and is no verdict; the local
+    # driver's own token lists the operator's, so it is skipped, not refused.
+    reviews = _gh_rows(
+        f"repos/{repo}/pulls/{pr_number}/reviews",
+        '.[] | select(.state != "PENDING") | '
+        + _DISPOSITION_ROW.format(at=".submitted_at // null"),
+        "review",
+    )
+    # The opening comment of every review thread: path is never empty on
+    # one, so it takes the slot the other listings fill with a timestamp.
+    openers = _gh_rows(
+        f"repos/{repo}/pulls/{pr_number}/comments",
+        ".[] | select(.in_reply_to_id == null)"
+        ' | [.user.login // "", .user.type // "", (.line // "" | tostring),'
+        ' .path // "", .body // ""] | @json',
+        "thread opener",
+    )
+    if comments is None or reviews is None or openers is None:
+        return []
+    keys = ("login", "author_type", "association", "created_at", "body")
+    issue_comments: list[dict[str, Any]] = [
+        dict(zip(keys, row, strict=True)) for row in comments
+    ]
+    verdicts: list[dict[str, Any]] = issue_comments + [
+        dict(zip(keys, row, strict=True)) for row in reviews
+    ]
+    held = _parse_holding_threads(
+        [
+            dict(
+                zip(("login", "author_type", "line", "path", "body"), row, strict=True)
+            )
+            for row in openers
+        ]
+    )
+    return _parse_quoted_dispositions(issue_comments, verdicts, repo=repo) + held
+
+
+def _parse_holding_threads(openers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The threads the posting step opened for a major, resolved or not.
+
+    Marked ``holds``: a major one of them matches is the thread route's to
+    decide, so ``_dispositioned_majors`` does not read a quoted reply for it.
+    The first comment is trusted as the thread route trusts it.
+    """
+    held: list[dict[str, Any]] = []
+    for opener in openers:
+        if not trusted_post_author(opener, INLINE_BOT_LOGIN):
+            continue
+        envelope = inline_post_envelope(opener["body"])
+        posted = envelope[3] if envelope else opener["body"]
+        if not _POSTED_MAJOR_RE.match(posted.partition("\n")[0]):
+            continue
+        held.append(
+            {
+                "holds": True,
+                "path": opener["path"],
+                "line": int(opener["line"]) if opener["line"].isdigit() else None,
+                "body": normalize_body(posted),
+            }
+        )
+    return held
 
 
 def _read_dispositions(
     available: dict[str, dict[str, Any]], repo: str, pr_number: str
 ) -> dict[tuple[str, int], str]:
-    """``_dispositioned_majors`` over the PR's threads, read only when a major is there."""
+    """``_dispositioned_majors`` over the PR's threads and quoted replies.
+
+    Read only when a major is there.
+    """
     if not any(
         issue.get("severity") == "major"
         for review in available.values()
         for issue in review.get("issues", [])
     ):
         return {}
-    return _dispositioned_majors(available, _fetch_disposition_threads(repo, pr_number))
+    return _dispositioned_majors(
+        available,
+        _fetch_disposition_threads(repo, pr_number),
+        _fetch_quoted_dispositions(repo, pr_number),
+    )
 
 
 def _format_issue_line(issue: dict[str, Any], *, icon: str | None = None) -> str:
@@ -2057,7 +2467,10 @@ def _split_reviewer_issues(
         line = _format_issue_line(
             {**issue, "suggestion": None}, icon=DISPOSITIONED_ICON
         )
-        line += f"\n  {name}: thread answered {disposition}, and resolved"
+        if isinstance(disposition, _QuotedDisposition):
+            line += f"\n  {name}: answered {disposition} in a quoted reply"
+        else:
+            line += f"\n  {name}: thread answered {disposition}, and resolved"
         if issue.get("suggestion"):
             line += f"\n  > ? {issue['suggestion']}"
         disposed.append(line)
@@ -2073,7 +2486,8 @@ def _dispositioned_section(disposed_lines: list[str]) -> list[str]:
         "### Dispositioned in an earlier round --"
         f" {len(disposed_lines)} major issue(s), not counted above",
         "Raised again this round; each matches a resolved thread the review"
-        " opened as a major, whose newest human reply, from the repository's"
+        " opened as a major, or a fold comment's or verdict's item quoted in"
+        " a later comment, whose newest human reply, from the repository's"
         " owner, an org member or a collaborator, carries a standing Resolve"
         " Policy disposition.",
         *disposed_lines,
@@ -2406,9 +2820,12 @@ def _approval_withhold(
     posts as soon as a round ends with no major standing. A major raised
     again over a resolved thread whose reply carries a Resolve Policy
     disposition is not in the count (AT-2843, ``_dispositioned_majors``),
-    so the reason names that route; a major with no thread -- outside the
-    diff, or with no file -- has none, and the human approval below is
-    its way through. The same route lifts a consensus major too: the verdict
+    so the reason names that route. A major with no thread -- folded into
+    a fold comment, or with no file or no line -- is answered instead by a
+    later comment that quotes it (AT-3428, ``_parse_quoted_dispositions``),
+    so the reason names that route too; one outside the diff that no fold
+    comment lists has neither, and the human approval below is its way
+    through. The same route lifts a consensus major too: the verdict
     rules read the same map, so a dispositioned major requests no changes.
 
     The human path is named too: a human approving the PR satisfies a
@@ -2434,9 +2851,16 @@ def _approval_withhold(
             " dispositioned. The next round decides again: push a fix, or"
             " reply on the thread with a Resolve Policy disposition"
             f" ({', '.join(_DISPOSITION_PREFIXES)}) and"
-            " resolve it, then re-run the review (push a commit, or re-run"
+            " resolve it (a finding that already has a review thread is"
+            " answered there, never by a quote) -- or, for a major with no"
+            " thread, post a comment"
+            " that quotes the item's line with `>` and answers it on the next"
+            " line with that disposition, naming the fold comment's marker"
+            " when the major was folded into one, or quoting the line as this"
+            " verdict lists it when the major has no line -- then re-run the"
+            " review (push a commit, or re-run"
             " the workflow) -- the approval posts once a round ends with no"
-            " major standing that such a thread does not answer. A human"
+            " major standing that such a reply does not answer. A human"
             " approving this PR satisfies a required-review rule on its own",
             False,
         )

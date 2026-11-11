@@ -98,6 +98,7 @@ def selected_round(monkeypatch, tmp_path):
             "_fetch_fold_comments",
             "_fetch_inline_posts",
             "_fetch_disposition_threads",
+            "_fetch_quoted_dispositions",
         ):
             monkeypatch.setattr(module, method, lambda *args: [])
         post = Mock(return_value=True)

@@ -37,6 +37,7 @@ def result_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(aggregate, "_fetch_fold_comments", lambda *args: [])
     monkeypatch.setattr(aggregate, "_fetch_inline_posts", lambda *args: [])
     monkeypatch.setattr(aggregate, "_fetch_disposition_threads", lambda *args: [])
+    monkeypatch.setattr(aggregate, "_fetch_quoted_dispositions", lambda *args: [])
     monkeypatch.setattr(
         aggregate.subprocess,
         "run",

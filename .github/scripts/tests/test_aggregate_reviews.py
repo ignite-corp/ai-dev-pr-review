@@ -1154,6 +1154,7 @@ class TestMajorCountIsOneComputation:
             patch("aggregate_reviews._fetch_fold_comments", return_value=[]),
             patch("aggregate_reviews._fetch_inline_posts", return_value=[]),
             patch("aggregate_reviews._fetch_disposition_threads", return_value=[]),
+            patch("aggregate_reviews._fetch_quoted_dispositions", return_value=[]),
         ):
             main()
 

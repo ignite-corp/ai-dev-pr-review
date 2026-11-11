@@ -101,6 +101,7 @@ def _run(
         patch(
             "aggregate_reviews._fetch_disposition_threads", return_value=[], create=True
         ),
+        patch("aggregate_reviews._fetch_quoted_dispositions", return_value=[]),
     ):
         try:
             main()

@@ -46,6 +46,7 @@ def quorum_round(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Mock:
         "_fetch_fold_comments",
         "_fetch_inline_posts",
         "_fetch_disposition_threads",
+        "_fetch_quoted_dispositions",
     ):
         monkeypatch.setattr(aggregate, name, lambda *args: [])
     post = Mock(return_value=True)
