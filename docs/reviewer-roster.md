@@ -72,7 +72,7 @@ does not add historical finding carryover or replace consumer unresolved-thread
 and folded-finding gates.
 
 The workflow interface is published from v1.22.0. The prepare helpers remain
-pinned to v1.21.0; single and aggregate use v1.24.0.
+pinned to v1.21.0; single and aggregate use v1.25.0.
 No new helper file is assumed. Callers adopt
 the input explicitly. No production four-provider service round, account provisioning,
 secret or variable change, or automatic activation is claimed by these tests.
