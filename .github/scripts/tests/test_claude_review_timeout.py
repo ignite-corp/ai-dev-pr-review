@@ -169,11 +169,15 @@ def test_self_review_keeps_the_job_cap_above_its_own_step_cap() -> None:
 def test_timeout_guard_runs_before_any_checkout() -> None:
     """Fail fast: a misconfigured caller learns before a runner does any
     work. Only the reviewer-name check, which the guard's reviewer branch
-    relies on, may precede it."""
+    relies on, may precede it -- and the job-start clock, which does no work
+    and must come first (AT-3410, test_cancel_cause.py)."""
     names = [step.get("name") for step in _single_step_list()]
     first_uses = next(i for i, step in enumerate(_single_step_list()) if "uses" in step)
     assert names.index(_GUARD_STEP) < first_uses
-    assert names[: names.index(_GUARD_STEP)] == ["Validate reviewer input"]
+    assert names[: names.index(_GUARD_STEP)] == [
+        "Record job start",
+        "Validate reviewer input",
+    ]
 
 
 def test_timeout_guard_runs_for_every_reviewer() -> None:

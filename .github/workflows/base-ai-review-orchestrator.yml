@@ -354,21 +354,34 @@ jobs:
     #
     # Cancellation is NOT a third condition to add here, and `!cancelled()`
     # was reverted for that reason (AT-2092). A cancelled run must not post a
-    # verdict -- cancel-in-progress kills the previous run on every new commit,
-    # and under always() the dying run still aggregated (every
-    # download-artifact is continue-on-error, so nothing stopped it) and posted
-    # "0/3 LLM responses -- all failed" for a PR with nothing wrong with it,
-    # racing the live run for the same comment slot. But the way to stop the
-    # posting is not to stop the job: the aggregate script compares the head
-    # it reviewed against the PR's current head and posts nothing once a newer
-    # run owns the slot.
+    # false verdict -- under always() a dying run still aggregates (every
+    # download-artifact is continue-on-error, so nothing stops it), and it
+    # posted "0/3 LLM responses -- all failed" for reviewers that had only
+    # been cancelled. But the way to stop the posting is not to stop the job,
+    # and the job cannot see the cancel itself: `cancelled()` reads false in
+    # here (run 42992603850). The aggregate script posts nothing, and the job
+    # still fails, in two cases:
     #
-    # Run 33615176056 (this repo, on f79ef96) measured the whole shape on
-    # base, not on the wrapper: run conclusion `cancelled`, all three reviewer
-    # jobs `cancelled`, and `review / aggregate / Aggregate & Verdict` still
-    # ran to success under always() and posted -- overwritten by the live run
-    # two minutes later. always() reaches the job here, and the race is real
-    # here.
+    #   - the head it reviewed has moved: a run for the new head owns the
+    #     slot (AT-2092);
+    #   - the head has not moved, a reviewer job recorded `external_cancel`,
+    #     and no reviewer produced a usable payload (AT-3410). Each reviewer
+    #     job's 'Record cancel cause' step in base-ai-review-single.yml writes
+    #     that cause into its verdict file, telling a cancel from a timeout by
+    #     elapsed time against the job cap -- the reviewer results passed
+    #     below read `cancelled` for both.
+    #
+    # Everything else posts as before. Run 33615176056 (this repo, on f79ef96)
+    # is why the payload condition is there: all three reviewer jobs
+    # `cancelled`, two had already uploaded real reviews, and its partial
+    # verdict is a real one. A timeout posts too, since it is this round's
+    # outcome, and so does a dead reviewer: the honest partial verdict naming
+    # who died (AT-1837) is unchanged. The one behaviour lost: a run
+    # cancelled by hand on an unchanged head, with no payload, used to post
+    # "0/N all failed" and now posts nothing, leaving only the red check
+    # until someone starts another run. On the runner, a run that does follow
+    # starts only after this one ends, because its review.yml queues rather
+    # than cancels (ai-dev-pr-review-runner#22).
     #
     # If a `!`-prefixed condition is ever needed on this job, it must be
     # wrapped in `${{ }}`: a bare leading `!` is a YAML tag indicator and
