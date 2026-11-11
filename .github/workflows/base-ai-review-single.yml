@@ -579,6 +579,39 @@ jobs:
           # run. Marked only after the clear actually happened.
           : > "${RUNNER_TEMP}/${REVIEWER}-start"
 
+      # The expiry is authoritative at review start (AT-3439): once
+      # CLAUDE_FORCE_API_UNTIL has passed, this review uses OAuth without
+      # waiting for the hourly claude-auth-restore cron to delete the vars.
+      # CLAUDE_FORCE_API=true with no UNTIL still forces the API path -- an
+      # operator's manual pin. An UNTIL that is not an epoch counts as
+      # expired, as the restore deletes it. Inline here, not a pinned
+      # script, so it applies with this YAML; vars is only readable in the
+      # caller, as below.
+      - name: Resolve Claude auth path
+        if: inputs.reviewer == 'claude'
+        id: claude-auth
+        env:
+          FORCE_API: ${{ vars.CLAUDE_FORCE_API == 'true' }}
+          FORCE_API_UNTIL: ${{ vars.CLAUDE_FORCE_API_UNTIL }}
+        run: |
+          force=false
+          if [ "$FORCE_API" = true ]; then
+            force=true
+            # Surrounding whitespace only, then 1-18 ASCII digits: the same
+            # definition as _epoch in switch_claude_auth.py. The bound also
+            # keeps the comparison inside bash arithmetic.
+            until=${FORCE_API_UNTIL#"${FORCE_API_UNTIL%%[![:space:]]*}"}
+            until=${until%"${until##*[![:space:]]}"}
+            if [ -n "$until" ]; then
+              if [[ ! $until =~ ^[0-9]{1,18}$ ]] || [ "$until" -le "$(date +%s)" ]; then
+                force=false
+                echo "CLAUDE_FORCE_API_UNTIL has passed or is not an epoch; using OAuth"
+              fi
+            fi
+          fi
+          echo "Claude force_api: $force"
+          echo "force_api=$force" >> "$GITHUB_OUTPUT"
+
       # continue-on-error here and on the gemini/codex reviewer steps
       # means a reviewer's own death does not fail the job at that step.
       # It is not what keeps the chain alive: the orchestrator's
@@ -606,10 +639,12 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-4-6' }}
-          # vars is only readable in the caller, not the composite; collapse it
-          # to 'true'/'false' here so an unset/empty/non-'true' var yields
-          # 'false' -> OAuth path unchanged (AT-1606 feature-off invariant).
-          force_api: ${{ vars.CLAUDE_FORCE_API == 'true' }}
+          # vars is only readable in the caller, not the composite; 'Resolve
+          # Claude auth path' collapses it to 'true'/'false' so an
+          # unset/empty/non-'true' var yields 'false' -> OAuth path unchanged
+          # (AT-1606 feature-off invariant), and an expired UNTIL does too
+          # (AT-3439).
+          force_api: ${{ steps.claude-auth.outputs.force_api == 'true' }}
           # Same pattern: a consumer can override the bot allow-list (AT-2272)
           # without a base release by setting this var. It REPLACES the list
           # wholesale -- GitHub Actions has no way to merge it with a default
