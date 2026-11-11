@@ -54,8 +54,11 @@ selection, while `sequential` stops on a successful early exit. Failed selected
 reviewers remain expected; unselected files cannot supply responses. Local
 automatic approval remains disabled. This local integration is published from
 v1.24.0; see [local review](local-review.md).
-The external runner's existing caller has
-not adopted this optional input. No runner or consumer rollout is included.
+As of ai-dev-pr-review-runner `65390ee`, the runner's remote caller
+passes this optional input from its trusted `REVIEWERS` Actions variable, and
+unset selects the existing three
+([runner reviewer selection at `65390ee`](https://github.com/ignite-corp/ai-dev-pr-review-runner/blob/65390ee96a9fce2c59c086e9e3afa630fc600052/README.md#reviewer-selection)).
+No runner roster change or consumer rollout is included.
 The full-roster PR response gate
 continues to require every expected reviewer, independently of approval quorum.
 Its unresolved-thread and folded-finding checks remain independent of the
