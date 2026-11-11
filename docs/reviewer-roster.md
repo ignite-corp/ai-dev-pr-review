@@ -52,8 +52,8 @@ dispatch, coordinates, inline posting and aggregation. Both modes use one
 process group at a time to protect the shared tree: `parallel` runs every
 selection, while `sequential` stops on a successful early exit. Failed selected
 reviewers remain expected; unselected files cannot supply responses. Local
-automatic approval remains disabled. This local integration is source-only
-until published; see [local review](local-review.md).
+automatic approval remains disabled. This local integration is published from
+v1.24.0; see [local review](local-review.md).
 The external runner's existing caller has
 not adopted this optional input. No runner or consumer rollout is included.
 The full-roster PR response gate
@@ -68,8 +68,8 @@ withholding for unresolved majors remain in force. A roster change is not a disp
 does not add historical finding carryover or replace consumer unresolved-thread
 and folded-finding gates.
 
-The workflow interface is published from v1.22.0. Source prepare and aggregate
-helpers remain pinned to v1.21.0; single uses v1.22.1, including its auth fix.
+The workflow interface is published from v1.22.0. The prepare helpers remain
+pinned to v1.21.0; single and aggregate use v1.24.0.
 No new helper file is assumed. Callers adopt
 the input explicitly. No production four-provider service round, account provisioning,
 secret or variable change, or automatic activation is claimed by these tests.

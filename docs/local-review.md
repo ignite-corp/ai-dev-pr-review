@@ -141,7 +141,7 @@ protect the shared worktree. `parallel` runs all selected reviewers;
 `sequential` follows the same configured order and stops on a successful early
 exit. The supported four-provider artifact registry is always cleaned and
 checked for provenance, including files for unselected reviewers.
-This local integration is source-only until published; it does not deploy the
+This local integration is published from v1.24.0; it does not deploy the
 external runner or change consumer configurations.
 
 `ALLOW_AUTO_APPROVE` is pinned to `false` whatever you set. There is no App
