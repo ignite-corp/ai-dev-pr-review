@@ -8,7 +8,10 @@ provision an account: the caller must explicitly forward the optional
 is unavailable fails and remains in the configured response denominator.
 The source local driver accepts the same ordered roster through `REVIEWERS`
 in its process environment or existing settings file. Its default remains
-the existing three. The external runner has not adopted optional selection.
+the existing three. As of ai-dev-pr-review-runner `65390ee`, the
+runner's remote caller passes this input from its trusted `REVIEWERS` Actions
+variable; unset selects the existing three
+([runner reviewer selection at `65390ee`](https://github.com/ignite-corp/ai-dev-pr-review-runner/blob/65390ee96a9fce2c59c086e9e3afa630fc600052/README.md#reviewer-selection)).
 
 This workflow interface is published from v1.22.0; callers adopt it
 explicitly. No production four-provider service round has been verified.
