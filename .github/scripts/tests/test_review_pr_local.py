@@ -87,18 +87,21 @@ MAIN_ALLOWED = {
     "args.pr_number.isdigit()",
     "DriverError(f'Invalid PR_NUMBER: {args.pr_number}')",
     "LocalConfig.load(args.config)",
+    # Operator configuration errors are rejected before any PR access.
+    "config.reviewers()",
     "resolve_run_dir(args)",
     "print(f'Run directory: {run_dir}')",
-    "review_pr(run_dir, clone, work, config, args)",
+    "review_pr(run_dir, clone, work, config, args, reviewers)",
     "aggregate_env(args.repo, args.pr_number, config, bot_login=outcome.bot_login,"
     " head_sha=outcome.head_sha, pr_author=outcome.pr_author, size=outcome.size,"
     " policy=outcome.policy, conclusions=outcome.conclusions,"
-    " prepare_result=outcome.prepare_result, inline_run_id=outcome.inline_run_id)",
+    " prepare_result=outcome.prepare_result, inline_run_id=outcome.inline_run_id,"
+    " reviewers=outcome.reviewers)",
     "aggregate(outcome.cwd or run_dir, aggregate_env(args.repo, args.pr_number,"
     " config, bot_login=outcome.bot_login, head_sha=outcome.head_sha,"
     " pr_author=outcome.pr_author, size=outcome.size, policy=outcome.policy,"
     " conclusions=outcome.conclusions, prepare_result=outcome.prepare_result,"
-    " inline_run_id=outcome.inline_run_id))",
+    " inline_run_id=outcome.inline_run_id, reviewers=outcome.reviewers))",
 }
 
 
@@ -267,9 +270,9 @@ def test_aggregate_roster_is_the_default_three_dispatched_locally(monkeypatch, a
         policy=driver.initial_policy(),
         conclusions=driver.initial_conclusions(),
     )
-    assert env[REVIEWERS_ENV] == json.dumps(driver.REVIEWER_NAMES)
+    assert env[REVIEWERS_ENV] == json.dumps(driver.DEFAULT_REVIEWERS)
     assert json.loads(env[REVIEWERS_ENV]) == ["claude", "codex", "gemini"]
-    assert set(json.loads(env[REVIEWERS_ENV])) == set(driver.REVIEWER_SCRIPTS)
+    assert set(json.loads(env[REVIEWERS_ENV])).issubset(driver.REVIEWER_SCRIPTS)
 
 
 def test_aggregate_reads_the_same_jaccard_threshold_as_the_posting_step(
@@ -318,8 +321,9 @@ def test_only_one_function_decides_the_auto_approve_value():
 def test_the_reviewer_tables_cover_every_reviewer():
     """A reviewer missing from either table never runs and reports
     "skipped" -- a silent gap, not an error. Import fails instead."""
-    assert set(driver.SEQUENTIAL_ORDER) == set(driver.REVIEWER_NAMES)
-    assert set(driver.REVIEWER_SCRIPTS) == set(driver.REVIEWER_NAMES)
+    assert driver.DEFAULT_REVIEWERS == ("claude", "codex", "gemini")
+    assert set(driver.DEFAULT_REVIEWERS).issubset(driver.SUPPORTED_REVIEWERS)
+    assert set(driver.REVIEWER_SCRIPTS) == set(driver.SUPPORTED_REVIEWERS)
 
 
 def test_every_reviewer_script_exists():
@@ -328,9 +332,9 @@ def test_every_reviewer_script_exists():
 
 
 def test_run_artifacts_covers_every_reviewers_files():
-    """Built from REVIEWER_NAMES rather than respelled: a name that drifts
+    """Built from SUPPORTED_REVIEWERS rather than respelled: a name that drifts
     promotes the previous run's verdict as this run's answer."""
-    for name in driver.REVIEWER_NAMES:
+    for name in driver.SUPPORTED_REVIEWERS:
         assert f"review-{name}.json" in driver.RUN_ARTIFACTS
         assert f"{name}-review.log" in driver.RUN_ARTIFACTS
 
@@ -1399,7 +1403,7 @@ def test_the_run_says_which_model_each_reviewer_uses(monkeypatch, capsys):
     monkeypatch.setenv("CODEX_MODEL", "operator-choice")
     driver.print_run_identity(LocalConfig.load())
     out = capsys.readouterr().out
-    for name in driver.REVIEWER_NAMES:
+    for name in driver.DEFAULT_REVIEWERS:
         assert f"{name}=" in out
     assert "operator-choice (operator)" in out
     assert "(workflow default)" in out
@@ -1488,7 +1492,7 @@ def test_a_killed_reviewers_verdict_does_not_end_a_sequential_run(
     driver.run_reviewers(tmp_path, LocalConfig.load(), conclusions)
 
     assert conclusions["claude"] == "failure"
-    assert reached == list(driver.SEQUENTIAL_ORDER)
+    assert reached == list(driver.DEFAULT_REVIEWERS)
     assert "skipping the rest" not in capsys.readouterr().out
     # And the file itself does not survive the round either -- see
     # test_a_killed_reviewers_file_is_not_left_for_the_aggregate, which is
@@ -2248,7 +2252,10 @@ def test_an_unclearable_slot_stops_the_round_being_posted(tmp_path, monkeypatch)
     _reviewer_stand_ins(
         tmp_path,
         monkeypatch,
-        {name: _WRITES_OWN_VERDICT.format(name=name) for name in driver.REVIEWER_NAMES},
+        {
+            name: _WRITES_OWN_VERDICT.format(name=name)
+            for name in driver.DEFAULT_REVIEWERS
+        },
     )
     monkeypatch.setattr(driver, "disown_unauthored_verdicts", lambda *a: False)
     conclusions = driver.initial_conclusions()
@@ -2359,7 +2366,7 @@ def test_the_coordinate_screen_and_the_comments_stop_with_the_round(
     """
     reached: list[str] = []
     monkeypatch.setattr(driver, "append_prior_context", lambda *a: None)
-    monkeypatch.setattr(driver, "print_run_identity", lambda config: None)
+    monkeypatch.setattr(driver, "print_run_identity", lambda *args: None)
     monkeypatch.setattr(driver, "run_reviewers", lambda *a: False)
     monkeypatch.setattr(driver, "check_coordinates", lambda w: reached.append("screen"))
     monkeypatch.setattr(

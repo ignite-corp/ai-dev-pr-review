@@ -3,7 +3,8 @@
 LENS normally runs as three reusable workflows. A private repository on an
 account whose Actions billing is blocked never starts a runner, so the
 workflows cannot review it at all. `review_pr_local.py` runs the same
-scripts, in the same order, with the same environment, on your machine.
+review scripts on your machine, with an explicit reviewer selection and
+filtered environments.
 
 **That billing premise no longer holds**: one such account has since run
 full reviews on Actions. That evidence is attributed rather than
@@ -57,6 +58,9 @@ so a wrong path costs two API calls rather than a full clone.
 | `claude` | Logged in (`~/.claude`), or its credential named in `LENS_REVIEWER_ENV_PASSTHROUGH`. |
 | `codex` | Logged in (`~/.codex`), or `OPENAI_API_KEY` named in `LENS_REVIEWER_ENV_PASSTHROUGH`. |
 | `GOOGLE_AI_API_KEY` | Read by `review_gemini.py`, and forwarded to that reviewer only. |
+| Copilot (optional) | SDK dependencies plus a trusted native CLI 1.0.105 outside the entire per-PR run directory; export `COPILOT_CLI_PATH` and `COPILOT_GITHUB_TOKEN`. See [Copilot](copilot-review.md). |
+
+Only selected reviewers need their provider credentials and runtimes.
 
 **The driver sets no credential of its own, and does not hand your whole
 environment to the reviewers either.** The filter is applied twice, by the
@@ -79,6 +83,7 @@ exported, none of which a review needs. So each reviewer gets an allowlist:
 | `LENS_REVIEWER_ENV_PASSTHROUGH` | The names you chose, so the **shim** resolves the same list the driver did. A list of names, never a value. |
 | `API_TIMEOUT_MS`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | Read by the claude shim; **claude only**. |
 | `GOOGLE_AI_API_KEY`, `GEMINI_MAX_OUTPUT_TOKENS` | Read by name in `review_gemini.py`; **gemini only**. |
+| `COPILOT_GITHUB_TOKEN`, `COPILOT_CLI_PATH` | Explicit process environment only; **copilot only**, even if listed in general passthrough. The adapter isolates the native runtime environment. |
 | Whatever you name in `LENS_REVIEWER_ENV_PASSTHROUGH` | Your decision -- see below. |
 
 **Which credential a reviewer authenticates with is still yours to choose.**
@@ -93,7 +98,8 @@ export LENS_REVIEWER_ENV_PASSTHROUGH=ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN
 ```
 
 It is a comma-separated list of variable **names**, settable in the config
-file too, and it applies to every reviewer.
+file too, and it applies to every reviewer, except the two reserved Copilot
+names above.
 
 **Every run prints what it withheld**, by name, per reviewer:
 
@@ -113,9 +119,30 @@ file, then the default **parsed back out of the workflow YAML**. Nothing
 restates a default in Python -- a model pin copied into a second place is a
 pin that goes stale silently.
 
-`LENS_REVIEWER_ENV_PASSTHROUGH` is the one setting the workflows do not
-declare -- there is no Actions run for it to describe -- so it is read from
-the environment and the config file only. See Requirements for what it does.
+`LENS_REVIEWER_ENV_PASSTHROUGH` and local `REVIEWERS` are read from the
+environment and the config file only. See Requirements for passthrough.
+
+`REVIEWERS` is one ordered JSON array, for example:
+
+```sh
+export REVIEWERS='["copilot","gemini","claude","codex"]'
+```
+
+An absent setting uses the shared default `["claude","codex","gemini"]`.
+Environment overrides the existing `--config` / `LENS_LOCAL_CONFIG` file.
+Empty, duplicate, unknown or malformed selections fail with a sanitized
+configuration error before GitHub access or cloning. The driver freezes the
+selection once, and uses it for dispatch, coordinates, inline comments and
+aggregation, including failure and size-skip paths. A missing credential or
+runtime fails that selected reviewer and keeps it in the denominator.
+
+Both existing execution modes launch one reviewer process group at a time to
+protect the shared worktree. `parallel` runs all selected reviewers;
+`sequential` follows the same configured order and stops on a successful early
+exit. The supported four-provider artifact registry is always cleaned and
+checked for provenance, including files for unselected reviewers.
+This local integration is source-only until published; it does not deploy the
+external runner or change consumer configurations.
 
 `ALLOW_AUTO_APPROVE` is pinned to `false` whatever you set. There is no App
 token to mint here and you cannot approve your own PR, so the verdict is
