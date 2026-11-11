@@ -12,7 +12,7 @@ the existing three. The external runner has not adopted optional selection.
 
 This workflow interface is published from v1.22.0; callers adopt it
 explicitly. No production four-provider service round has been verified.
-The local integration is source-only until a release publishes it.
+The local integration is published from v1.24.0.
 
 Install `.github/scripts/requirements.txt` (Copilot SDK 1.0.28), and provision a
 trusted Copilot CLI 1.0.105 executable outside the PR checkout. The adapter
