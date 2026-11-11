@@ -38,7 +38,7 @@ import sys
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, NamedTuple, TypeGuard, cast
+from typing import Any, NamedTuple, NoReturn, TypeGuard, cast
 
 # The payload-shape pair is written once, in github_pr_support, so the two
 # reviewer shims can gate their direct-write path on the SAME test this
@@ -116,6 +116,11 @@ ERROR_CAUSES_BY_KIND: dict[str, frozenset[str]] = {
         {"timeout", "quota_exhausted", "attempt_timeout"}
     ),
 }
+# Why a reviewer job was cancelled, as its 'Record cancel cause' step in
+# base-ai-review-single.yml classified it (AT-3410). Only external_cancel is
+# acted on; timeout is written so the two are told apart in the artifact.
+CANCEL_CAUSE_FIELD = "cancel_cause"
+CANCEL_CAUSE_EXTERNAL = "external_cancel"
 # Bullet icon of a major an earlier round's thread disposes of (AT-2843).
 DISPOSITIONED_ICON = "="
 _DISMISS_MESSAGE = "Superseded by new review"
@@ -543,26 +548,41 @@ def _current_pr_head(pr_number: str, repo: str) -> str | None:
     return result.stdout.strip() or None
 
 
+def _reviewed_head_against_live() -> tuple[str, str | None] | None:
+    """The head this run reviewed and the PR's head now, or None if unasked.
+
+    None means there is nothing to compare: no HEAD_SHA (prepare failed,
+    AT-2087, or skipped for size, AT-1975) or no PR to ask about. A live head
+    of None means the lookup itself failed.
+    """
+    reviewed = os.environ.get("HEAD_SHA", "").strip()
+    if not reviewed:
+        return None
+    pr_number = os.environ.get("PR_NUMBER", "").strip()
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if not pr_number or not repo:
+        return None
+    return reviewed, _current_pr_head(pr_number, repo)
+
+
 def _head_is_stale() -> bool:
     """True when a newer commit has superseded the head this run reviewed.
 
-    This is the discriminator, and it is not cancellation. The reviewer job
-    conclusions cannot tell "the run was cancelled" from "one reviewer died":
-    a cancel lands wherever the reviewers happen to be, so it produces every
-    mixture from three cancelled to none, and a dead reviewer produces one of
-    those same mixtures. Run 33615176056 shows how little the conclusions say
-    -- all three reviewers `cancelled`, and two of them had already uploaded
-    real reviews. No threshold over those values is correct in both
-    directions, so none is taken.
+    One of two ways a run learns it does not owe the PR a verdict; the other
+    is _cancelled_before_any_review (AT-3410), which covers the same head.
+    Neither reads the reviewer job conclusions: a cancel and a job timeout
+    both report every reviewer `cancelled` (probe runs 43020520145,
+    43020532010, 43020544005), and a cancel lands wherever the reviewers
+    happen to be -- run 33615176056 had all three `cancelled` and two of them
+    had already uploaded real reviews. No threshold over those values is
+    correct in both directions, so none is taken.
 
-    What actually matters is who owns the comment slot. If the head has moved,
-    a newer run is reviewing the current commit and will post; this run's
-    verdict is about a commit nobody is looking at any more, and posting it
-    races the live run for the same slot (AT-2092). If the head has not moved,
-    this run is still the one that owes the PR a verdict -- whether it was
-    cancelled by hand, lost a reviewer, or hit a timeout is indistinguishable
-    and, here, irrelevant. It posts the honest partial verdict naming who
-    died, which is the AT-1837 behavior, in either review mode.
+    If the head has moved, this run's verdict is about a commit nobody is
+    looking at any more; a run for the current commit exists or will, and
+    posting would race it for the same slot (AT-2092). Under runner queueing
+    (ai-dev-pr-review-runner#22) that run starts only after this one ends, so
+    a verdict posted here would be the newest one on the PR, about the wrong
+    commit, until that run finishes.
 
     Two cases are deliberately not stale:
 
@@ -571,21 +591,73 @@ def _head_is_stale() -> bool:
       there is nothing to compare anyway.
     * the head could not be determined -- rate limit, network, a PR that no
       longer exists. Failing that way posts a verdict that may be redundant;
-      failing the other way drops one silently. Redundancy is visible and the
-      live run's later verdict supersedes it; a dropped verdict is the defect
-      this whole file exists to prevent.
+      failing the other way drops one silently. Redundancy is visible and a
+      later run's verdict supersedes it; a dropped verdict is the defect this
+      whole file exists to prevent.
     """
-    reviewed = os.environ.get("HEAD_SHA", "").strip()
-    if not reviewed:
+    heads = _reviewed_head_against_live()
+    if heads is None or heads[1] is None:
         return False
-    pr_number = os.environ.get("PR_NUMBER", "").strip()
-    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
-    if not pr_number or not repo:
+    return heads[0] != heads[1]
+
+
+def _head_is_unchanged() -> bool:
+    """True only when the PR's head is confirmed to be the one reviewed.
+
+    Not ``not _head_is_stale()``: that is also true when nothing could be
+    compared, and this answer suppresses a verdict, so it must fail toward
+    posting instead.
+    """
+    heads = _reviewed_head_against_live()
+    return heads is not None and heads[1] is not None and heads[0] == heads[1]
+
+
+def _external_cancel_reviewers(
+    reviews: Mapping[str, dict[str, Any] | None],
+) -> list[str]:
+    """Reviewers whose job recorded it was cancelled from outside (AT-3410).
+
+    ``cancel_cause`` is written by the reviewer job's 'Record cancel cause'
+    step in base-ai-review-single.yml, which runs after every model step and
+    strips the field when the job is not being cancelled, so a model cannot
+    leave one behind. Only the exact value counts; a missing field -- a
+    reviewer pinned before AT-3410 -- or any other value is no cancel.
+    """
+    return [
+        name
+        for name, review in reviews.items()
+        if name in REVIEWERS
+        and review is not None
+        and review.get(CANCEL_CAUSE_FIELD) == CANCEL_CAUSE_EXTERNAL
+    ]
+
+
+def _cancelled_before_any_review(
+    reviews: Mapping[str, dict[str, Any] | None],
+) -> bool:
+    """True when this run was cancelled from outside before anyone reviewed.
+
+    All three must hold, so that a verdict only this run could give is never
+    dropped (AT-3410):
+
+    * a reviewer recorded ``external_cancel`` -- a cancel that landed short
+      of its job's cap, so not a timeout, which is a real outcome of this
+      round and still posts;
+    * the head is confirmed unchanged -- a moved head is _head_is_stale's,
+      and an unknown one fails toward posting;
+    * no reviewer produced a usable payload -- run 33615176056 was cancelled
+      after two real reviews, and its partial verdict still posts.
+
+    What remains is a run a cancel stopped before any reviewer had a review
+    to give. Its "0/N all failed" says the reviewers failed when they were
+    stopped, which dev-dotfiles#252 showed for three minutes (run
+    42937609117).
+    """
+    if not _external_cancel_reviewers(reviews):
         return False
-    current = _current_pr_head(pr_number, repo)
-    if current is None:
+    if _get_available(reviews):
         return False
-    return current != reviewed
+    return _head_is_unchanged()
 
 
 def _prepare_failure_result() -> str | None:
@@ -3163,6 +3235,39 @@ def _exit_if_verdict_blocks_merge(
     sys.exit(1)
 
 
+def _exit_head_superseded(result: dict[str, Any], why: str) -> NoReturn:
+    """End a run that does not owe the PR a verdict: post nothing, exit 1.
+
+    Two callers: a head that has moved (_head_is_stale, AT-2092) and a run
+    cancelled from outside before any reviewer produced a review
+    (_cancelled_before_any_review, AT-3410). The reason is the same for both
+    because the reader's question is the same -- which run speaks for this
+    PR -- and in neither is it this one.
+    """
+    result["reason"] = "head_superseded"
+    print(f"::notice title=Aggregate::{why} -- no verdict posted", file=sys.stderr)
+    print(f"Final verdict: none -- {why}")
+    # Not exit 0: nothing reviewed the current head, and a green required
+    # check would say something had.
+    #
+    # This is the one path that blocks without saying so on the PR, and it
+    # is an exception to AT-1975's "block visibly", not an instance of it.
+    # AT-1975 posts a comment because nothing else would ever explain the
+    # block. Here a comment from this run would be about a commit nobody is
+    # looking at, or would say reviewers failed that were only cancelled --
+    # the AT-2092 race and the AT-3410 false "all failed" are each that
+    # explanation. Whatever run follows posts the verdict; under runner
+    # queueing (ai-dev-pr-review-runner#22) it starts only after this run
+    # ends, so for that while the PR shows the previous verdict, or none.
+    #
+    # The one thing this costs (AT-3410): a run cancelled by hand, on a head
+    # that has not moved, with no reviewer payload, used to post "0/N all
+    # failed". It now posts nothing, and nothing follows it unless someone
+    # starts a run. That comment was never true -- the reviewers were
+    # cancelled, not failed -- and the red check remains.
+    sys.exit(1)
+
+
 # 54 statements: the gate PLR0915 is being switched on here catches a
 # function AT-2553 and AT-3023 grew, and AT-3114 added the merge-block call
 # (its body is _exit_if_verdict_blocks_merge). Splitting
@@ -3174,27 +3279,13 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
     # status context -- and it still fails, so a superseded run can never be
     # mistaken for one that reviewed the current commit.
     if _head_is_stale():
-        result["reason"] = "head_superseded"
-        print(
-            "::notice title=Aggregate::the head this run reviewed has been"
-            " superseded -- no verdict posted",
-            file=sys.stderr,
+        # This check also reports on the superseded commit, which is no
+        # longer the one the ruleset evaluates.
+        _exit_head_superseded(
+            result,
+            "head superseded; the run reviewing the current commit posts the"
+            " verdict for this PR",
         )
-        print(
-            "Final verdict: none -- head superseded; the run reviewing the"
-            " current commit posts the verdict for this PR"
-        )
-        # Not exit 0: nothing reviewed the current head, and a green required
-        # check would say something had. This check reports on the superseded
-        # commit, which is no longer the one the ruleset evaluates.
-        #
-        # This is the one path that blocks without saying so on the PR, and it
-        # is an exception to AT-1975's "block visibly", not an instance of it.
-        # AT-1975 posts a comment because nothing else would ever explain the
-        # block. Here the live run posts one seconds later, and any comment
-        # from this run is the AT-2092 race itself -- the explanation would be
-        # the defect.
-        sys.exit(1)
 
     # Checked before the size gate: when prepare fails, its size outputs are
     # empty, so the size path cannot recognise this run at all. The two are
@@ -3289,6 +3380,16 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
         sys.exit(0)
 
     reviews = load_reviews()
+    # After the reviewer files are read, and so after the prepare, size and
+    # policy exits above: none of those ran a reviewer, so none can carry a
+    # cancel cause, and their paths stay exactly as they were (AT-3410).
+    if _cancelled_before_any_review(reviews):
+        _exit_head_superseded(
+            result,
+            "run cancelled before any reviewer produced a review"
+            f" ({', '.join(_external_cancel_reviewers(reviews))} recorded"
+            " external_cancel)",
+        )
     conclusions = load_reviewer_conclusions()
     partial_names = _emit_partial_observability(reviews, conclusions)
     dispositioned = _read_dispositions(

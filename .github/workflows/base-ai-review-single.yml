@@ -82,6 +82,14 @@ jobs:
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
     steps:
+      # When the job began, for 'Record cancel cause' at the end (AT-3410).
+      # First, so the clock is as close to the job cap's own start as a step
+      # can get. A step output rather than GITHUB_ENV or a file: no later
+      # step -- a reviewer model's included -- can rewrite it.
+      - name: Record job start
+        id: job_start
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Validate reviewer input
         env:
           REVIEWER: ${{ inputs.reviewer }}
@@ -1822,6 +1830,91 @@ jobs:
           else
             echo "early_exit=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # --- Common: Record why the job is being cancelled (AT-3410) ---
+      # The aggregate posts nothing for a run cancelled from outside before
+      # any reviewer produced a review: its "0/N all failed" would say the
+      # reviewers failed when they were only cancelled. The aggregate cannot
+      # tell that from a timeout on its own -- needs.<job>.result and
+      # job.status read `cancelled` for a job timeout, `gh run cancel` and a
+      # concurrency supersede alike, and job outputs come back empty from a
+      # cancelled job (probe runs 43020520145, 43020532010, 43020544005) --
+      # so this step tells it, in the verdict file the artifact carries.
+      #
+      # Elapsed time is the only thing that separated the three: the timeout
+      # reached its always() steps at 72 s on a 60 s cap, the external
+      # cancels at 115 s and 117 s on a 480 s cap. A cancel before the cap,
+      # less a margin, is external_cancel; anything else is timeout, which
+      # the aggregate treats as before. The margin is AT-2276's slack, a
+      # minute or half the cap below two: the clock starts at 'Record job
+      # start', after the runner's set-up, which the cap counts and this
+      # clock does not, so a timeout reads up to set-up time short of the
+      # cap; a minute is several times the set-up these jobs take. Erring
+      # the other way costs nothing new -- a cancel in the last minute
+      # reads as timeout and posts, as every cancel did before.
+      #
+      # Its own step, not part of a reviewer's net: the nets exit early when
+      # a verdict file exists, and a cancel can land after one was written.
+      # Last before the upload so every writer of the file has run. The
+      # field is written only by this step: a job not being cancelled has
+      # it stripped, so a reviewer's own output cannot carry one through,
+      # and a file this step cannot read as one JSON object is not shipped.
+      # Not continue-on-error: a step that cannot record must not pass.
+      - name: Record cancel cause
+        if: always()
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+          JOB_STATUS: ${{ job.status }}
+          STARTED: ${{ steps.job_start.outputs.epoch }}
+          # Must equal the job's timeout-minutes; a test holds the two equal.
+          JOB_CAP_MINUTES: ${{ (inputs.reviewer == 'codex' && inputs.review-job-timeout-minutes < 26) && 26 || inputs.review-job-timeout-minutes }}
+          MARGIN_SECONDS: 60
+        run: |
+          set -euo pipefail
+          FILE="review-${REVIEWER}.json"
+          # Never follow a link at the verdict path (AT-2941).
+          if [ -L "$FILE" ]; then
+            rm -f -- "$FILE"
+          fi
+          if [ ! -e "$FILE" ]; then
+            exit 0
+          fi
+          OBJECT_FILTER='length == 1 and (.[0] | type == "object")'
+          if ! jq -e -s "$OBJECT_FILTER" "$FILE" >/dev/null 2>&1; then
+            echo "::warning::${FILE} is not one JSON object -- not uploaded"
+            rm -rf -- "$FILE"
+            exit 0
+          fi
+          CAUSE=""
+          if [ "${JOB_STATUS:-}" = "cancelled" ]; then
+            # Only digits reach $(( )); anything else leaves the cap at 0,
+            # which reads as timeout -- the direction that posts.
+            case "${JOB_CAP_MINUTES:-}" in
+              ""|*[!0-9]*) CAP_SECONDS=0 ;;
+              *) CAP_SECONDS=$(( 10#$JOB_CAP_MINUTES * 60 )) ;;
+            esac
+            SLACK_SECONDS=$(( CAP_SECONDS / 2 < MARGIN_SECONDS ? CAP_SECONDS / 2 : MARGIN_SECONDS ))
+            CAP_SECONDS=$(( CAP_SECONDS - SLACK_SECONDS ))
+            CAUSE="timeout"
+            case "${STARTED:-}" in
+              ""|*[!0-9]*) ;;
+              *)
+                NOW=$(date +%s)
+                if [ "$CAP_SECONDS" -gt 0 ] && [ $(( NOW - 10#$STARTED )) -lt "$CAP_SECONDS" ]; then
+                  CAUSE="external_cancel"
+                fi
+                ;;
+            esac
+            echo "::notice::${REVIEWER} job cancelled -- cancel_cause=${CAUSE}"
+          elif ! jq -e 'has("cancel_cause")' "$FILE" >/dev/null; then
+            exit 0
+          fi
+          NEXT=$(mktemp "./${REVIEWER}-cancel-cause.XXXXXX")
+          trap 'rm -f -- "$NEXT"' EXIT
+          jq --arg cause "$CAUSE" 'del(.cancel_cause)
+            + (if $cause == "" then {} else {cancel_cause: $cause} end)' \
+            "$FILE" > "$NEXT"
+          mv -fT -- "$NEXT" "$FILE"
 
       # --- Common: Upload artifact ---
       - name: Upload review artifact
