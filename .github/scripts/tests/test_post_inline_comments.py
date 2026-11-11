@@ -526,7 +526,9 @@ class TestMainRoundCutoff:
         )
         # The cutoff route looks the head up for its fold comment; never a
         # real `gh pr view` from a test.
-        monkeypatch.setattr(post_inline_comments, "get_pr_head_sha", lambda pr: "abc")
+        monkeypatch.setattr(
+            post_inline_comments, "get_pr_head_sha", lambda pr, repo: "abc"
+        )
         monkeypatch.setattr(
             sys,
             "argv",
@@ -593,7 +595,9 @@ class TestMainRoundCutoff:
         def fail_summary(*args: Any, **kwargs: Any) -> None:
             raise AssertionError("cutoff summary must not be posted below cutoff")
 
-        monkeypatch.setattr(post_inline_comments, "get_pr_head_sha", lambda pr: "abc")
+        monkeypatch.setattr(
+            post_inline_comments, "get_pr_head_sha", lambda pr, repo: "abc"
+        )
         monkeypatch.setattr(post_inline_comments, "post_inline_review", record_inline)
         monkeypatch.setattr(post_inline_comments, "post_cutoff_summary", fail_summary)
         self._run_main(monkeypatch, tmp_path)
@@ -632,7 +636,9 @@ class TestMainRoundCutoff:
         def fail_summary(*args: Any, **kwargs: Any) -> None:
             raise AssertionError("cutoff must not apply when a major is present")
 
-        monkeypatch.setattr(post_inline_comments, "get_pr_head_sha", lambda pr: "abc")
+        monkeypatch.setattr(
+            post_inline_comments, "get_pr_head_sha", lambda pr, repo: "abc"
+        )
         monkeypatch.setattr(post_inline_comments, "post_inline_review", record_inline)
         monkeypatch.setattr(post_inline_comments, "post_cutoff_summary", fail_summary)
         self._run_main(monkeypatch, tmp_path)

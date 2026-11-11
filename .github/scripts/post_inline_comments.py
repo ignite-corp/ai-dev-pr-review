@@ -626,14 +626,14 @@ def post_findings(
             f" folding {len(comments)} finding(s) into a summary comment"
         )
         try:
-            head: str | None = get_pr_head_sha(pr_number)
+            head: str | None = get_pr_head_sha(pr_number, repo)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             head = None
         post_cutoff_summary(repo, pr_number, reviewer, cutoff_round, comments, head)
         return
 
     try:
-        commit_sha = get_pr_head_sha(pr_number)
+        commit_sha = get_pr_head_sha(pr_number, repo)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         print(f"{reviewer}: failed to get PR head SHA: {e}", file=sys.stderr)
         post_fallback(repo, pr_number, reviewer, round_number, comments)
