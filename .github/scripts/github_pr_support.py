@@ -617,12 +617,32 @@ def fetch_paginated_nodes(
     return nodes
 
 
-def get_pr_head_sha(pr_number: str) -> str:
-    """Get the HEAD commit SHA of the PR."""
+def get_pr_head_sha(pr_number: str, repo: str) -> str:
+    """Get the HEAD commit SHA of the PR in ``repo``.
+
+    Required, never defaulted: without ``--repo``, gh resolves the PR
+    against the checkout it runs in. In the runner that is the runner
+    repository, not the target, so the lookup failed on every round and
+    every batch went to the head-less inline fallback (AT-3428, measured
+    on hyuk-hur/dev-dotfiles#254).
+    """
     if not pr_number.isdigit():
         raise ValueError(f"Invalid pr_number: {pr_number!r}")
+    if not repo:
+        raise ValueError("get_pr_head_sha needs the target repository")
     result = subprocess.run(
-        ["gh", "pr", "view", pr_number, "--json", "headRefOid", "-q", ".headRefOid"],
+        [
+            "gh",
+            "pr",
+            "view",
+            pr_number,
+            "--repo",
+            repo,
+            "--json",
+            "headRefOid",
+            "-q",
+            ".headRefOid",
+        ],
         capture_output=True,
         timeout=GH_TIMEOUT_SEC,
         text=True,

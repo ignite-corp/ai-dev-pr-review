@@ -368,7 +368,7 @@ def _run_post(
         round_counter or partial(_completed_round_count, completed_rounds),
     )
 
-    def head_sha(pr_number: str) -> str:
+    def head_sha(pr_number: str, repo: str) -> str:
         if head_sha_fails:
             raise subprocess.CalledProcessError(1, ["gh", "pr", "view"])
         return post_head_sha
