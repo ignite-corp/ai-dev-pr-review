@@ -43,6 +43,38 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
   CLI. Passing BOTH credentials silently bills the API. That is exactly why the
   composite passes the ternary (one or the other), never both.
 
+## Usage-limit auto switch (org vars)
+
+On a subscription usage limit, `switch_claude_auth.py detect-and-switch` (the
+post-step of the Claude review) sets the ignite-corp org vars
+`CLAUDE_FORCE_API=true` and `CLAUDE_FORCE_API_UNTIL=<reset epoch>`. Since
+AT-3439 these follow the Codex rules (`codex_review_auth.py`):
+
+- **Earliest reset wins**: an existing future `CLAUDE_FORCE_API_UNTIL`
+  combines as `min(existing, new)`; an expired one, or one that is not an
+  epoch, is replaced. A hand-set far value therefore gives way to the first
+  detected reset. An epoch is 1-18 ASCII digits after surrounding
+  whitespace; the review step and the script use that one definition.
+- **Expiry is authoritative at review start**: `Resolve Claude auth path` in
+  `base-ai-review-single.yml` passes `force_api=false` once
+  `CLAUDE_FORCE_API_UNTIL` has passed (or is not an epoch), so the first
+  review after the reset uses OAuth without waiting for the hourly
+  `claude-auth-restore.yml` cron.
+- **Manual pin**: `CLAUDE_FORCE_API=true` with no `CLAUDE_FORCE_API_UNTIL`
+  keeps forcing the API path, and the cron leaves it alone. Delete the var to
+  undo it. The automation does not leave this state behind: detection leaves
+  `CLAUDE_FORCE_API` unchanged when it cannot write `CLAUDE_FORCE_API_UNTIL`,
+  and the restore clears a flag a detection re-set while it was deleting.
+- **Restore re-reads**: the cron re-reads `CLAUDE_FORCE_API_UNTIL` before
+  each delete and stops if a review renewed the window in the meantime,
+  putting `CLAUDE_FORCE_API` back when the renewed window is in the future.
+
+Which release carries each part: the review-start check is inline in
+`base-ai-review-single.yml` and the detection runs from the pinned scripts
+checkout, so both reach consumers with the release that carries them; the
+cron runs from this repository's default branch, so the restore re-read
+applies on merge.
+
 ## Model selection
 
 - `vars.CLAUDE_MODEL` resolves in the **CALLER** repo and its org

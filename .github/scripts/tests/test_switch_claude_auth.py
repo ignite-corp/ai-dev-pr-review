@@ -10,6 +10,7 @@ import urllib.error
 from pathlib import Path
 from typing import Any
 
+import pytest
 import switch_claude_auth as sca
 
 _NOW = 1_800_000_000.0
@@ -37,7 +38,8 @@ class FakeApi:
     """Programmable urllib.request.urlopen replacement.
 
     `responses` maps "METHOD path" to a FakeResponse, an HTTPError code
-    (int), or an exception instance. Unlisted calls return 200 {}.
+    (int), or an exception instance. Unlisted calls return 200 {}. A list
+    is answered one item per call, the last item repeating.
     """
 
     def __init__(self, responses: dict[str, Any] | None = None) -> None:
@@ -49,6 +51,8 @@ class FakeApi:
         body = json.loads(req.data) if req.data else None
         self.calls.append((req.get_method(), path, body))
         result = self.responses.get(f"{req.get_method()} {path}")
+        if isinstance(result, list):
+            result = result.pop(0) if len(result) > 1 else result[0]
         if result is None:
             return FakeResponse(200, {})
         if isinstance(result, int):
@@ -113,6 +117,8 @@ def test_detect_sets_force_api_and_until_when_absent(monkeypatch, tmp_path):
             f"GET {_UNTIL_PATH}": 404,
             f"PATCH {_UNTIL_PATH}": 404,
             f"PATCH {_FORCE_PATH}": 404,
+            # GitHub answers a created variable with 201.
+            f"POST {_CREATE_PATH}": FakeResponse(201, {}),
         }
     )
     _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1800003600", api)
@@ -144,21 +150,50 @@ def test_detect_patches_existing_force_api_var(monkeypatch, tmp_path):
     ) in api.calls
 
 
-def test_detect_keeps_existing_until_epoch(monkeypatch, tmp_path):
-    api = FakeApi(
+def _until_writes(api: FakeApi) -> list[str]:
+    return [
+        b["value"]
+        for m, p, b in api.calls
+        if m in ("PATCH", "POST") and b and b.get("name") == "CLAUDE_FORCE_API_UNTIL"
+    ]
+
+
+def _existing_until(value: str) -> FakeApi:
+    return FakeApi(
         {
             f"GET {_UNTIL_PATH}": FakeResponse(
-                200, {"name": "CLAUDE_FORCE_API_UNTIL", "value": "111"}
+                200, {"name": "CLAUDE_FORCE_API_UNTIL", "value": value}
             )
         }
     )
+
+
+def test_detect_keeps_existing_until_that_is_earlier(monkeypatch, tmp_path):
+    api = _existing_until(str(int(_NOW) + 600))
     _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1800003600", api)
-    until_writes = [
-        (m, p) for m, p, _ in api.calls if m in ("PATCH", "POST") and "UNTIL" in p
-    ]
-    assert until_writes == []
-    # FORCE_API is still written (only the epoch is kept-first).
+    assert _until_writes(api) == []
+    # FORCE_API is still written.
     assert any(m == "PATCH" and p == _FORCE_PATH for m, p, _ in api.calls)
+
+
+def test_detect_replaces_later_future_until_with_earlier_reset(monkeypatch, tmp_path):
+    # min(existing, new): a later window does not outlive an earlier reset.
+    api = _existing_until(str(int(_NOW) + 7200))
+    _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1800003600", api)
+    assert _until_writes(api) == ["1800003600"]
+    assert any(m == "PATCH" and p == _FORCE_PATH for m, p, _ in api.calls)
+
+
+def test_detect_replaces_expired_until(monkeypatch, tmp_path):
+    api = _existing_until("111")
+    _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1800003600", api)
+    assert _until_writes(api) == ["1800003600"]
+
+
+def test_detect_replaces_invalid_until(monkeypatch, tmp_path):
+    api = _existing_until("not-an-int")
+    _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|1800003600", api)
+    assert _until_writes(api) == ["1800003600"]
 
 
 def test_detect_until_patch_falls_back_to_post_on_404(monkeypatch, tmp_path):
@@ -216,6 +251,155 @@ def test_restore_non_integer_until_deletes_both(monkeypatch):
     _run_restore(monkeypatch, api)
     assert ("DELETE", _FORCE_PATH, None) in api.calls
     assert ("DELETE", _UNTIL_PATH, None) in api.calls
+
+
+def test_restore_skips_when_until_renewed_before_delete(monkeypatch):
+    # A detection renewed the window between the first read and the delete.
+    past = str(int(_NOW) - 3600)
+    renewed = str(int(_NOW) + 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": renewed}),
+            ]
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert all(m == "GET" for m, _, _ in api.calls)
+
+
+def test_restore_keeps_until_renewed_after_force_delete(monkeypatch):
+    past = str(int(_NOW) - 3600)
+    renewed = str(int(_NOW) + 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": renewed}),
+            ]
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert ("DELETE", _FORCE_PATH, None) in api.calls
+    assert ("DELETE", _UNTIL_PATH, None) not in api.calls
+    # The renewed window gets its flag back after the delete.
+    deleted_at = api.calls.index(("DELETE", _FORCE_PATH, None))
+    assert (
+        "PATCH",
+        _FORCE_PATH,
+        {"name": "CLAUDE_FORCE_API", "value": "true"},
+    ) in api.calls[deleted_at:]
+
+
+def test_restore_deletes_force_reset_while_until_was_deleted(monkeypatch):
+    # A detection that wrote UNTIL just before our delete and FORCE just
+    # after it would leave FORCE without UNTIL: a manual pin nothing clears.
+    past = str(int(_NOW) - 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": FakeResponse(200, {"value": past}),
+            f"GET {_FORCE_PATH}": FakeResponse(200, {"value": "true"}),
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert api.calls.count(("DELETE", _FORCE_PATH, None)) == 2
+    until_deleted_at = api.calls.index(("DELETE", _UNTIL_PATH, None))
+    assert ("DELETE", _FORCE_PATH, None) in api.calls[until_deleted_at:]
+
+
+def test_restore_keeps_force_when_until_renewed_after_its_delete(monkeypatch):
+    # The detection wrote a new UNTIL after our UNTIL delete, then FORCE:
+    # that is a live window, not a stray flag.
+    past = str(int(_NOW) - 3600)
+    renewed = str(int(_NOW) + 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": renewed}),
+            ],
+            f"GET {_FORCE_PATH}": FakeResponse(200, {"value": "true"}),
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert api.calls.count(("DELETE", _FORCE_PATH, None)) == 1
+
+
+def test_restore_warns_when_force_reset_fails(monkeypatch, capsys):
+    past = str(int(_NOW) - 3600)
+    renewed = str(int(_NOW) + 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": renewed}),
+            ],
+            f"PATCH {_FORCE_PATH}": 500,
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    result = capsys.readouterr()
+    assert "::warning::" in result.out
+    assert "re-set failed" in result.err
+
+
+def test_restore_reports_until_removed_meanwhile(monkeypatch, capsys):
+    past = str(int(_NOW) - 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": past}),
+                FakeResponse(200, {"value": past}),
+                404,
+            ]
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    err = capsys.readouterr().err
+    assert "kept" not in err
+    assert "already removed" in err
+
+
+def test_detect_does_not_set_force_when_until_write_fails(
+    monkeypatch, tmp_path, capsys
+):
+    # FORCE without UNTIL is a manual pin; a failed UNTIL write must not
+    # become one.
+    api = FakeApi({f"GET {_UNTIL_PATH}": 404, f"PATCH {_UNTIL_PATH}": 500})
+    _run_detect(monkeypatch, tmp_path, "Claude AI usage limit reached|5", api)
+    assert not any(p == _FORCE_PATH for _, p, _ in api.calls)
+    assert "::warning::" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "+1800003600",
+        "1_800_003_600",
+        "18000 03600",
+        "-5",
+        "1" * 19,
+        "1800003600\u00a0",  # Unicode whitespace: bash does not trim it
+    ],
+)
+def test_epoch_accepts_only_plain_digits(value):
+    # One definition with the review step's bash check (AT-3439).
+    assert sca._epoch(value) is None
+
+
+def test_epoch_strips_surrounding_whitespace():
+    assert sca._epoch(" 1800003600\n") == 1800003600
 
 
 # --- Fail-safe ---
@@ -639,8 +823,8 @@ def test_detect_warns_on_existing_until_more_than_7_days_ahead(
     captured = result.out + result.err
     assert "::warning::" in captured
     assert f"CLAUDE_FORCE_API_UNTIL={far}" in captured
-    # Behaviour is unchanged: the far epoch is kept, not rewritten.
-    assert not any(m in ("PATCH", "POST") and "UNTIL" in p for m, p, _ in api.calls)
+    # min(existing, new): the far epoch is replaced by the detected reset.
+    assert _until_writes(api) == [str(int(_NOW) + 5 * 3600)]
 
 
 def test_far_until_warning_prints_the_parsed_integer_not_the_raw_value(

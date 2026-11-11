@@ -14,7 +14,10 @@ empty-secret toggle):
 - CLAUDE_FORCE_API: 'true' forces the billed API path (the caller reads it
   and passes force_api to the composite).
 - CLAUDE_FORCE_API_UNTIL: reset epoch (seconds). The cron restores the
-  subscription once this epoch has passed.
+  subscription once this epoch has passed, and the review step that reads
+  CLAUDE_FORCE_API ignores it once this epoch has passed, without waiting
+  for the cron (AT-3439). CLAUDE_FORCE_API=true with no UNTIL still forces
+  the API path: that is an operator's manual pin.
 
 Two modes:
 
@@ -22,11 +25,15 @@ Two modes:
   env EXEC_FILE; a JSON array of Agent SDK messages) for a usage-limit
   failure -- see _detect_limit. On detection, set CLAUDE_FORCE_API=true and
   CLAUDE_FORCE_API_UNTIL=<reset epoch> on the ignite-corp org vars (create
-  via POST if absent). The epoch is kept-first: an existing epoch is never
-  overwritten. Every outcome is logged, including no file and no match.
+  via POST if absent). An existing future epoch combines as
+  min(existing, new), so a window never outlives the earliest reset seen;
+  an expired one or one that is not an epoch is replaced (AT-3439). Every outcome is
+  logged, including no file and no match.
 - restore-if-due: if CLAUDE_FORCE_API_UNTIL exists and has passed, delete
   both CLAUDE_FORCE_API and CLAUDE_FORCE_API_UNTIL (delete = revert to the
   subscription; there is no default value to restore, unlike the model axis).
+  UNTIL is re-read before each delete, so a window a review renewed in the
+  meantime is not wiped (AT-3439).
 
 Token (a GitHub App installation token minted by the calling step):
 - GH_TOKEN: ignite-corp-scoped ops (org variables).
@@ -248,8 +255,8 @@ def _plausible_reset(epoch: float, now: float) -> bool:
 
     Anything else -- past, further out than any limit window, or NaN /
     Infinity, which json.loads accepts and which fail the comparison -- is
-    not written: keep-first would hold it until someone cleared the
-    variable by hand.
+    not written: a far epoch would hold the API path until a nearer reset
+    was detected or someone cleared the variable by hand.
     """
     return now < epoch <= now + _MAX_LIMIT_WINDOW_SEC
 
@@ -382,20 +389,34 @@ def _detect_limit(text: str, now: float) -> _Detection:
     )
 
 
-def _warn_far_until(existing: str, now: float) -> None:
-    """Name an UNTIL that no reset time explains. Behaviour is unchanged:
-    keep-first still keeps it (AT-3408). The parsed integer is printed, not
-    the raw value: int() accepts surrounding whitespace, newlines included,
-    and a line break would reach the workflow-command stream."""
-    try:
-        until = int(existing)
-    except ValueError:
-        return
-    if until - now > _MAX_LIMIT_WINDOW_SEC:
+_EPOCH_RE = re.compile(r"[0-9]{1,18}")
+
+
+def _epoch(value: str | None) -> int | None:
+    """The epoch in an org var value, or None when absent or not one.
+
+    Surrounding ASCII whitespace is ignored; what remains must be 1-18
+    ASCII digits. This is the same definition as the bash check in 'Resolve
+    Claude auth path' (base-ai-review-single.yml), so the review, the
+    detection and the restore agree on which values are epochs (AT-3439).
+    int() alone would also take a sign, underscores and non-ASCII digits.
+    """
+    # The characters bash's [:space:] trims on the runner, not str.strip()'s
+    # Unicode set.
+    stripped = (value or "").strip(" \t\n\v\f\r")
+    return int(stripped) if _EPOCH_RE.fullmatch(stripped) else None
+
+
+def _warn_far_until(existing: int, now: float) -> None:
+    """Name an UNTIL that no reset time explains (AT-3408). Under
+    min(existing, new) a detected reset replaces it (AT-3439). The parsed
+    integer is printed, not the raw value: a line break in the raw value
+    would reach the workflow-command stream."""
+    if existing - now > _MAX_LIMIT_WINDOW_SEC:
         print(
-            f"::warning::{_UNTIL_VAR}={until} is more than 7 days ahead, "
+            f"::warning::{_UNTIL_VAR}={existing} is more than 7 days ahead, "
             "further than any Claude limit window, so it was not set from a "
-            "reset time; kept as is"
+            "reset time; replaced by the detected reset"
         )
 
 
@@ -420,41 +441,86 @@ def detect_and_switch(corp_token: str) -> None:
 
     _log(f"Usage-limit signature detected, reset epoch {epoch}")
 
-    # Keep-first on the epoch: an existing earlier epoch is never pushed out
-    # by a later limit event inside the same window.
-    existing = _get_org_var(corp_token, _UNTIL_VAR)
-    if existing:
-        _log(f"{_UNTIL_VAR} already set, keeping existing epoch")
+    # min(existing, new), as codex_review_auth.persist does (AT-3439): an
+    # earlier epoch is never pushed out by a later limit event, and a later
+    # one -- a hand-set far value included -- gives way to the detected
+    # reset. An expired value, or one that is not an epoch, is replaced.
+    existing = _epoch(_get_org_var(corp_token, _UNTIL_VAR))
+    until = epoch
+    if existing is not None and existing > now:
         _warn_far_until(existing, now)
-    else:
-        _set_org_var(corp_token, _UNTIL_VAR, str(epoch))
+        until = min(existing, epoch)
+    if until == existing:
+        _log(f"{_UNTIL_VAR} already set to an earlier epoch, keeping it")
+    elif not _set_org_var(corp_token, _UNTIL_VAR, str(until)):
+        # FORCE without UNTIL is an operator's manual pin, which neither the
+        # review nor the restore expires; a failed write must not become one.
+        print(
+            f"::warning::{_UNTIL_VAR} could not be written, so "
+            f"{_FORCE_API_VAR} was left unchanged"
+        )
+        return
 
     force_ok = _set_org_var(corp_token, _FORCE_API_VAR, "true")
     _summary(
         f"Claude usage limit detected: {_FORCE_API_VAR}=true "
-        f"({'set' if force_ok else 'failed'}), restore at epoch "
-        f"{existing or epoch}"
+        f"({'set' if force_ok else 'failed'}), restore at epoch {until}"
     )
 
 
 def restore_if_due(corp_token: str) -> None:
-    until = _get_org_var(corp_token, _UNTIL_VAR)
-    if until is None:
+    original = _get_org_var(corp_token, _UNTIL_VAR)
+    if original is None:
         return
-    try:
-        epoch = int(until)
-    except ValueError:
-        _log(f"{_UNTIL_VAR} is not an integer, deleting both vars")
-        _delete_org_var(corp_token, _FORCE_API_VAR)
-        _delete_org_var(corp_token, _UNTIL_VAR)
-        return
-    now = time.time()
-    if now <= epoch:
+    epoch = _epoch(original)
+    if epoch is None:
+        _log(f"{_UNTIL_VAR} is not an epoch, deleting both vars")
+    elif time.time() <= epoch:
         _summary(f"Claude auth restore not due yet (epoch {epoch})")
         return
 
+    # Re-read before each delete, as codex_review_auth.restore does
+    # (AT-3439): a review that hit the limit again may have renewed the
+    # window since the first read, and deleting it would put the next
+    # review back on an exhausted subscription.
+    if _get_org_var(corp_token, _UNTIL_VAR) != original:
+        _summary("Claude auth restore skipped: the window changed; retry later")
+        return
     force_ok = _delete_org_var(corp_token, _FORCE_API_VAR)
+    current = _get_org_var(corp_token, _UNTIL_VAR)
+    if current != original:
+        # The renewing detection may have written its flag before the delete
+        # above; a renewed future window needs the flag back, or the review
+        # that reads it stays on the exhausted subscription until the next
+        # limit hit.
+        renewed = _epoch(current)
+        if current is None:
+            outcome = f"{_UNTIL_VAR} was already removed"
+        else:
+            outcome = f"{_UNTIL_VAR} kept"
+        if renewed is not None and renewed > time.time():
+            reforce_ok = _set_org_var(corp_token, _FORCE_API_VAR, "true")
+            outcome += f", {_FORCE_API_VAR} re-set {'ok' if reforce_ok else 'failed'}"
+            if not reforce_ok:
+                print(
+                    f"::warning::{_FORCE_API_VAR} could not be re-set for a "
+                    f"renewed {_UNTIL_VAR}; reviews use OAuth until the next "
+                    "limit is detected"
+                )
+        _summary(
+            f"Claude auth restore stopped: the window changed after "
+            f"{_FORCE_API_VAR} was deleted; {outcome}"
+        )
+        return
     until_ok = _delete_org_var(corp_token, _UNTIL_VAR)
+    # A detection that renewed UNTIL just before that delete writes its
+    # flag after it, leaving FORCE without UNTIL -- a manual pin nothing
+    # expires. Clear it, unless a detection after the delete already wrote
+    # a new future UNTIL: then the flag belongs to that live window.
+    if _get_org_var(corp_token, _FORCE_API_VAR) is not None:
+        renewed = _epoch(_get_org_var(corp_token, _UNTIL_VAR))
+        if renewed is None or renewed <= time.time():
+            force_ok = _delete_org_var(corp_token, _FORCE_API_VAR)
     _summary(
         f"Claude auth restored to subscription: deleted {_FORCE_API_VAR} "
         f"({'ok' if force_ok else 'failed'}) and {_UNTIL_VAR} "
