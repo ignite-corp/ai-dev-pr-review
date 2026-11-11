@@ -154,13 +154,32 @@ like something else.
   `pull_requests: write` on each, so it is the only one of the two that can act
   cross-org, and `organization_actions_variables: write`, which is what
   `switch_claude_auth.py` uses to set and delete the ignite-corp
-  `CLAUDE_FORCE_API` and `CLAUDE_FORCE_API_UNTIL` org vars. Measured
-  2026-10-16, neither installation grants any `actions` permission --
-  `organization_actions_variables: write` is a different key. Treat that as
-  an observation, not a
-  design guarantee: a negative goes stale silently, so re-read
-  `gh api orgs/ignite-corp/installations` and
-  `gh api orgs/ignite-pilot-org/installations` before building on the absence.
+  `CLAUDE_FORCE_API` and `CLAUDE_FORCE_API_UNTIL` org vars.
+- Measured 2026-11-11 (`gh api orgs/ignite-corp/installations` and
+  `gh api orgs/ignite-pilot-org/installations`, selecting app_id 4196135, and
+  `gh api apps/ignite-ai-review-approver`), the App and both installations
+  grant the same set: `actions: write`, `actions_variables: write`,
+  `checks: write`, `contents: write`, `metadata: read`,
+  `organization_actions_variables: write`, `pull_requests: write`. The
+  2026-10-16 reading that neither installation granted any `actions`
+  permission no longer holds; when the two were added is not recorded here
+  (AT-3394 lists what could not be measured).
+- The only caller found that needs `actions` or `actions_variables` is the
+  review relay in ai-dev-infra-common, which mints for the runner
+  repository alone with `actions: write`, `contents: read` and
+  `actions_variables: read` (`lambda/review-relay/handler.py` at `9977231`,
+  read 2026-11-11). The search behind "only" covered the workflows of this
+  repo, the runner and ai-dev-infra-common (AT-3394); consumer repositories
+  were not searched. On 2026-11-11 no mint in this repo named
+  `permission-actions` or `permission-actions-variables`.
+  `test_app_token_mint_permissions.py` makes each reviewer-App mint name its
+  permissions, but does not forbid those two. AT-3394 (b) plans to move the
+  relay to an App of its own and then remove both permissions from this
+  App; until that is done and re-measured, they are on the installations.
+- Treat the two measurement bullets above as observations, not design
+  guarantees: grants change without a commit here, and a negative goes
+  stale silently, so re-read `gh api orgs/ignite-corp/installations` and
+  `gh api orgs/ignite-pilot-org/installations` before building on them.
 
 Both mint short-lived tokens via `actions/create-github-app-token` (pinned per
 workflow). No PAT to manage / rotate.
