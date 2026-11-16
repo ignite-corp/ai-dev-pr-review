@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import sys
@@ -104,27 +105,47 @@ async def require_included_quota(client: CopilotClient, token: str) -> None:
     result = await client.rpc.account.get_quota(
         AccountGetQuotaRequest(git_hub_token=token), timeout=CONTROL_TIMEOUT
     )
-    chat = result.quota_snapshots.get("chat")
-    # An explicit no-overage grant is required even while included quota
-    # remains: a concurrent request could consume the last included unit.
-    if chat is None or any(
+    # Three codes, because a target check exempts exactly one of them
+    # (AT-3487): included_quota_unavailable, and only for a chat quota that
+    # is well formed and used up. Overage is checked first, over every
+    # bucket, so no other defect can hide it: an explicit no-overage grant
+    # is required even while included quota remains, since a concurrent
+    # request could consume the last included unit, and an account that
+    # permits or records overage is a setting the owner must fix.
+    if any(
         snapshot.overage_allowed_with_exhausted_quota is not False
         or snapshot.usage_allowed_with_exhausted_quota is not False
         or snapshot.overage != 0
         for snapshot in result.quota_snapshots.values()
     ):
-        raise ReviewFailure("included_quota_unavailable")
+        raise ReviewFailure("overage_enabled")
+    # A missing or inconsistent report shows nothing about exhaustion, so it
+    # fails closed without the exemption.
+    chat = result.quota_snapshots.get("chat")
+    if chat is None:
+        raise ReviewFailure("quota_unverifiable")
     # An unlimited plan has no finite entitlement to check. Decide it from the
     # flag alone: a paid account measured 2026-11-16 reported entitlement 0
     # with the flag set, not the -1 the SDK documents. Anything but a literal
     # True, a missing field included, is a finite plan.
     if getattr(chat, "is_unlimited_entitlement", False) is True:
         return
+    entitlement = chat.entitlement_requests
+    used = chat.used_requests
+    remaining = chat.remaining_percentage
+    # The SDK's parser already refuses non-numbers and booleans.
     if (
-        chat.entitlement_requests <= 0
-        or not 0 <= chat.used_requests < chat.entitlement_requests
-        or not 0 < chat.remaining_percentage <= 100
+        not all(math.isfinite(value) for value in (entitlement, used, remaining))
+        or entitlement <= 0
+        or used < 0
+        or not 0 <= remaining <= 100
     ):
+        raise ReviewFailure("quota_unverifiable")
+    used_up = used >= entitlement
+    if used_up != (remaining == 0):
+        # One counter says exhausted and the other does not.
+        raise ReviewFailure("quota_unverifiable")
+    if used_up:
         raise ReviewFailure("included_quota_unavailable")
 
 
@@ -201,6 +222,7 @@ def main() -> None:
     models: set[str] = set()
     payload: dict[str, object]
     interrupted = False
+    failure_code = ""
     try:
         token = os.environ.get("COPILOT_GITHUB_TOKEN", "").strip()
         cli = os.environ.get("COPILOT_CLI_PATH", "")
@@ -221,7 +243,7 @@ def main() -> None:
         interrupted = isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
         reason = "review_cancelled" if interrupted else "review_failed"
         if isinstance(exc, ReviewFailure):
-            reason = str(exc)
+            reason = failure_code = str(exc)
         payload = {
             "summary": f"Copilot review failed: {reason}",
             "status": "failed",
@@ -233,6 +255,15 @@ def main() -> None:
     payload["requested_model"] = "auto"
     payload["actual_models"] = sorted(models) if models else ["unknown"]
     write_verdict_json(REVIEW_FILE, payload, indent=2)
+    step_output = os.environ.get("GITHUB_OUTPUT", "")
+    if failure_code and step_output:
+        # The step output, not the verdict file, is what a gate may trust:
+        # the file is uploaded and read back. No child of this process can
+        # write here either: the CLI and runtime get isolated_env(), which
+        # carries no GITHUB_OUTPUT. The workflow allowlists the code before
+        # it leaves the job (AT-3487).
+        with open(step_output, "a", encoding="utf-8") as output:
+            output.write(f"failure_code={failure_code}\n")
     if interrupted:
         raise SystemExit(130)
 

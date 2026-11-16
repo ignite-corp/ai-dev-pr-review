@@ -79,7 +79,7 @@ def test_full_review_exports_the_exact_target_and_posted_result(
     aggregate.main()
     result = read_result(result_round)
     assert result == {
-        "version": 1,
+        "version": 2,
         "target_repo": "target/repository",
         "pr_number": "42",
         "head_sha": "a" * 40,
@@ -91,6 +91,7 @@ def test_full_review_exports_the_exact_target_and_posted_result(
         "unreviewed_majors": 0,
         "policy_skipped": False,
         "posted": True,
+        "quota_unavailable": [],
     }
 
 
@@ -167,6 +168,7 @@ def test_early_paths_export_facts_without_changing_existing_exit_codes(
         }[kind]
     )
     assert result["responded"] == []
+    assert result["quota_unavailable"] == []
     assert result["policy_skipped"] is (kind == "policy")
     assert result["posted"] is (kind != "stale")
 
@@ -307,3 +309,130 @@ def test_withheld_review_only_returns_success_after_its_comment_lands(
                 "body", "approve", comment_only=False, unreviewed_majors=1
             )
         assert exc.value.code == 1
+
+
+# AT-3487: the one exemption the runner may grant is a reviewer that could not
+# run because its included quota is gone, and only on the code the Copilot
+# step itself published (REVIEWER_FAILURE_COPILOT), never on payload text.
+QUOTA_CODE = "included_quota_unavailable"
+
+
+@pytest.fixture
+def copilot_round(
+    result_round: Path, monkeypatch: pytest.MonkeyPatch
+) -> pytest.MonkeyPatch:
+    roster = ("claude", "codex", "gemini", "copilot")
+    monkeypatch.setattr(
+        aggregate, "REVIEWERS", {name: f"review-{name}.json" for name in roster}
+    )
+    for name in roster:
+        monkeypatch.setenv(f"REVIEWER_RESULT_{name.upper()}", "success")
+    monkeypatch.delenv("REVIEWER_FAILURE_COPILOT", raising=False)
+    reviews: dict[str, dict[str, Any] | None] = {
+        name: payload() for name in roster if name != "copilot"
+    }
+    reviews["copilot"] = {
+        "summary": f"Copilot review failed: {QUOTA_CODE}",
+        "status": "failed",
+        "early_exit": False,
+        "issues": [],
+        "error": QUOTA_CODE,
+    }
+    monkeypatch.setattr(aggregate, "load_reviews", lambda: reviews)
+    return monkeypatch
+
+
+def test_trusted_quota_code_reaches_quota_unavailable(
+    result_round: Path, copilot_round: pytest.MonkeyPatch
+) -> None:
+    copilot_round.setenv("REVIEWER_FAILURE_COPILOT", QUOTA_CODE)
+    aggregate.main()
+    result = read_result(result_round)
+    assert result["version"] == 2
+    assert result["quota_unavailable"] == ["copilot"]
+    # Nothing else moves: copilot stays missing and partial, and the
+    # verdict still comes from the one existing approval quorum.
+    assert result["responded"] == ["claude", "codex", "gemini"]
+    assert result["partial"] == ["copilot"]
+    assert result["verdict"] == "approve"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "authentication_failed",
+        "credential_missing",
+        "cli_version_mismatch",
+        "cli_path_invalid",
+        "review_failed",
+        # An account that permits or records overage is not out of included
+        # quota: the owner must fix it, so it gets no exemption (2026-11-16).
+        "overage_enabled",
+        # A missing or inconsistent quota report shows nothing about
+        # exhaustion, so it fails closed without the exemption.
+        "quota_unverifiable",
+    ],
+)
+def test_another_trusted_code_is_not_quota_unavailable(
+    result_round: Path, copilot_round: pytest.MonkeyPatch, code: str
+) -> None:
+    copilot_round.setenv("REVIEWER_FAILURE_COPILOT", code)
+    aggregate.main()
+    assert read_result(result_round)["quota_unavailable"] == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "INCLUDED_QUOTA_UNAVAILABLE",
+        " included_quota_unavailable",
+        "included_quota_unavailable ",
+        "included_quota_unavailable\n",
+        "included_quota_unavailable,claude",
+        '["copilot"]',
+        "quota_unavailable",
+    ],
+)
+def test_unknown_or_forged_code_is_not_quota_unavailable(
+    result_round: Path, copilot_round: pytest.MonkeyPatch, code: str
+) -> None:
+    copilot_round.setenv("REVIEWER_FAILURE_COPILOT", code)
+    aggregate.main()
+    assert read_result(result_round)["quota_unavailable"] == []
+
+
+def test_payload_error_text_never_reaches_quota_unavailable(
+    result_round: Path, copilot_round: pytest.MonkeyPatch
+) -> None:
+    # The uploaded verdict says quota in every field it has; with no trusted
+    # step code it is just text a gate must not believe.
+    aggregate.main()
+    assert read_result(result_round)["quota_unavailable"] == []
+
+
+def test_quota_code_cannot_exempt_a_reviewer_that_responded(
+    result_round: Path, copilot_round: pytest.MonkeyPatch
+) -> None:
+    copilot_round.setenv("REVIEWER_FAILURE_COPILOT", QUOTA_CODE)
+    copilot_round.setattr(
+        aggregate,
+        "load_reviews",
+        lambda: {name: payload() for name in aggregate.REVIEWERS},
+    )
+    aggregate.main()
+    result = read_result(result_round)
+    assert result["responded"] == ["claude", "codex", "gemini", "copilot"]
+    assert result["quota_unavailable"] == []
+
+
+def test_quota_code_for_an_unselected_copilot_is_ignored(
+    result_round: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REVIEWER_FAILURE_COPILOT", QUOTA_CODE)
+    reviews: dict[str, dict[str, Any] | None] = {
+        name: payload() for name in aggregate.REVIEWERS
+    }
+    reviews["claude"] = None
+    monkeypatch.setattr(aggregate, "load_reviews", lambda: reviews)
+    aggregate.main()
+    assert read_result(result_round)["quota_unavailable"] == []

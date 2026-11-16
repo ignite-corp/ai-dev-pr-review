@@ -54,6 +54,9 @@ on:
       early_exit:
         description: "Whether the reviewer recommends stopping further reviews"
         value: ${{ jobs.review.outputs.early_exit }}
+      copilot_failure:
+        description: "Why the Copilot adapter could not review, as one fixed allowlisted code (review_failed for anything else); empty when it reviewed or did not finish. Read from the adapter's step output, never from the verdict artifact (AT-3487)"
+        value: ${{ jobs.review.outputs.copilot_failure }}
 
 permissions:
   contents: read
@@ -81,6 +84,7 @@ jobs:
     timeout-minutes: ${{ (inputs.reviewer == 'codex' && inputs.review-job-timeout-minutes < 26) && 26 || inputs.review-job-timeout-minutes }}
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
+      copilot_failure: ${{ steps.copilot-failure.outputs.code }}
     steps:
       # When the job began, for 'Record cancel cause' at the end (AT-3410).
       # First, so the clock is as close to the job cap's own start as a step
@@ -1821,6 +1825,35 @@ jobs:
             error: "invocation_incomplete"
           }' > "$NET"
           mv -fT -- "$NET" review-copilot.json
+
+      # The one reviewer failure a target check may exempt is Copilot's
+      # included quota being gone (AT-3487), so the reason has to reach the
+      # aggregate from somewhere a PR cannot write. The verdict file cannot
+      # be it: it is uploaded, downloaded and read as data. The adapter's
+      # own step output can: only that process writes it, and only for a
+      # ReviewFailure it raised. Only a completed adapter run owns a code,
+      # as only it owns a verdict above; the allowlist is the adapter's
+      # ReviewFailure codes, and anything else is a generic failure, so a
+      # new code cannot reach the gate until it is listed here.
+      - name: Publish trusted Copilot failure code
+        if: inputs.reviewer == 'copilot' && always()
+        id: copilot-failure
+        env:
+          FAILURE_CODE: ${{ steps.copilot-review.outputs.failure_code }}
+          STEP_OUTCOME: ${{ steps.copilot-review.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$STEP_OUTCOME" != success ] || [ -z "$FAILURE_CODE" ]; then
+            exit 0
+          fi
+          case "$FAILURE_CODE" in
+            credential_missing | cli_path_invalid | cli_version_mismatch | \
+              authentication_failed | included_quota_unavailable | \
+              overage_enabled | quota_unverifiable)
+              CODE="$FAILURE_CODE" ;;
+            *) CODE=review_failed ;;
+          esac
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
 
       # --- Common: Post inline comments ---
       - name: Post inline comments

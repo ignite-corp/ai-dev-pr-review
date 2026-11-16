@@ -3152,6 +3152,32 @@ def post_verdict(
     return True
 
 
+# The one reviewer failure review_result names (AT-3487): a reviewer that
+# could not run because its included quota is gone. Read only from the code
+# the reviewer's own workflow step published -- base-ai-review-single.yml,
+# 'Publish trusted Copilot failure code' -- forwarded per slot, and never
+# from a payload's error, which is uploaded data a PR can shape. Only Copilot
+# publishes one; a reviewer absent here can never be listed.
+QUOTA_UNAVAILABLE_CODE = "included_quota_unavailable"
+_TRUSTED_FAILURE_ENV = {"copilot": "REVIEWER_FAILURE_COPILOT"}
+
+
+def _quota_unavailable(available: Mapping[str, Any]) -> list[str]:
+    """Configured reviewers that did not respond for want of included quota.
+
+    A fact for the target check, not a verdict input: the verdict, the
+    approval quorum and the exit code stay exactly as they were. A reviewer
+    that did respond is never listed, whatever its code says.
+    """
+    return [
+        name
+        for name in REVIEWERS
+        if name in _TRUSTED_FAILURE_ENV
+        and name not in available
+        and os.environ.get(_TRUSTED_FAILURE_ENV[name], "") == QUOTA_UNAVAILABLE_CODE
+    ]
+
+
 def _write_review_result(result: dict[str, Any]) -> None:
     """Export outcome facts without changing the existing aggregate exit policy."""
     output_path = os.environ.get("GITHUB_OUTPUT", "")
@@ -3437,6 +3463,7 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
         reason="reviewed" if not partial_names else "partial_responses",
         responded=[name for name in REVIEWERS if name in available],
         partial=partial_names,
+        quota_unavailable=_quota_unavailable(available),
     )
 
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
@@ -3507,7 +3534,7 @@ def main() -> None:
     # Defaults describe an interrupted/failed aggregate, not an approving
     # round. Never copy model summaries, issues or provider errors here.
     result: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "target_repo": os.environ.get("GITHUB_REPOSITORY", ""),
         "pr_number": os.environ.get("PR_NUMBER", ""),
         "head_sha": os.environ.get("HEAD_SHA", ""),
@@ -3519,6 +3546,7 @@ def main() -> None:
         "unreviewed_majors": 0,
         "policy_skipped": False,
         "posted": False,
+        "quota_unavailable": [],
     }
     try:
         _aggregate(result)
