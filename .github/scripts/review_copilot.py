@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal, Self
 
@@ -54,6 +56,43 @@ class Review(BaseModel):
 
 class ReviewFailure(Exception):
     """Only fixed, credential-free reason codes may cross the output boundary."""
+
+
+# A class name is normally fixed where the class is defined, in the SDK or the
+# standard library, not by text a service returns, so it can name a failure
+# without carrying one; SDK 1.0.28 builds no exception class at runtime. A
+# class built at runtime could still take its name from service text, so only
+# an identifier is printed (nothing a workflow command or a sentence could
+# hide in), and never one shaped like a GitHub token, which is an identifier.
+_CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_TOKEN_PREFIX = re.compile(r"(?:gh[opusr]|github_pat)_", re.IGNORECASE)
+
+
+def exception_class(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if not _CLASS_NAME.fullmatch(name) or _TOKEN_PREFIX.match(name):
+        return "unknown"
+    return name
+
+
+@contextlib.contextmanager
+def stage(failure: ReviewFailure) -> Iterator[None]:
+    """Turn any other failure in a stage into that stage's fixed code (AT-3500).
+
+    The code is passed in already built, so every code stays a literal
+    ReviewFailure the workflow allowlist is checked against. Build it fresh at
+    each `with` site: the instance is the one raised, so a shared one would
+    carry one run's cause and traceback into the next. The adapter's own
+    codes pass unchanged, and cancellation is not a failure of the stage.
+    """
+    try:
+        yield
+    except ReviewFailure:
+        raise
+    except TimeoutError as exc:
+        raise ReviewFailure("review_failed:timeout") from exc
+    except Exception as exc:
+        raise failure from exc
 
 
 def isolated_env(root: Path) -> dict[str, str]:
@@ -153,7 +192,8 @@ async def run_review(
     prompt: str, token: str, cli: str, root: Path, models: set[str]
 ) -> Review:
     env = isolated_env(root)
-    await verify_cli(cli, root, env)
+    with stage(ReviewFailure("review_failed:start")):
+        await verify_cli(cli, root, env)
     client = CopilotClient(
         connection=RuntimeConnection.for_stdio(path=cli),
         mode="empty",
@@ -166,10 +206,12 @@ async def run_review(
     )
     try:
         async with asyncio.timeout(REVIEW_TIMEOUT):
-            await asyncio.wait_for(client.start(), CONTROL_TIMEOUT)
-            await asyncio.wait_for(
-                require_included_quota(client, token), CONTROL_TIMEOUT
-            )
+            with stage(ReviewFailure("review_failed:start")):
+                await asyncio.wait_for(client.start(), CONTROL_TIMEOUT)
+            with stage(ReviewFailure("review_failed:quota")):
+                await asyncio.wait_for(
+                    require_included_quota(client, token), CONTROL_TIMEOUT
+                )
 
             def record_usage(event: SessionEvent) -> None:
                 data = event.data
@@ -178,23 +220,28 @@ async def run_review(
                 ):
                     models.add(data.model)
 
-            session = await client.create_session(
-                model="auto",
-                available_tools=[],
-                tools=[],
-                on_permission_request=lambda _request, _invocation: (
-                    PermissionDecisionReject()
-                ),
-                on_event=record_usage,
-                working_directory=str(root / "work"),
-                config_directory=str(root / "config"),
-                enable_config_discovery=False,
-                system_message={"mode": "replace", "content": copilot_system_prompt()},
-            )
-            try:
-                return await session.send_and_wait_typed(
-                    prompt, Review, timeout=REVIEW_TIMEOUT
+            with stage(ReviewFailure("review_failed:session")):
+                session = await client.create_session(
+                    model="auto",
+                    available_tools=[],
+                    tools=[],
+                    on_permission_request=lambda _request, _invocation: (
+                        PermissionDecisionReject()
+                    ),
+                    on_event=record_usage,
+                    working_directory=str(root / "work"),
+                    config_directory=str(root / "config"),
+                    enable_config_discovery=False,
+                    system_message={
+                        "mode": "replace",
+                        "content": copilot_system_prompt(),
+                    },
                 )
+            try:
+                with stage(ReviewFailure("review_failed:send")):
+                    return await session.send_and_wait_typed(
+                        prompt, Review, timeout=REVIEW_TIMEOUT
+                    )
             except BaseException:
                 # A failed/cancelled wait may leave work running. Abort is
                 # best effort and must not replace the original send error.
@@ -203,6 +250,9 @@ async def run_review(
                 except Exception:
                     pass
                 raise
+    except TimeoutError as exc:
+        # The overall deadline expires outside any one stage.
+        raise ReviewFailure("review_failed:timeout") from exc
     finally:
         try:
             await asyncio.wait_for(client.stop(), CONTROL_TIMEOUT)
@@ -242,8 +292,10 @@ def main() -> None:
     except (Exception, asyncio.CancelledError, KeyboardInterrupt) as exc:
         interrupted = isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
         reason = "review_cancelled" if interrupted else "review_failed"
+        cause: BaseException | None = None if interrupted else exc
         if isinstance(exc, ReviewFailure):
             reason = failure_code = str(exc)
+            cause = exc.__cause__
         payload = {
             "summary": f"Copilot review failed: {reason}",
             "status": "failed",
@@ -251,7 +303,10 @@ def main() -> None:
             "issues": [],
             "error": reason,
         }
-        print(f"::warning::Copilot review failed: {reason}", file=sys.stderr)
+        # The class of the underlying error, never its message, goes to the
+        # job log only; the payload and step output keep the fixed code.
+        detail = f" ({exception_class(cause)})" if cause is not None else ""
+        print(f"::warning::Copilot review failed: {reason}{detail}", file=sys.stderr)
     payload["requested_model"] = "auto"
     payload["actual_models"] = sorted(models) if models else ["unknown"]
     write_verdict_json(REVIEW_FILE, payload, indent=2)

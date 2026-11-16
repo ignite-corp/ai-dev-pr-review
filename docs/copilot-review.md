@@ -49,6 +49,15 @@ Optional `EXISTING_COMMENTS` and `THREAD_COUNT` supply the existing thread
 excerpts used by the other reviewers. Output is `review-copilot.json` in that
 directory, using the existing review fields. Infrastructure failures produce
 `status: failed`, without exception text or authentication metadata.
+A failure that is none of the adapter's own codes names the stage it happened
+in (AT-3500): `review_failed:start` (CLI probe and runtime start),
+`review_failed:quota` (authentication and quota calls), `review_failed:session`,
+`review_failed:send`, or `review_failed:timeout` for a timeout at any stage or
+of the whole review. None of them is exempted. The job log adds the failing
+exception's class name in parentheses, only when it is a plain identifier,
+otherwise `unknown`; its message is never printed. Before AT-3500 every such
+failure was a bare `review_failed`, so a 2026-11-16 flip in which every run
+failed within seconds could not say which stage broke.
 `requested_model` records `auto`; `actual_models` records sanitized model IDs
 from SDK usage events, or `unknown` when the service supplies no such event.
 

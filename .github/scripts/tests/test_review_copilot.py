@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from copilot._jsonrpc import JsonRpcError
 from copilot.generated.rpc import AccountGetQuotaResult, AccountQuotaSnapshot
 from copilot.session_events import AssistantUsageData
 from pydantic import ValidationError
@@ -408,7 +409,7 @@ def test_generation_failure_aborts_and_force_stops_without_retry(client, tmp_pat
     _, instance, session = client
     session.send_and_wait_typed.side_effect = TimeoutError("sensitive detail")
     instance.stop.side_effect = RuntimeError("sensitive detail")
-    with pytest.raises(TimeoutError):
+    with pytest.raises(adapter.ReviewFailure, match=r"^review_failed:timeout$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     session.send_and_wait_typed.assert_awaited_once()
     session.abort.assert_awaited_once()
@@ -431,9 +432,11 @@ def test_abort_failure_preserves_original_send_error(client, tmp_path):
     session.abort.side_effect = RuntimeError("abort failed")
     instance.stop.side_effect = RuntimeError("stop failed")
     instance.force_stop.side_effect = RuntimeError("force stop failed")
-    with pytest.raises(TimeoutError) as caught:
+    with pytest.raises(adapter.ReviewFailure) as caught:
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
-    assert caught.value is original
+    # The stage code replaces the send error only at the output boundary.
+    assert str(caught.value) == "review_failed:timeout"
+    assert caught.value.__cause__ is original
     session.abort.assert_awaited_once()
     instance.stop.assert_awaited_once()
     instance.force_stop.assert_awaited_once()
@@ -602,3 +605,140 @@ def test_main_publishes_only_its_own_failure_code_as_a_step_output(
     adapter.main()
     written = output.read_text().splitlines() if output.exists() else []
     assert written == ([f"failure_code={expected}"] if expected else [])
+
+
+# AT-3500: a failure that is not one of the adapter's own codes names the
+# stage it happened in, as a fixed code, so a flip like 2026-11-16's (every
+# run review_failed in 6-8s) says where it broke. Never the exception text.
+SECRET = "SECRET ghp_exampletoken model text"
+STAGE_FAULTS = {
+    # fault: (where it is injected, exception, expected code, class logged)
+    "cli_probe": ("verify_cli", OSError(SECRET), "start", "OSError"),
+    "client_start": ("start", RuntimeError(SECRET), "start", "RuntimeError"),
+    "auth_status": ("auth", RuntimeError(SECRET), "quota", "RuntimeError"),
+    "get_quota": ("quota", JsonRpcError(-32000, SECRET), "quota", "JsonRpcError"),
+    "create_session": ("session", RuntimeError(SECRET), "session", "RuntimeError"),
+    "send": ("send", JsonRpcError(1, SECRET), "send", "JsonRpcError"),
+    "start_timeout": ("start", TimeoutError(SECRET), "timeout", "TimeoutError"),
+    "quota_timeout": (
+        "quota",
+        asyncio.TimeoutError(SECRET),
+        "timeout",
+        "TimeoutError",
+    ),
+    "session_timeout": ("session", TimeoutError(SECRET), "timeout", "TimeoutError"),
+    "send_timeout": ("send", TimeoutError(SECRET), "timeout", "TimeoutError"),
+}
+
+
+def _inject(where, exc, instance, session):
+    target = {
+        "verify_cli": adapter.verify_cli,
+        "start": instance.start,
+        "auth": instance.get_auth_status,
+        "quota": instance.rpc.account.get_quota,
+        "session": instance.create_session,
+        "send": session.send_and_wait_typed,
+    }[where]
+    target.side_effect = exc
+
+
+def _run_main(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "explicit")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "/cli")
+    output = tmp_path / "step-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    (tmp_path / "context.md").write_text("context")
+    (tmp_path / "pr.diff").write_text("diff")
+    adapter.main()
+    payload = json.loads((tmp_path / adapter.REVIEW_FILE).read_text())
+    written = output.read_text().splitlines() if output.exists() else []
+    return payload, written
+
+
+@pytest.mark.parametrize("fault", sorted(STAGE_FAULTS))
+def test_fault_at_each_stage_reports_its_stage_code(
+    client, monkeypatch, tmp_path, capsys, fault
+):
+    _, instance, session = client
+    where, exc, stage, exc_class = STAGE_FAULTS[fault]
+    _inject(where, exc, instance, session)
+    code = f"review_failed:{stage}"
+    payload, written = _run_main(monkeypatch, tmp_path)
+    log = capsys.readouterr()
+    assert payload["status"] == "failed"
+    assert payload["error"] == code
+    assert written == [f"failure_code={code}"]
+    # The class name goes to the job log only, never to the payload.
+    assert f"::warning::Copilot review failed: {code} ({exc_class})" in log.err
+    assert exc_class not in json.dumps(payload)
+    leaked = json.dumps(payload) + log.out + log.err
+    assert "SECRET" not in leaked
+    assert "ghp_" not in leaked
+
+
+def test_overall_review_deadline_reports_timeout(client, monkeypatch, tmp_path):
+    """asyncio.timeout() expiring around the stages is still a timeout."""
+    _, _, session = client
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    session.send_and_wait_typed.side_effect = hang
+    monkeypatch.setattr(adapter, "REVIEW_TIMEOUT", 0.05)
+    payload, written = _run_main(monkeypatch, tmp_path)
+    assert payload["error"] == "review_failed:timeout"
+    assert written == ["failure_code=review_failed:timeout"]
+    session.abort.assert_awaited_once()
+
+
+def test_adapter_codes_pass_through_a_stage_unchanged(client, monkeypatch, tmp_path):
+    """A ReviewFailure raised inside a stage keeps its own code."""
+    _, instance, _ = client
+    instance.get_auth_status.return_value = SimpleNamespace(isAuthenticated=False)
+    payload, written = _run_main(monkeypatch, tmp_path)
+    assert payload["error"] == "authentication_failed"
+    assert written == ["failure_code=authentication_failed"]
+
+
+def test_cancellation_inside_a_stage_is_not_a_stage_code(client, monkeypatch, tmp_path):
+    _, _, session = client
+    session.send_and_wait_typed.side_effect = asyncio.CancelledError()
+    with pytest.raises(SystemExit) as interrupted:
+        _run_main(monkeypatch, tmp_path)
+    assert interrupted.value.code == 130
+    payload = json.loads((tmp_path / adapter.REVIEW_FILE).read_text())
+    assert payload["error"] == "review_cancelled"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Bad::name",
+        "has space",
+        "x" * 65,
+        "",
+        "ghp_\nline",
+        "1leading",
+        # Token-shaped identifiers: valid names, still never printed.
+        "ghp_" + "a" * 36,
+        "gho_" + "a" * 36,
+        "ghs_" + "a" * 36,
+        "GHU_" + "a" * 36,
+        "github_pat_" + "a" * 40,
+    ],
+)
+def test_unsafe_exception_class_name_is_not_printed(
+    monkeypatch, tmp_path, capsys, name
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "explicit")
+    (tmp_path / "context.md").write_text("context")
+    (tmp_path / "pr.diff").write_text("diff")
+    odd = type("Placeholder", (RuntimeError,), {})
+    odd.__name__ = name
+    monkeypatch.setattr(adapter, "run_review", AsyncMock(side_effect=odd(SECRET)))
+    adapter.main()
+    err = capsys.readouterr().err
+    assert err == "::warning::Copilot review failed: review_failed (unknown)\n"

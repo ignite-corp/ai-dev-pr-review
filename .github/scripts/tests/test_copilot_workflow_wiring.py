@@ -689,6 +689,12 @@ TRUSTED_CODES = (
     "included_quota_unavailable",
     "overage_enabled",
     "quota_unverifiable",
+    # AT-3500: the stage a generic failure happened in.
+    "review_failed:start",
+    "review_failed:quota",
+    "review_failed:session",
+    "review_failed:send",
+    "review_failed:timeout",
 )
 PUBLISH = "Publish trusted Copilot failure code"
 
@@ -721,6 +727,9 @@ def test_known_failure_code_passes_the_allowlist_unchanged(
     "code",
     [
         "review_failed",
+        "review_failed:",
+        "review_failed:other",
+        "review_failed:send:quota",
         "INCLUDED_QUOTA_UNAVAILABLE",
         "included_quota_unavailable ",
         "included_quota_unavailable\ncode=included_quota_unavailable",
