@@ -111,8 +111,8 @@ _RESET_KEYS = ("resetsAt", "overageResetsAt")
 # milliseconds: as seconds it would be tens of thousands of years away.
 _MS_EPOCH_FLOOR = 10**12
 # No Claude limit window is longer than seven days, so a reset further out
-# than this is not a real reset time: a read one is not written, and an
-# existing UNTIL is warned about.
+# than this is not a real reset time: a read one is not written, an existing
+# UNTIL is warned about on detection and deleted on restore (AT-3469).
 _MAX_LIMIT_WINDOW_SEC = 7 * 24 * 3600
 
 
@@ -473,9 +473,19 @@ def restore_if_due(corp_token: str) -> None:
     if original is None:
         return
     epoch = _epoch(original)
+    now = time.time()
     if epoch is None:
         _log(f"{_UNTIL_VAR} is not an epoch, deleting both vars")
-    elif time.time() <= epoch:
+    elif epoch - now > _MAX_LIMIT_WINDOW_SEC:
+        # No reset time explains it (_plausible_reset), so it is not a
+        # window to wait out; left alone it holds the API key path until a
+        # real limit or a hand delete (AT-3469). A deliberate long pin is
+        # FORCE without UNTIL.
+        print(
+            f"::warning::{_UNTIL_VAR}={epoch} is more than 7 days ahead, "
+            "beyond any Claude limit window; deleting both vars"
+        )
+    elif now <= epoch:
         _summary(f"Claude auth restore not due yet (epoch {epoch})")
         return
 
