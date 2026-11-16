@@ -55,8 +55,16 @@ from SDK usage events, or `unknown` when the service supplies no such event.
 The model is fixed to Auto. Each invocation sends at most one review request,
 after checking that the explicit credential is authenticated, its chat quota
 has included requests remaining, and every returned quota bucket has no
-recorded overage or permission to continue after exhaustion. Missing or
-unsuitable quota information fails closed. This preflight supports the tested
+recorded overage or permission to continue after exhaustion. A chat quota that
+reports `is_unlimited_entitlement` as true is accepted without the
+included-request checks, since an unlimited plan has no finite entitlement. The
+decision reads the flag, not the number: a paid account measured 2026-11-16
+with CLI 1.0.105 / SDK 1.0.28 reported entitlement `0` with the flag set, not
+the SDK-documented `-1`. The no-overage check
+on every bucket still applies, so overage stays refused on an unlimited plan
+too. Missing or unsuitable quota information fails closed with
+`included_quota_unavailable`, and a missing unlimited flag counts as a finite
+plan. This preflight supports the tested
 request-quota account contract; it does not establish coverage of credit-based
 plans. Auto may choose a billable model; Auto itself is no no-charge guarantee.
 There is no paid fallback, provider key or adapter retry. The account owner must keep

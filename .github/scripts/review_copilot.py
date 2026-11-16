@@ -107,15 +107,21 @@ async def require_included_quota(client: CopilotClient, token: str) -> None:
     chat = result.quota_snapshots.get("chat")
     # An explicit no-overage grant is required even while included quota
     # remains: a concurrent request could consume the last included unit.
+    if chat is None or any(
+        snapshot.overage_allowed_with_exhausted_quota is not False
+        or snapshot.usage_allowed_with_exhausted_quota is not False
+        or snapshot.overage != 0
+        for snapshot in result.quota_snapshots.values()
+    ):
+        raise ReviewFailure("included_quota_unavailable")
+    # An unlimited plan has no finite entitlement to check. Decide it from the
+    # flag alone: a paid account measured 2026-11-16 reported entitlement 0
+    # with the flag set, not the -1 the SDK documents. Anything but a literal
+    # True, a missing field included, is a finite plan.
+    if getattr(chat, "is_unlimited_entitlement", False) is True:
+        return
     if (
-        chat is None
-        or any(
-            snapshot.overage_allowed_with_exhausted_quota is not False
-            or snapshot.usage_allowed_with_exhausted_quota is not False
-            or snapshot.overage != 0
-            for snapshot in result.quota_snapshots.values()
-        )
-        or chat.entitlement_requests <= 0
+        chat.entitlement_requests <= 0
         or not 0 <= chat.used_requests < chat.entitlement_requests
         or not 0 < chat.remaining_percentage <= 100
     ):
