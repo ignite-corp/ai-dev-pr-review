@@ -68,12 +68,19 @@ AT-3439 these follow the Codex rules (`codex_review_auth.py`):
 - **Restore re-reads**: the cron re-reads `CLAUDE_FORCE_API_UNTIL` before
   each delete and stops if a review renewed the window in the meantime,
   putting `CLAUDE_FORCE_API` back when the renewed window is in the future.
+- **Far value is cleared** (AT-3469): no Claude limit window is longer than
+  7 days, so detection never writes a reset further out than that. The
+  hourly restore treats a `CLAUDE_FORCE_API_UNTIL` more than 7 days ahead
+  (exactly 7 days is still kept) like one that is not an epoch: it logs a
+  warning and deletes both vars, through the same re-read. A deliberate
+  long pin is the manual pin above, `CLAUDE_FORCE_API=true` with no
+  `CLAUDE_FORCE_API_UNTIL`, never a far UNTIL.
 
 Which release carries each part: the review-start check is inline in
 `base-ai-review-single.yml` and the detection runs from the pinned scripts
 checkout, so both reach consumers with the release that carries them; the
 cron runs from this repository's default branch, so the restore re-read
-applies on merge.
+and the far-value clearing apply on merge.
 
 ## Model selection
 

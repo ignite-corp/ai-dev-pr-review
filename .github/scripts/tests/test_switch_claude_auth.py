@@ -253,6 +253,79 @@ def test_restore_non_integer_until_deletes_both(monkeypatch):
     assert ("DELETE", _UNTIL_PATH, None) in api.calls
 
 
+_WEEK = 7 * 24 * 3600
+
+
+def test_restore_far_until_deletes_both_and_warns(monkeypatch, capsys):
+    # A value no reset time explains is not a window to wait out (AT-3469).
+    far = str(int(_NOW) + 8 * 24 * 3600)
+    api = FakeApi({f"GET {_UNTIL_PATH}": FakeResponse(200, {"value": far})})
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert ("DELETE", _FORCE_PATH, None) in api.calls
+    assert ("DELETE", _UNTIL_PATH, None) in api.calls
+    out = capsys.readouterr().out
+    assert f"::warning::CLAUDE_FORCE_API_UNTIL={far} is more than 7 days" in out
+
+
+def test_restore_until_exactly_7_days_ahead_is_kept(monkeypatch, capsys):
+    edge = str(int(_NOW) + _WEEK)
+    api = FakeApi({f"GET {_UNTIL_PATH}": FakeResponse(200, {"value": edge})})
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert all(m == "GET" for m, _, _ in api.calls)
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_restore_until_7_days_and_1_second_ahead_is_deleted(monkeypatch):
+    beyond = str(int(_NOW) + _WEEK + 1)
+    api = FakeApi({f"GET {_UNTIL_PATH}": FakeResponse(200, {"value": beyond})})
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert ("DELETE", _FORCE_PATH, None) in api.calls
+    assert ("DELETE", _UNTIL_PATH, None) in api.calls
+
+
+def test_restore_far_until_skips_when_renewed_before_delete(monkeypatch):
+    # The far value goes through the same re-read guard as an expired one.
+    far = str(int(_NOW) + 8 * 24 * 3600)
+    renewed = str(int(_NOW) + 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": far}),
+                FakeResponse(200, {"value": renewed}),
+            ]
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert all(m == "GET" for m, _, _ in api.calls)
+
+
+def test_restore_far_until_renewed_after_force_delete_gets_flag_back(monkeypatch):
+    far = str(int(_NOW) + 8 * 24 * 3600)
+    renewed = str(int(_NOW) + 3600)
+    api = FakeApi(
+        {
+            f"GET {_UNTIL_PATH}": [
+                FakeResponse(200, {"value": far}),
+                FakeResponse(200, {"value": far}),
+                FakeResponse(200, {"value": renewed}),
+            ]
+        }
+    )
+    monkeypatch.setattr(sca.time, "time", lambda: _NOW)
+    _run_restore(monkeypatch, api)
+    assert ("DELETE", _UNTIL_PATH, None) not in api.calls
+    deleted_at = api.calls.index(("DELETE", _FORCE_PATH, None))
+    assert (
+        "PATCH",
+        _FORCE_PATH,
+        {"name": "CLAUDE_FORCE_API", "value": "true"},
+    ) in api.calls[deleted_at:]
+
+
 def test_restore_skips_when_until_renewed_before_delete(monkeypatch):
     # A detection renewed the window between the first read and the delete.
     past = str(int(_NOW) - 3600)
