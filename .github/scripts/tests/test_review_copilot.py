@@ -37,6 +37,13 @@ def quota(**changes):
     return AccountQuotaSnapshot(**(fields | changes))
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_step_output(monkeypatch):
+    # main() appends its failure code to $GITHUB_OUTPUT (AT-3487); under CI
+    # that is the pytest step's own output file, which no test may write.
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+
 @pytest.fixture
 def client(monkeypatch):
     session = SimpleNamespace(
@@ -200,25 +207,43 @@ def test_actual_model_comes_only_from_sanitized_sdk_usage(client, tmp_path):
     assert models == {"mai-code-1.1-flash"}
 
 
+# Three codes (AT-3487), because a target check exempts exactly one: an
+# account that permits or records overage is a configuration the owner must
+# fix (owner's decision, 2026-11-16), a report that cannot be read shows
+# nothing about exhaustion, and only a well-formed, used-up chat quota is
+# included_quota_unavailable.
+EXHAUSTED = {"used_requests": 50, "remaining_percentage": 0}
+
+
 @pytest.mark.parametrize(
-    "change",
+    ("change", "code"),
     [
-        {"overage_allowed_with_exhausted_quota": True},
-        {"usage_allowed_with_exhausted_quota": True},
-        {"overage": 1},
-        {"entitlement_requests": 0},
-        {"used_requests": 50},
-        {"used_requests": -1},
-        {"remaining_percentage": 0},
-        {"remaining_percentage": float("nan")},
+        ({"overage_allowed_with_exhausted_quota": True}, "overage_enabled"),
+        ({"usage_allowed_with_exhausted_quota": True}, "overage_enabled"),
+        ({"overage": 1}, "overage_enabled"),
+        (EXHAUSTED | {"overage": 1}, "overage_enabled"),
+        (EXHAUSTED, "included_quota_unavailable"),
+        (
+            {"used_requests": 60, "remaining_percentage": 0},
+            "included_quota_unavailable",
+        ),
+        ({"entitlement_requests": 0}, "quota_unverifiable"),
+        ({"entitlement_requests": -1}, "quota_unverifiable"),
+        ({"used_requests": 50}, "quota_unverifiable"),
+        ({"used_requests": -1}, "quota_unverifiable"),
+        ({"remaining_percentage": 0}, "quota_unverifiable"),
+        ({"remaining_percentage": -1}, "quota_unverifiable"),
+        ({"remaining_percentage": 101}, "quota_unverifiable"),
+        ({"remaining_percentage": float("nan")}, "quota_unverifiable"),
+        ({"remaining_percentage": float("inf")}, "quota_unverifiable"),
     ],
 )
-def test_unsuitable_quota_never_creates_session(client, tmp_path, change):
+def test_unsuitable_quota_never_creates_session(client, tmp_path, change, code):
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
         quota_snapshots={"chat": quota(**change)}
     )
-    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+    with pytest.raises(adapter.ReviewFailure, match=f"^{code}$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
     instance.stop.assert_awaited_once()
@@ -266,7 +291,7 @@ def test_unlimited_entitlement_without_overage_creates_session(client, tmp_path)
 def test_unlimited_entitlement_still_refuses_overage(client, tmp_path, change):
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = unlimited_snapshots(**change)
-    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
 
@@ -278,7 +303,7 @@ def test_unlimited_chat_does_not_hide_premium_overage_permission(client, tmp_pat
         **(UNLIMITED_PROBE | {"overage_allowed_with_exhausted_quota": True})
     )
     instance.rpc.account.get_quota.return_value = snapshots
-    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
 
@@ -289,7 +314,8 @@ def test_only_a_true_unlimited_flag_skips_entitlement_checks(client, tmp_path, f
     instance.rpc.account.get_quota.return_value = unlimited_snapshots(
         is_unlimited_entitlement=flag
     )
-    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+    # Finite, then, with the probe's entitlement of 0: not a readable quota.
+    with pytest.raises(adapter.ReviewFailure, match="^quota_unverifiable$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
 
@@ -299,7 +325,7 @@ def test_missing_unlimited_field_is_treated_as_finite(client, tmp_path):
     snapshots = unlimited_snapshots()
     del snapshots.quota_snapshots["chat"].is_unlimited_entitlement
     instance.rpc.account.get_quota.return_value = snapshots
-    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+    with pytest.raises(adapter.ReviewFailure, match="^quota_unverifiable$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
 
@@ -320,7 +346,7 @@ def test_missing_quota_never_creates_session(client, tmp_path):
     instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
         quota_snapshots={}
     )
-    with pytest.raises(adapter.ReviewFailure):
+    with pytest.raises(adapter.ReviewFailure, match="^quota_unverifiable$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
 
@@ -333,8 +359,48 @@ def test_safe_chat_does_not_hide_premium_overage_permission(client, tmp_path):
             "premium_interactions": quota(overage_allowed_with_exhausted_quota=True),
         }
     )
-    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+def test_missing_chat_does_not_hide_an_overage_bucket(client, tmp_path):
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
+        quota_snapshots={
+            "premium_interactions": quota(overage_allowed_with_exhausted_quota=True)
+        }
+    )
+    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"overage_allowed_with_exhausted_quota": True}, "overage_enabled"),
+        (EXHAUSTED, "included_quota_unavailable"),
+        ({"used_requests": 50}, "quota_unverifiable"),
+    ],
+)
+def test_preflight_code_reaches_the_step_output(
+    client, monkeypatch, tmp_path, change, code
+):
+    """The real preflight, through main(), to the output the workflow reads."""
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
+        quota_snapshots={"chat": quota(**change)}
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "explicit")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "/cli")
+    output = tmp_path / "step-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    (tmp_path / "context.md").write_text("context")
+    (tmp_path / "pr.diff").write_text("diff")
+    adapter.main()
+    assert output.read_text().splitlines() == [f"failure_code={code}"]
     instance.create_session.assert_not_awaited()
 
 
@@ -464,7 +530,8 @@ def test_fake_runtime_has_clean_environment_and_stops_on_auth_failure(
         " print('GitHub Copilot CLI 1.0.105.'); sys.exit(0)\n"
         f"proof = {str(proof)!r}\n"
         "with open(proof, 'w') as f:\n"
-        " json.dump({'ambient': 'GITHUB_TOKEN' in os.environ, 'cwd': os.getcwd(),"
+        " json.dump({'ambient': 'GITHUB_TOKEN' in os.environ,"
+        " 'step_output': 'GITHUB_OUTPUT' in os.environ, 'cwd': os.getcwd(),"
         " 'home': os.environ['HOME'], 'pid': os.getpid()}, f)\n"
         "print('SECRET runtime stderr', file=sys.stderr, flush=True)\n"
         "while True:\n"
@@ -482,11 +549,19 @@ def test_fake_runtime_has_clean_environment_and_stops_on_auth_failure(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("COPILOT_CLI_PATH", str(executable))
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "explicit-test-credential")
+    # The adapter's step output is the trusted failure code (AT-3487): the
+    # runtime, which reads PR content, must not inherit a path to it.
+    step_output = tmp_path / "step-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(step_output))
     (tmp_path / "context.md").write_text("context")
     (tmp_path / "pr.diff").write_text("diff")
     adapter.main()
     observed = json.loads(proof.read_text())
     assert observed["ambient"] is False
+    assert observed["step_output"] is False
+    assert step_output.read_text().splitlines() == [
+        "failure_code=authentication_failed"
+    ]
     assert observed["cwd"] != str(tmp_path)
     assert observed["home"] != os.environ.get("HOME")
     with pytest.raises(ProcessLookupError):
@@ -494,3 +569,36 @@ def test_fake_runtime_has_clean_environment_and_stops_on_auth_failure(
     verdict = json.loads((tmp_path / adapter.REVIEW_FILE).read_text())
     assert verdict["error"] == "authentication_failed"
     assert "SECRET" not in str(capsys.readouterr()) + json.dumps(verdict)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (
+            adapter.ReviewFailure("included_quota_unavailable"),
+            "included_quota_unavailable",
+        ),
+        (adapter.ReviewFailure("authentication_failed"), "authentication_failed"),
+        (RuntimeError("included_quota_unavailable"), None),
+        (None, None),
+    ],
+)
+def test_main_publishes_only_its_own_failure_code_as_a_step_output(
+    monkeypatch, tmp_path, failure, expected
+):
+    """AT-3487: the code a gate may trust is the adapter's, not payload text."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "explicit")
+    output = tmp_path / "step-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    (tmp_path / "context.md").write_text("context")
+    (tmp_path / "pr.diff").write_text("diff")
+    review = (
+        AsyncMock(side_effect=failure)
+        if failure is not None
+        else AsyncMock(return_value=adapter.Review(**EMPTY_REVIEW))
+    )
+    monkeypatch.setattr(adapter, "run_review", review)
+    adapter.main()
+    written = output.read_text().splitlines() if output.exists() else []
+    assert written == ([f"failure_code={expected}"] if expected else [])

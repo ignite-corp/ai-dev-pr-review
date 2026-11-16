@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import io
@@ -21,6 +22,8 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+
+import aggregate_reviews
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / ".github/scripts"
@@ -673,3 +676,166 @@ def test_dependency_command_uses_isolation_and_the_runner_directory(
             / "ai-dev-pr-review/.github/scripts/requirements.txt"
         ),
     ]
+
+
+# AT-3487: the Copilot failure code a target check may trust. It leaves the
+# adapter as a step output, passes a fixed allowlist in its own step, and is
+# forwarded by slot like copilot_result -- never read from the artifact.
+TRUSTED_CODES = (
+    "credential_missing",
+    "cli_path_invalid",
+    "cli_version_mismatch",
+    "authentication_failed",
+    "included_quota_unavailable",
+    "overage_enabled",
+    "quota_unverifiable",
+)
+PUBLISH = "Publish trusted Copilot failure code"
+
+
+def publish(tmp_path: Path, code: str, outcome: str = "success") -> dict[str, str]:
+    output = tmp_path / "publish-outputs"
+    output.unlink(missing_ok=True)
+    published = step(PUBLISH)
+    assert published["env"]["FAILURE_CODE"] == (
+        "${{ steps.copilot-review.outputs.failure_code }}"
+    )
+    assert published["env"]["STEP_OUTCOME"] == "${{ steps.copilot-review.outcome }}"
+    result = shell(
+        published["run"],
+        tmp_path,
+        {"FAILURE_CODE": code, "STEP_OUTCOME": outcome, "GITHUB_OUTPUT": str(output)},
+    )
+    assert result.returncode == 0, result.stderr
+    return read_outputs(output) if output.exists() and output.read_text() else {}
+
+
+@pytest.mark.parametrize("code", TRUSTED_CODES)
+def test_known_failure_code_passes_the_allowlist_unchanged(
+    tmp_path: Path, code: str
+) -> None:
+    assert publish(tmp_path, code) == {"code": code}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "review_failed",
+        "INCLUDED_QUOTA_UNAVAILABLE",
+        "included_quota_unavailable ",
+        "included_quota_unavailable\ncode=included_quota_unavailable",
+        "$(touch owned)",
+        "invocation_incomplete",
+    ],
+)
+def test_unknown_failure_code_becomes_a_generic_failure(
+    tmp_path: Path, code: str
+) -> None:
+    assert publish(tmp_path, code) == {"code": "review_failed"}
+    assert not (tmp_path / "owned").exists()
+
+
+@pytest.mark.parametrize("outcome", ["failure", "cancelled", "skipped"])
+def test_failure_code_of_an_unfinished_adapter_is_not_published(
+    tmp_path: Path, outcome: str
+) -> None:
+    assert publish(tmp_path, "included_quota_unavailable", outcome) == {}
+
+
+def test_no_failure_code_publishes_nothing(tmp_path: Path) -> None:
+    assert publish(tmp_path, "") == {}
+
+
+def test_real_adapter_failure_code_reaches_the_published_output(
+    tmp_path: Path, copilot_job: dict[str, str]
+) -> None:
+    adapter_output = tmp_path / "adapter-outputs"
+    run = step("Run Copilot review")
+    result = shell(
+        run["run"], tmp_path, {**copilot_job, "GITHUB_OUTPUT": str(adapter_output)}
+    )
+    assert result.returncode == 0, result.stderr
+    code = read_outputs(adapter_output)["failure_code"]
+    assert code == "credential_missing"
+    assert publish(tmp_path, code) == {"code": code}
+
+
+def test_failure_code_leaves_the_job_and_the_reusable_workflow() -> None:
+    single = workflow("base-ai-review-single")
+    assert single["jobs"]["review"]["outputs"]["copilot_failure"] == (
+        "${{ steps.copilot-failure.outputs.code }}"
+    )
+    assert single[True]["workflow_call"]["outputs"]["copilot_failure"]["value"] == (
+        "${{ jobs.review.outputs.copilot_failure }}"
+    )
+    steps = single["jobs"]["review"]["steps"]
+    names = [s.get("name") for s in steps]
+    published = steps[names.index(PUBLISH)]
+    assert published["id"] == "copilot-failure"
+    assert published["if"] == "inputs.reviewer == 'copilot' && always()"
+    assert names.index(PUBLISH) > names.index("Verify Copilot verdict file")
+
+
+@pytest.mark.parametrize("mode", ["parallel", "sequential"])
+def test_failure_code_is_forwarded_by_copilot_slot_only(mode: str) -> None:
+    jobs = workflow("base-ai-review-orchestrator")["jobs"]
+    expression = jobs["aggregate"]["with"]["copilot_failure"]
+    assert evaluate(expression, {}) == ""
+    for size in range(1, 5):
+        for names in itertools.permutations(ALL, size):
+            values = slot_values(names, mode)
+            for i in range(1, 5):
+                for suffix in ("p", "s"):
+                    values[f"needs.review-{i}-{suffix}.outputs.copilot_failure"] = (
+                        f"{suffix}-slot-{i}"
+                    )
+            expected = (
+                f"{mode[0]}-slot-{names.index('copilot') + 1}"
+                if "copilot" in names
+                else ""
+            )
+            assert evaluate(expression, values) == expected
+
+
+def test_aggregate_reads_the_forwarded_code_from_its_input_only() -> None:
+    aggregate_workflow = workflow("base-ai-review-aggregate")
+    declared = aggregate_workflow[True]["workflow_call"]["inputs"]["copilot_failure"]
+    assert declared["type"] == "string" and declared["default"] == ""
+    run = next(
+        s
+        for s in aggregate_workflow["jobs"]["aggregate"]["steps"]
+        if s.get("id") == "aggregate"
+    )
+    assert run["env"]["REVIEWER_FAILURE_COPILOT"] == "${{ inputs.copilot_failure }}"
+
+
+def test_allowlist_is_exactly_the_adapters_failure_codes() -> None:
+    """The codes are literals in three places; drift must turn this red.
+
+    A code the adapter raises but the allowlist lacks reaches the aggregate
+    as review_failed, and a quota code spelled differently on either side
+    silently turns the exemption off.
+    """
+    tree = ast.parse((SCRIPTS / "review_copilot.py").read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ReviewFailure"
+    ]
+    # A computed code could not be listed here, so none may exist.
+    assert calls and all(
+        len(call.args) == 1
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+        for call in calls
+    )
+    raised = {call.args[0].value for call in calls}  # type: ignore[union-attr]
+    case = re.search(
+        r'case "\$FAILURE_CODE" in(.*?)\)\s*\n', step(PUBLISH)["run"], re.S
+    )
+    assert case is not None
+    allowed = {code.strip() for code in case[1].replace("\\", "").split("|")}
+    assert raised == allowed == set(TRUSTED_CODES)
+    assert aggregate_reviews.QUOTA_UNAVAILABLE_CODE in raised

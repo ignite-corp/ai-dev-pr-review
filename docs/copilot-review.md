@@ -62,9 +62,21 @@ decision reads the flag, not the number: a paid account measured 2026-11-16
 with CLI 1.0.105 / SDK 1.0.28 reported entitlement `0` with the flag set, not
 the SDK-documented `-1`. The no-overage check
 on every bucket still applies, so overage stays refused on an unlimited plan
-too. Missing or unsuitable quota information fails closed with
-`included_quota_unavailable`, and a missing unlimited flag counts as a finite
-plan. This preflight supports the tested
+too. A bucket that permits or records overage fails with its own code,
+`overage_enabled`, checked before anything else so no other defect hides it.
+A finite chat quota whose included requests are used up, with
+`used_requests` at or above `entitlement_requests` and
+`remaining_percentage` at `0`, fails with `included_quota_unavailable`. A
+missing chat quota, or one that is reported inconsistently (a non-finite,
+negative or out-of-range value, an entitlement of `0` on a finite plan, or
+the two counters disagreeing about exhaustion), fails closed with
+`quota_unverifiable`, and a missing unlimited flag counts as a finite plan.
+The adapter publishes its failure code as a step output, and only
+`included_quota_unavailable` lists Copilot in the aggregate's
+`review_result.quota_unavailable` (AT-3487). `overage_enabled` is not
+exempted, since an account that allows overage is a setting to fix, and
+`quota_unverifiable` is not either, since a report that cannot be read shows
+nothing about whether the quota ran out. This preflight supports the tested
 request-quota account contract; it does not establish coverage of credit-based
 plans. Auto may choose a billable model; Auto itself is no no-charge guarantee.
 There is no paid fallback, provider key or adapter retry. The account owner must keep

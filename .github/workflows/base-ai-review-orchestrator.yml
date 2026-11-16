@@ -445,5 +445,12 @@ jobs:
         (needs.prepare.outputs.reviewer_2 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.result || needs.review-2-p.result)) ||
         (needs.prepare.outputs.reviewer_3 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.result || needs.review-3-p.result)) ||
         (needs.prepare.outputs.reviewer_4 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.result || needs.review-4-p.result)) || '' }}
+      # The code the Copilot slot's own step published, by the same slot
+      # identity as copilot_result (AT-3487). Never the artifact's error.
+      copilot_failure: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.outputs.copilot_failure || needs.review-1-p.outputs.copilot_failure)) ||
+        (needs.prepare.outputs.reviewer_2 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.outputs.copilot_failure || needs.review-2-p.outputs.copilot_failure)) ||
+        (needs.prepare.outputs.reviewer_3 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.outputs.copilot_failure || needs.review-3-p.outputs.copilot_failure)) ||
+        (needs.prepare.outputs.reviewer_4 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.outputs.copilot_failure || needs.review-4-p.outputs.copilot_failure)) || '' }}
     secrets:
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
