@@ -371,6 +371,13 @@ def test_trusted_quota_code_reaches_quota_unavailable(
         # A missing or inconsistent quota report shows nothing about
         # exhaustion, so it fails closed without the exemption.
         "quota_unverifiable",
+        # A stage code says where a generic failure happened (AT-3500); a
+        # quota-stage failure is the call failing, not the quota running out.
+        "review_failed:start",
+        "review_failed:quota",
+        "review_failed:session",
+        "review_failed:send",
+        "review_failed:timeout",
     ],
 )
 def test_another_trusted_code_is_not_quota_unavailable(
