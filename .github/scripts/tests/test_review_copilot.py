@@ -224,6 +224,97 @@ def test_unsuitable_quota_never_creates_session(client, tmp_path, change):
     instance.stop.assert_awaited_once()
 
 
+# Measured 2026-11-16 on a paid account (runner run 43826884498, CLI 1.0.105,
+# SDK 1.0.28): every snapshot reported 0 entitlement with the unlimited flag,
+# not the -1 the SDK docstring describes.
+UNLIMITED_PROBE = {
+    "entitlement_requests": 0,
+    "is_unlimited_entitlement": True,
+    "used_requests": 0,
+    "remaining_percentage": 100.0,
+    "overage": 0.0,
+    "overage_allowed_with_exhausted_quota": False,
+    "usage_allowed_with_exhausted_quota": False,
+}
+
+
+def unlimited_snapshots(**chat_changes):
+    return AccountGetQuotaResult(
+        quota_snapshots={
+            "chat": quota(**(UNLIMITED_PROBE | chat_changes)),
+            "completions": quota(**UNLIMITED_PROBE),
+            "premium_interactions": quota(**UNLIMITED_PROBE),
+        }
+    )
+
+
+def test_unlimited_entitlement_without_overage_creates_session(client, tmp_path):
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = unlimited_snapshots()
+    asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"overage_allowed_with_exhausted_quota": True},
+        {"usage_allowed_with_exhausted_quota": True},
+        {"overage": 1.0},
+    ],
+)
+def test_unlimited_entitlement_still_refuses_overage(client, tmp_path, change):
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = unlimited_snapshots(**change)
+    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+def test_unlimited_chat_does_not_hide_premium_overage_permission(client, tmp_path):
+    _, instance, _ = client
+    snapshots = unlimited_snapshots()
+    snapshots.quota_snapshots["premium_interactions"] = quota(
+        **(UNLIMITED_PROBE | {"overage_allowed_with_exhausted_quota": True})
+    )
+    instance.rpc.account.get_quota.return_value = snapshots
+    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize("flag", [1, "true", None])
+def test_only_a_true_unlimited_flag_skips_entitlement_checks(client, tmp_path, flag):
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = unlimited_snapshots(
+        is_unlimited_entitlement=flag
+    )
+    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+def test_missing_unlimited_field_is_treated_as_finite(client, tmp_path):
+    _, instance, _ = client
+    snapshots = unlimited_snapshots()
+    del snapshots.quota_snapshots["chat"].is_unlimited_entitlement
+    instance.rpc.account.get_quota.return_value = snapshots
+    with pytest.raises(adapter.ReviewFailure, match="included_quota_unavailable"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+def test_missing_unlimited_field_keeps_finite_quota_usable(client, tmp_path):
+    _, instance, _ = client
+    snapshot = quota()
+    del snapshot.is_unlimited_entitlement
+    instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
+        quota_snapshots={"chat": snapshot}
+    )
+    asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_awaited_once()
+
+
 def test_missing_quota_never_creates_session(client, tmp_path):
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
