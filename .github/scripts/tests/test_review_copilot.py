@@ -616,9 +616,14 @@ STAGE_FAULTS = {
     "cli_probe": ("verify_cli", OSError(SECRET), "start", "OSError"),
     "client_start": ("start", RuntimeError(SECRET), "start", "RuntimeError"),
     "auth_status": ("auth", RuntimeError(SECRET), "quota", "RuntimeError"),
-    "get_quota": ("quota", JsonRpcError(-32000, SECRET), "quota", "JsonRpcError"),
+    "get_quota": (
+        "quota",
+        JsonRpcError(-32000, SECRET, SECRET),
+        "quota",
+        "JsonRpcError code=-32000",
+    ),
     "create_session": ("session", RuntimeError(SECRET), "session", "RuntimeError"),
-    "send": ("send", JsonRpcError(1, SECRET), "send", "JsonRpcError"),
+    "send": ("send", JsonRpcError(1, SECRET, SECRET), "send", "JsonRpcError code=1"),
     "start_timeout": ("start", TimeoutError(SECRET), "timeout", "TimeoutError"),
     "quota_timeout": (
         "quota",
@@ -742,3 +747,92 @@ def test_unsafe_exception_class_name_is_not_printed(
     adapter.main()
     err = capsys.readouterr().err
     assert err == "::warning::Copilot review failed: review_failed (unknown)\n"
+
+
+# AT-3500 follow-up: the 2026-11-16 diagnostic failed at send with a
+# JsonRpcError. Its numeric code says which JSON-RPC failure the service
+# returned; its message and data stay unprinted, like any exception text.
+@pytest.mark.parametrize(
+    ("code", "logged"),
+    [
+        (-32603, "code=-32603"),
+        (-32000, "code=-32000"),
+        (0, "code=0"),
+        (429, "code=429"),
+        (-(2**31), f"code={-(2**31)}"),
+        (2**31 - 1, f"code={2**31 - 1}"),
+        (2**31, "code=unknown"),
+        (-(2**31) - 1, "code=unknown"),
+        (10**40, "code=unknown"),
+        (True, "code=unknown"),
+        ("-32603", "code=unknown"),
+        (-32603.0, "code=unknown"),
+        (None, "code=unknown"),
+    ],
+)
+def test_json_rpc_error_code_goes_to_the_log_only(
+    client, monkeypatch, tmp_path, capsys, code, logged
+):
+    _, _, session = client
+    session.send_and_wait_typed.side_effect = JsonRpcError(code, SECRET, {"d": SECRET})
+    payload, written = _run_main(monkeypatch, tmp_path)
+    log = capsys.readouterr()
+    assert log.err == (
+        f"::warning::Copilot review failed: review_failed:send (JsonRpcError {logged})\n"
+    )
+    assert payload["error"] == "review_failed:send"
+    assert written == ["failure_code=review_failed:send"]
+    leaked = json.dumps(payload) + log.out + log.err
+    assert "SECRET" not in leaked
+    assert "ghp_" not in leaked
+    # The code joins the class name in the job log and nowhere else.
+    kept = json.dumps(payload) + "\n".join(written)
+    assert logged not in kept
+    assert "JsonRpcError" not in kept
+
+
+def test_json_rpc_error_code_outside_any_stage_is_logged_too(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "explicit")
+    (tmp_path / "context.md").write_text("context")
+    (tmp_path / "pr.diff").write_text("diff")
+    failure = JsonRpcError(-32601, SECRET, SECRET)
+    monkeypatch.setattr(adapter, "run_review", AsyncMock(side_effect=failure))
+    adapter.main()
+    err = capsys.readouterr().err
+    assert err == (
+        "::warning::Copilot review failed: review_failed (JsonRpcError code=-32601)\n"
+    )
+
+
+def test_other_exceptions_with_a_code_attribute_print_no_code(
+    client, monkeypatch, tmp_path, capsys
+):
+    """Only the SDK's JsonRpcError has a code worth printing."""
+    _, _, session = client
+    other = RuntimeError(SECRET)
+    other.code = -32603  # type: ignore[attr-defined]
+    session.send_and_wait_typed.side_effect = other
+    _run_main(monkeypatch, tmp_path)
+    err = capsys.readouterr().err
+    assert (
+        err == "::warning::Copilot review failed: review_failed:send (RuntimeError)\n"
+    )
+
+
+def test_a_json_rpc_error_outside_the_sdk_prints_no_code(
+    client, monkeypatch, tmp_path, capsys
+):
+    """Recognised by name AND package, so a same-named class elsewhere is not."""
+    _, _, session = client
+    impostor = type("JsonRpcError", (Exception,), {})
+    failure = impostor(SECRET)
+    failure.code = -32603  # type: ignore[attr-defined]
+    session.send_and_wait_typed.side_effect = failure
+    _run_main(monkeypatch, tmp_path)
+    err = capsys.readouterr().err
+    assert (
+        err == "::warning::Copilot review failed: review_failed:send (JsonRpcError)\n"
+    )

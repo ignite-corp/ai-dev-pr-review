@@ -75,6 +75,33 @@ def exception_class(exc: BaseException) -> str:
     return name
 
 
+# A JSON-RPC error's numeric code names which failure the service returned
+# without saying anything in its own words, so it may join the class name in
+# the job log. Its message and data are service text and are never read.
+# Only a plain int inside the 32-bit range is printed: JSON-RPC codes fit it,
+# and a bounded number cannot carry a token or a sentence.
+_RPC_CODE_MIN = -(2**31)
+_RPC_CODE_MAX = 2**31 - 1
+
+
+def is_sdk_json_rpc_error(exc: BaseException) -> bool:
+    # SDK 1.0.28 defines JsonRpcError in the private copilot._jsonrpc module
+    # and exports it from nowhere public, so it is recognised by name and
+    # package rather than imported: if a release moves it, only the code
+    # drops out of the log, and the adapter still loads.
+    cls = type(exc)
+    return cls.__name__ == "JsonRpcError" and cls.__module__.startswith("copilot.")
+
+
+def exception_detail(exc: BaseException) -> str:
+    detail = exception_class(exc)
+    if is_sdk_json_rpc_error(exc):
+        code = getattr(exc, "code", None)
+        in_range = type(code) is int and _RPC_CODE_MIN <= code <= _RPC_CODE_MAX
+        detail += f" code={code if in_range else 'unknown'}"
+    return detail
+
+
 @contextlib.contextmanager
 def stage(failure: ReviewFailure) -> Iterator[None]:
     """Turn any other failure in a stage into that stage's fixed code (AT-3500).
@@ -303,9 +330,10 @@ def main() -> None:
             "issues": [],
             "error": reason,
         }
-        # The class of the underlying error, never its message, goes to the
-        # job log only; the payload and step output keep the fixed code.
-        detail = f" ({exception_class(cause)})" if cause is not None else ""
+        # The class of the underlying error, plus a bounded JSON-RPC code for
+        # the SDK's JsonRpcError, never its message, goes to the job log only;
+        # the payload and step output keep the fixed code.
+        detail = f" ({exception_detail(cause)})" if cause is not None else ""
         print(f"::warning::Copilot review failed: {reason}{detail}", file=sys.stderr)
     payload["requested_model"] = "auto"
     payload["actual_models"] = sorted(models) if models else ["unknown"]
