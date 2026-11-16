@@ -57,7 +57,12 @@ of the whole review. None of them is exempted. The job log adds the failing
 exception's class name in parentheses, only when it is a plain identifier,
 otherwise `unknown`; its message is never printed. Before AT-3500 every such
 failure was a bare `review_failed`, so a 2026-11-16 flip in which every run
-failed within seconds could not say which stage broke.
+failed within seconds could not say which stage broke. For the SDK's
+`JsonRpcError` the log also shows its numeric JSON-RPC code, for example
+`review_failed:send (JsonRpcError code=-32603)`. The code is printed only when
+it is an `int` in the 32-bit range, otherwise as `code=unknown`. The error's
+message and data are never printed. Like the class name, the code stays out
+of the verdict file and the step output.
 `requested_model` records `auto`; `actual_models` records sanitized model IDs
 from SDK usage events, or `unknown` when the service supplies no such event.
 
