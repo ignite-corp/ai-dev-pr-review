@@ -687,7 +687,6 @@ TRUSTED_CODES = (
     "cli_version_mismatch",
     "authentication_failed",
     "included_quota_unavailable",
-    "overage_enabled",
     "quota_unverifiable",
     # AT-3500: the stage a generic failure happened in.
     "review_failed:start",
@@ -730,6 +729,8 @@ def test_known_failure_code_passes_the_allowlist_unchanged(
         "review_failed:",
         "review_failed:other",
         "review_failed:send:quota",
+        # Retired by AT-3525: the adapter no longer raises it.
+        "overage_enabled",
         "INCLUDED_QUOTA_UNAVAILABLE",
         "included_quota_unavailable ",
         "included_quota_unavailable\ncode=included_quota_unavailable",

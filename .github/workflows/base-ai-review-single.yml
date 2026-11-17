@@ -1849,7 +1849,7 @@ jobs:
           case "$FAILURE_CODE" in
             credential_missing | cli_path_invalid | cli_version_mismatch | \
               authentication_failed | included_quota_unavailable | \
-              overage_enabled | quota_unverifiable | \
+              quota_unverifiable | \
               review_failed:start | review_failed:quota | \
               review_failed:session | review_failed:send | \
               review_failed:timeout)

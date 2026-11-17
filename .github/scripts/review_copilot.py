@@ -171,22 +171,14 @@ async def require_included_quota(client: CopilotClient, token: str) -> None:
     result = await client.rpc.account.get_quota(
         AccountGetQuotaRequest(git_hub_token=token), timeout=CONTROL_TIMEOUT
     )
-    # Three codes, because a target check exempts exactly one of them
+    # Two codes, because a target check exempts exactly one of them
     # (AT-3487): included_quota_unavailable, and only for a chat quota that
-    # is well formed and used up. Overage is checked first, over every
-    # bucket, so no other defect can hide it: an explicit no-overage grant
-    # is required even while included quota remains, since a concurrent
-    # request could consume the last included unit, and an account that
-    # permits or records overage is a setting the owner must fix.
-    if any(
-        snapshot.overage_allowed_with_exhausted_quota is not False
-        or snapshot.usage_allowed_with_exhausted_quota is not False
-        or snapshot.overage != 0
-        for snapshot in result.quota_snapshots.values()
-    ):
-        raise ReviewFailure("overage_enabled")
-    # A missing or inconsistent report shows nothing about exhaustion, so it
-    # fails closed without the exemption.
+    # is well formed, used up and allows no overage. Overage itself is no
+    # longer refused (AT-3525, owner's decision of 2026-11-17): per the
+    # SDK 1.0.28 flag docs the service then allows additional usage,
+    # which the owner expects to be billed and accepts; not yet measured.
+    # A missing or inconsistent report shows nothing about exhaustion, so
+    # it fails closed without the exemption.
     chat = result.quota_snapshots.get("chat")
     if chat is None:
         raise ReviewFailure("quota_unverifiable")
@@ -211,7 +203,17 @@ async def require_included_quota(client: CopilotClient, token: str) -> None:
     if used_up != (remaining == 0):
         # One counter says exhausted and the other does not.
         raise ReviewFailure("quota_unverifiable")
-    if used_up:
+    if not used_up:
+        return
+    flags = (
+        getattr(chat, "overage_allowed_with_exhausted_quota", None),
+        getattr(chat, "usage_allowed_with_exhausted_quota", None),
+    )
+    # Once the quota is used up the flags decide between a billed request and
+    # the exemption, so an unclear flag fails closed, not into the exemption.
+    if not all(isinstance(flag, bool) for flag in flags):
+        raise ReviewFailure("quota_unverifiable")
+    if not any(flags):
         raise ReviewFailure("included_quota_unavailable")
 
 

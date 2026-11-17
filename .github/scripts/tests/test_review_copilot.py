@@ -208,26 +208,25 @@ def test_actual_model_comes_only_from_sanitized_sdk_usage(client, tmp_path):
     assert models == {"mai-code-1.1-flash"}
 
 
-# Three codes (AT-3487), because a target check exempts exactly one: an
-# account that permits or records overage is a configuration the owner must
-# fix (owner's decision, 2026-11-16), a report that cannot be read shows
-# nothing about exhaustion, and only a well-formed, used-up chat quota is
-# included_quota_unavailable.
+# Two codes. Since AT-3525 (owner's decision, 2026-11-17) an account that
+# permits or records overage proceeds: the request is billed, not refused.
+# A report that cannot be read shows nothing about exhaustion, and only a
+# well-formed, used-up finite chat quota with no overage allowed is
+# included_quota_unavailable (AT-3487).
 EXHAUSTED = {"used_requests": 50, "remaining_percentage": 0}
 
 
 @pytest.mark.parametrize(
     ("change", "code"),
     [
-        ({"overage_allowed_with_exhausted_quota": True}, "overage_enabled"),
-        ({"usage_allowed_with_exhausted_quota": True}, "overage_enabled"),
-        ({"overage": 1}, "overage_enabled"),
-        (EXHAUSTED | {"overage": 1}, "overage_enabled"),
         (EXHAUSTED, "included_quota_unavailable"),
         (
             {"used_requests": 60, "remaining_percentage": 0},
             "included_quota_unavailable",
         ),
+        # Overage recorded earlier, but not allowed now: the next request
+        # is refused, not billed.
+        (EXHAUSTED | {"overage": 1}, "included_quota_unavailable"),
         ({"entitlement_requests": 0}, "quota_unverifiable"),
         ({"entitlement_requests": -1}, "quota_unverifiable"),
         ({"used_requests": 50}, "quota_unverifiable"),
@@ -237,6 +236,34 @@ EXHAUSTED = {"used_requests": 50, "remaining_percentage": 0}
         ({"remaining_percentage": 101}, "quota_unverifiable"),
         ({"remaining_percentage": float("nan")}, "quota_unverifiable"),
         ({"remaining_percentage": float("inf")}, "quota_unverifiable"),
+        # Malformed data is refused whatever overage says.
+        (
+            {"entitlement_requests": 0, "overage_allowed_with_exhausted_quota": True},
+            "quota_unverifiable",
+        ),
+        (
+            {"used_requests": 50, "usage_allowed_with_exhausted_quota": True},
+            "quota_unverifiable",
+        ),
+        # Used up with an unclear overage flag: fail closed, not into the
+        # exemption (AT-3525).
+        (
+            EXHAUSTED | {"overage_allowed_with_exhausted_quota": None},
+            "quota_unverifiable",
+        ),
+        (
+            EXHAUSTED | {"usage_allowed_with_exhausted_quota": None},
+            "quota_unverifiable",
+        ),
+        (EXHAUSTED | {"overage_allowed_with_exhausted_quota": 1}, "quota_unverifiable"),
+        (
+            EXHAUSTED
+            | {
+                "overage_allowed_with_exhausted_quota": True,
+                "usage_allowed_with_exhausted_quota": "true",
+            },
+            "quota_unverifiable",
+        ),
     ],
 )
 def test_unsuitable_quota_never_creates_session(client, tmp_path, change, code):
@@ -248,6 +275,28 @@ def test_unsuitable_quota_never_creates_session(client, tmp_path, change, code):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
     instance.stop.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"overage_allowed_with_exhausted_quota": True},
+        {"usage_allowed_with_exhausted_quota": True},
+        {"overage": 1},
+        # Used up, but overage allowed: the request is billed, not refused.
+        EXHAUSTED | {"overage_allowed_with_exhausted_quota": True},
+        EXHAUSTED | {"usage_allowed_with_exhausted_quota": True},
+        EXHAUSTED | {"overage": 3, "overage_allowed_with_exhausted_quota": True},
+    ],
+)
+def test_overage_enabled_account_proceeds_to_create_session(client, tmp_path, change):
+    """AT-3525: the owner accepts overage billing (decision of 2026-11-17)."""
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
+        quota_snapshots={"chat": quota(**change)}
+    )
+    asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_awaited_once()
 
 
 # Measured 2026-11-16 on a paid account (runner run 43826884498, CLI 1.0.105,
@@ -289,24 +338,22 @@ def test_unlimited_entitlement_without_overage_creates_session(client, tmp_path)
         {"overage": 1.0},
     ],
 )
-def test_unlimited_entitlement_still_refuses_overage(client, tmp_path, change):
+def test_unlimited_entitlement_with_overage_creates_session(client, tmp_path, change):
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = unlimited_snapshots(**change)
-    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
-        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
-    instance.create_session.assert_not_awaited()
+    asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_awaited_once()
 
 
-def test_unlimited_chat_does_not_hide_premium_overage_permission(client, tmp_path):
+def test_premium_overage_permission_beside_unlimited_chat_proceeds(client, tmp_path):
     _, instance, _ = client
     snapshots = unlimited_snapshots()
     snapshots.quota_snapshots["premium_interactions"] = quota(
         **(UNLIMITED_PROBE | {"overage_allowed_with_exhausted_quota": True})
     )
     instance.rpc.account.get_quota.return_value = snapshots
-    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
-        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
-    instance.create_session.assert_not_awaited()
+    asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_awaited_once()
 
 
 @pytest.mark.parametrize("flag", [1, "true", None])
@@ -352,27 +399,14 @@ def test_missing_quota_never_creates_session(client, tmp_path):
     instance.create_session.assert_not_awaited()
 
 
-def test_safe_chat_does_not_hide_premium_overage_permission(client, tmp_path):
-    _, instance, _ = client
-    instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
-        quota_snapshots={
-            "chat": quota(),
-            "premium_interactions": quota(overage_allowed_with_exhausted_quota=True),
-        }
-    )
-    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
-        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
-    instance.create_session.assert_not_awaited()
-
-
-def test_missing_chat_does_not_hide_an_overage_bucket(client, tmp_path):
+def test_missing_chat_beside_an_overage_bucket_is_unverifiable(client, tmp_path):
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
         quota_snapshots={
             "premium_interactions": quota(overage_allowed_with_exhausted_quota=True)
         }
     )
-    with pytest.raises(adapter.ReviewFailure, match="^overage_enabled$"):
+    with pytest.raises(adapter.ReviewFailure, match="^quota_unverifiable$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
 
@@ -380,7 +414,6 @@ def test_missing_chat_does_not_hide_an_overage_bucket(client, tmp_path):
 @pytest.mark.parametrize(
     ("change", "code"),
     [
-        ({"overage_allowed_with_exhausted_quota": True}, "overage_enabled"),
         (EXHAUSTED, "included_quota_unavailable"),
         ({"used_requests": 50}, "quota_unverifiable"),
     ],

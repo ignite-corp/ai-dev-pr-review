@@ -365,8 +365,8 @@ def test_trusted_quota_code_reaches_quota_unavailable(
         "cli_version_mismatch",
         "cli_path_invalid",
         "review_failed",
-        # An account that permits or records overage is not out of included
-        # quota: the owner must fix it, so it gets no exemption (2026-11-16).
+        # Retired by AT-3525 (an overage account now proceeds); a stale
+        # adapter that still sent it must not gain the exemption.
         "overage_enabled",
         # A missing or inconsistent quota report shows nothing about
         # exhaustion, so it fails closed without the exemption.
