@@ -99,7 +99,9 @@ Two GitHub Apps are live in this repo and they are not interchangeable. Choose
 by what the job has to do, not by whichever credential name you saw first: a
 job that administers the fleet and a job that speaks on a pull request need
 different Apps, and swapping one for the other fails for reasons that look
-like something else.
+like something else. A third App, the review relay's dispatcher, is used by
+no workflow here; it is recorded last so the reviewer App is not mistaken
+for the relay's credential.
 
 **Fleet administration -- `ignite-actions-token-app` (app_id=1582952).**
 - Used by `ruleset-sync.yml`, `ruleset-audit.yml`, and the `health` job of
@@ -169,31 +171,47 @@ like something else.
   cross-org, and `organization_actions_variables: write`, which is what
   `switch_claude_auth.py` uses to set and delete the ignite-corp
   `CLAUDE_FORCE_API` and `CLAUDE_FORCE_API_UNTIL` org vars.
-- Measured 2026-11-11 (`gh api orgs/ignite-corp/installations` and
-  `gh api orgs/ignite-pilot-org/installations`, selecting app_id 4196135, and
-  `gh api apps/ignite-ai-review-approver`), the App and both installations
-  grant the same set: `actions: write`, `actions_variables: write`,
-  `checks: write`, `contents: write`, `metadata: read`,
-  `organization_actions_variables: write`, `pull_requests: write`. The
-  2026-10-16 reading that neither installation granted any `actions`
-  permission no longer holds; when the two were added is not recorded here
-  (AT-3394 lists what could not be measured).
-- The only caller found that needs `actions` or `actions_variables` is the
-  review relay in ai-dev-infra-common, which mints for the runner
-  repository alone with `actions: write`, `contents: read` and
-  `actions_variables: read` (`lambda/review-relay/handler.py` at `9977231`,
-  read 2026-11-11). The search behind "only" covered the workflows of this
-  repo, the runner and ai-dev-infra-common (AT-3394); consumer repositories
-  were not searched. On 2026-11-11 no mint in this repo named
-  `permission-actions` or `permission-actions-variables`.
-  `test_app_token_mint_permissions.py` makes each reviewer-App mint name its
-  permissions, but does not forbid those two. AT-3394 (b) plans to move the
-  relay to an App of its own and then remove both permissions from this
-  App; until that is done and re-measured, they are on the installations.
+- Measured 2026-11-17 (`gh api apps/ignite-ai-review-approver`, and
+  `gh api orgs/ignite-corp/installations` and
+  `gh api orgs/ignite-pilot-org/installations` selecting app_id 4196135), the
+  App and both installations grant the same five: `checks: write`,
+  `contents: write`, `metadata: read`,
+  `organization_actions_variables: write`, `pull_requests: write`. Neither
+  `actions` nor `actions_variables` is granted: the owner removed both on
+  2026-11-17 (AT-3394 (b)), once the review relay had moved to the
+  dispatcher App below. The 2026-11-11 reading that listed them no longer
+  holds. The search for callers that needed them covered the workflows of
+  this repo, the runner and ai-dev-infra-common only, and found the relay
+  alone; consumer repositories were not searched (AT-3394). On 2026-11-17
+  no mint in this repo named `permission-actions` or
+  `permission-actions-variables`; `test_app_token_mint_permissions.py`
+  makes each reviewer-App mint name its permissions, but does not forbid
+  those two.
 - Treat the two measurement bullets above as observations, not design
   guarantees: grants change without a commit here, and a negative goes
   stale silently, so re-read `gh api orgs/ignite-corp/installations` and
   `gh api orgs/ignite-pilot-org/installations` before building on them.
 
-Both mint short-lived tokens via `actions/create-github-app-token` (pinned per
-workflow). No PAT to manage / rotate.
+**Review relay -- `ignite-ai-review-dispatcher` (app_id=5784536), not used
+by any workflow here.**
+- The review relay in ai-dev-infra-common (`lambda/review-relay/handler.py`)
+  mints with this App since ai-dev-infra-common#1174 (`752f64fd`,
+  2026-11-17), for the runner repository alone: `actions: write` and
+  `contents: read`, and `actions_variables: read` in a mint of its own.
+  Observed on the runner's `review.yml` runs on 2026-11-17: the first run
+  after the cut-over, 44057490651, carries the actor
+  `ignite-ai-review-dispatcher[bot]`, and the runs before it, through
+  44056904218, carry `ignite-ai-review-approver[bot]`.
+- Measured 2026-11-17 (`gh api apps/ignite-ai-review-dispatcher` and
+  `gh api orgs/ignite-corp/installations`), the App and its installation
+  grant `actions: write`, `actions_variables: read`, `contents: read`,
+  `metadata: read`, with `repository_selection: selected`, and is installed
+  on **ignite-corp only**: `gh api orgs/ignite-pilot-org/installations` does
+  not list it. That is an observation, and a negative goes stale silently.
+- Not measured: the selected repository is `ai-dev-pr-review-runner` alone,
+  as the owner reports configuring it. The installation listing does not
+  show the list, and reading it needs an installation token.
+
+The two Apps used by workflows here mint short-lived tokens via
+`actions/create-github-app-token` (pinned per workflow); the dispatcher App
+mints from the relay Lambda in ai-dev-infra-common. No PAT to manage / rotate.
