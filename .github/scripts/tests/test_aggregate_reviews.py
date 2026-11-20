@@ -4286,6 +4286,50 @@ class TestPartialExclusionOnTheVerdict:
         assert _policy_skip_details() is None
 
 
+class TestBinaryFilesOnTheVerdict:
+    """Every binary entry the reviewers could not read is named (AT-3593)."""
+
+    @staticmethod
+    def _body() -> str:
+        reviews = {n: _make_review() for n in REVIEWER_NAMES}
+        return format_summary(
+            reviews,
+            "approve",
+            "3/3 LLM responses -- no issues",
+            reviews,
+            unreviewed_majors=_count_unreviewed_majors(reviews),
+        )
+
+    def test_no_binary_adds_no_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BINARY_PATHS", raising=False)
+        assert "binary file(s)" not in self._body()
+        monkeypatch.setenv("BINARY_PATHS", "\n")
+        assert "binary file(s)" not in self._body()
+
+    def test_binaries_are_listed_under_the_headline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EXCLUDED_COUNT", raising=False)
+        monkeypatch.delenv("EXCLUDED_PATHS", raising=False)
+        monkeypatch.setenv("BINARY_PATHS", "logo.png\nsrc/nul.py")
+        lines = self._body().splitlines()
+        headline = next(
+            i for i, line in enumerate(lines) if line.startswith("**Result:")
+        )
+        assert lines[headline + 2] == (
+            "> [i] 2 binary file(s) not reviewed (content not in the diff):"
+            " `logo.png`, `src/nul.py`"
+        )
+
+    def test_binary_note_cannot_be_broken_by_a_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BINARY_PATHS", "tick`\x1b[0m.bin")
+        body = self._body()
+        assert "`tick\u02cb\\x1b[0m.bin`" in body
+        assert "\x1b" not in body
+
+
 class TestAggregateJobIsNotSizeGated:
     """The orchestrator must never gate the aggregate job on the size skip.
 

@@ -102,6 +102,11 @@ on:
         required: false
         default: ""
         description: "The removed paths, one per line; empty when none"
+      binary_paths:
+        type: string
+        required: false
+        default: ""
+        description: "Paths pr.diff carries as binary, one per line; empty when none (AT-3593)"
       claude_result:
         type: string
         required: false
@@ -563,6 +568,7 @@ jobs:
           POLICY_SKIPPED: ${{ inputs.policy_skipped }}
           EXCLUDED_COUNT: ${{ inputs.excluded_count }}
           EXCLUDED_PATHS: ${{ inputs.excluded_paths }}
+          BINARY_PATHS: ${{ inputs.binary_paths }}
           # The identity the aggregate's own verdict comments are posted
           # under. Nothing in aggregate_reviews.py reads it today: the stale
           # fold keys on the review marker since AT-2599, so a superseded

@@ -43,6 +43,7 @@ STDLIB_ONLY_SCRIPTS = (
     "extract_codex_json",
     "fetch_review_context",
     "filter_pr_diff",
+    "list_binary_paths",
     "post_inline_comments",
     "switch_claude_auth",
     "verify_action_shas",

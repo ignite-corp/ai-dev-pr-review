@@ -239,6 +239,7 @@ def _run_script(
     merged: bool,
     merge_commit_sha: str = "",
     gh_diff: str = GH_PR_DIFF_FIXTURE,
+    extra_env: dict[str, str] | None = None,
 ) -> Run:
     fixture = tmp_path / "gh-pr-diff.txt"
     fixture.write_text(gh_diff, encoding="utf-8")
@@ -256,6 +257,7 @@ def _run_script(
         "HEAD_SHA": repos.head_sha,
         "PR_MERGED": "true" if merged else "false",
         "MERGE_COMMIT_SHA": merge_commit_sha,
+        **(extra_env or {}),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -663,6 +665,264 @@ class TestEmptyDiffFailsLoudly:
         repos.sync_work()
         run = _run_script(repos, tmp_path, merged=False)
         assert run.diff == ""
+
+
+_HIDDEN_LINE = "print('hidden from the reviewers')"
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01"
+
+
+def _push_head(repos: Repos, files: dict[str, bytes]) -> None:
+    """Add one more PR commit on the feature branch and put the runner on it."""
+    _git(repos.github, "checkout", "-q", "feature")
+    for name, content in files.items():
+        target = repos.github / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    _git(repos.github, "add", "-A")
+    _git(repos.github, "commit", "-q", "-m", "feat: hide src from the diff")
+    _git(repos.github, "push", "-q", "origin", "feature")
+    repos.head_sha = _git(repos.github, "rev-parse", "HEAD")
+    _git(repos.work, "fetch", "-q", "origin", repos.head_sha)
+    _git(repos.work, "checkout", "-q", "--detach", repos.head_sha)
+
+
+def _hiding_head(repos: Repos, gitattributes: str = "") -> None:
+    """A head that adds code under src/ and, optionally, attributes over it."""
+    files = {"src/app.py": f"{_HIDDEN_LINE}\n".encode(), "logo.png": _PNG_BYTES}
+    if gitattributes:
+        files[".gitattributes"] = gitattributes.encode()
+    _push_head(repos, files)
+
+
+def _write_config(tmp_path: Path, name: str, text: str) -> Path:
+    path = tmp_path / name
+    path.write_text(textwrap.dedent(text), encoding="utf-8")
+    return path
+
+
+def _assert_code_is_visible(run: Run) -> None:
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert f"+{_HIDDEN_LINE}" in run.diff
+    assert "diff --git a/src/app.py b/src/app.py" in run.diff
+    assert "Binary files /dev/null and b/src/app.py differ" not in run.diff
+
+
+class TestDiffIgnoresPrControlledAttributes:
+    """A PR cannot turn its own code into "Binary files differ" (AT-3593).
+
+    git diff reads the checked-out head's .gitattributes, so a PR that adds
+    `src/** -diff` showed every reviewer one "Binary files ... differ" line
+    per file under src/ instead of the code, and the verdict listed nothing.
+    """
+
+    @pytest.mark.parametrize(
+        "gitattributes",
+        [
+            "src/** -diff\n",
+            "src/** binary\n",
+            "*.py -diff\n",
+            "[attr]hide -diff\nsrc/** hide\n",
+            "src/** diff=hide\n",
+            "src/** -text -diff\n",
+        ],
+        ids=[
+            "unset-diff",
+            "binary-macro",
+            "glob",
+            "custom-macro",
+            "named-driver",
+            "text-unset",
+        ],
+    )
+    def test_in_tree_attributes_do_not_hide_code(
+        self, repos: Repos, tmp_path: Path, gitattributes: str
+    ) -> None:
+        _hiding_head(repos, gitattributes)
+        _assert_code_is_visible(_run_script(repos, tmp_path, merged=False))
+
+    def test_attributes_on_a_merged_pr_do_not_hide_code(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        _hiding_head(repos, "src/** -diff\n")
+        merge_sha = repos.merge_with_merge_commit()
+        repos.sync_work()
+        run = _run_script(repos, tmp_path, merged=True, merge_commit_sha=merge_sha)
+        _assert_code_is_visible(run)
+        assert run.gh_calls == []
+
+    def test_a_genuine_binary_is_still_reported_as_binary(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        # Content detection stays: the attribute override is not --text, so
+        # a real binary is one header line, never its raw bytes.
+        _hiding_head(repos, "src/** -diff\n")
+        run = _run_script(repos, tmp_path, merged=False)
+        assert run.returncode == 0, run.stderr
+        assert "Binary files /dev/null and b/logo.png differ" in run.diff
+        assert "\x00" not in run.diff
+
+    @pytest.mark.parametrize(
+        "driver",
+        [
+            "binary = true",
+            "textconv = sed d",
+            "command = true",
+        ],
+        ids=["driver-binary", "textconv", "driver-command"],
+    )
+    def test_a_configured_driver_named_by_the_pr_does_not_hide_code(
+        self, repos: Repos, tmp_path: Path, driver: str
+    ) -> None:
+        # The PR names the driver; the definition comes from the operator's
+        # global config (the local driver runs under it).
+        _hiding_head(repos, "src/** diff=hide\n")
+        config = _write_config(tmp_path, "gitconfig", f'[diff "hide"]\n\t{driver}\n')
+        run = _run_script(
+            repos, tmp_path, merged=False, extra_env={"GIT_CONFIG_GLOBAL": str(config)}
+        )
+        _assert_code_is_visible(run)
+
+    def test_global_attributes_file_does_not_hide_code(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        _hiding_head(repos)
+        attrs = _write_config(tmp_path, "attributes", "src/** -diff\n")
+        config = _write_config(
+            tmp_path, "gitconfig", f"[core]\n\tattributesFile = {attrs}\n"
+        )
+        run = _run_script(
+            repos, tmp_path, merged=False, extra_env={"GIT_CONFIG_GLOBAL": str(config)}
+        )
+        _assert_code_is_visible(run)
+
+    def test_attributes_file_set_through_the_environment_does_not_hide_code(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        # GIT_CONFIG_COUNT is how the workflow passes its auth header, so it
+        # cannot be scrubbed wholesale; the command-line override must win.
+        _hiding_head(repos)
+        attrs = _write_config(tmp_path, "attributes", "src/** -diff\n")
+        run = _run_script(
+            repos,
+            tmp_path,
+            merged=False,
+            extra_env={
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.attributesFile",
+                "GIT_CONFIG_VALUE_0": str(attrs),
+            },
+        )
+        _assert_code_is_visible(run)
+
+    def test_info_attributes_fails_the_step(self, repos: Repos, tmp_path: Path) -> None:
+        # $GIT_DIR/info/attributes is read whatever --attr-source says and no
+        # option turns it off, so a clone carrying rules there is refused
+        # rather than diffed under rules nobody reviewed.
+        _hiding_head(repos)
+        info = Path(_git(repos.work, "rev-parse", "--git-path", "info/attributes"))
+        if not info.is_absolute():
+            info = repos.work / info
+        info.parent.mkdir(parents=True, exist_ok=True)
+        info.write_text("# a comment is not a rule\n\nsrc/** -diff\n", encoding="utf-8")
+        run = _run_script(repos, tmp_path, merged=False)
+        assert run.returncode == 1
+        assert "::error title=Local attributes::" in run.stdout
+        assert run.diff == ""
+
+    def test_info_attributes_with_comments_only_is_allowed(
+        self, repos: Repos, tmp_path: Path
+    ) -> None:
+        _hiding_head(repos)
+        info = Path(_git(repos.work, "rev-parse", "--git-path", "info/attributes"))
+        if not info.is_absolute():
+            info = repos.work / info
+        info.parent.mkdir(parents=True, exist_ok=True)
+        info.write_text("# nothing here\n\n", encoding="utf-8")
+        _assert_code_is_visible(_run_script(repos, tmp_path, merged=False))
+
+
+class TestDiffIgnoresConfigThatRewritesIt:
+    """Config and environment outside the PR do not reshape pr.diff (AT-3593).
+
+    The reviewers, review_coordinates.py and filter_pr_diff.py read pr.diff
+    as a plain `a/`/`b/` unified diff; global and system config are the
+    operator's, not the repository's, and the local driver runs under them.
+    """
+
+    def _reference(self, repos: Repos) -> str:
+        empty_tree = _git(repos.work, "hash-object", "-t", "tree", os.devnull)
+        return _git(
+            repos.work,
+            f"--attr-source={empty_tree}",
+            "diff",
+            f"origin/main...{repos.head_sha}",
+        )
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            "[diff]\n\texternal = true\n",
+            "[diff]\n\tnoprefix = true\n",
+            "[diff]\n\tcontext = 0\n",
+            "[color]\n\tui = always\n",
+            "[color]\n\tdiff = always\n",
+            "[core]\n\tbigFileThreshold = 1\n",
+        ],
+        ids=[
+            "external",
+            "noprefix",
+            "context",
+            "color-ui",
+            "color-diff",
+            "big-file-threshold",
+        ],
+    )
+    def test_global_config_does_not_change_the_diff(
+        self, repos: Repos, tmp_path: Path, config: str
+    ) -> None:
+        _hiding_head(repos)
+        path = _write_config(tmp_path, "gitconfig", config)
+        run = _run_script(
+            repos, tmp_path, merged=False, extra_env={"GIT_CONFIG_GLOBAL": str(path)}
+        )
+        assert run.returncode == 0, run.stderr
+        assert run.diff.rstrip("\n") == self._reference(repos)
+
+    @pytest.mark.parametrize(
+        "key_value",
+        [
+            ("diff.noprefix", "true"),
+            ("diff.context", "0"),
+        ],
+        ids=["noprefix", "context"],
+    )
+    def test_clone_config_does_not_change_the_diff(
+        self, repos: Repos, tmp_path: Path, key_value: tuple[str, str]
+    ) -> None:
+        # The clone's own config is not the PR's, but the shape it could
+        # change is pinned on the command line all the same.
+        _hiding_head(repos)
+        reference = self._reference(repos)
+        _git(repos.work, "config", *key_value)
+        run = _run_script(repos, tmp_path, merged=False)
+        assert run.returncode == 0, run.stderr
+        assert run.diff.rstrip("\n") == reference
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"GIT_EXTERNAL_DIFF": "true"},
+            {"GIT_DIFF_OPTS": "--unified=0"},
+        ],
+        ids=["external-diff", "diff-opts"],
+    )
+    def test_environment_does_not_change_the_diff(
+        self, repos: Repos, tmp_path: Path, env: dict[str, str]
+    ) -> None:
+        _hiding_head(repos)
+        run = _run_script(repos, tmp_path, merged=False, extra_env=env)
+        assert run.returncode == 0, run.stderr
+        assert run.diff.rstrip("\n") == self._reference(repos)
 
 
 def _steps() -> list[dict[str, Any]]:

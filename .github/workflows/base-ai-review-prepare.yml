@@ -66,6 +66,9 @@ on:
       excluded_paths:
         description: "The removed paths, one per line (a rename reads `old -> new`); empty when nothing was"
         value: ${{ jobs.prepare.outputs.excluded_paths }}
+      binary_paths:
+        description: "Paths pr.diff carries as binary (git apply --numstat), one per line; empty when none (AT-3593)"
+        value: ${{ jobs.prepare.outputs.binary_paths }}
       size_total:
         description: "Combined changed lines when no per-axis limit is set; otherwise the value of each exceeded axis, space-separated in size_exceeded's order (empty when none was)"
         value: ${{ jobs.prepare.outputs.size_total }}
@@ -131,6 +134,7 @@ jobs:
       policy_skipped: ${{ steps.policy.outputs.policy_skipped }}
       excluded_count: ${{ steps.policy.outputs.excluded_count }}
       excluded_paths: ${{ steps.policy.outputs.excluded_paths }}
+      binary_paths: ${{ steps.binaries.outputs.binary_paths }}
       size_total: ${{ steps.size-check.outputs.total }}
       head_sha: ${{ steps.refs.outputs.head_sha }}
       size_limit: ${{ steps.size-check.outputs.limit }}
@@ -1007,6 +1011,21 @@ jobs:
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
         with:
           python-version-file: ".ai-dev-pr-review/.github/scripts/.python-version"
+
+      # A binary entry is one "Binary files ... differ" line the reviewers
+      # cannot read, and a PR can make a text file one with a NUL byte. The
+      # verdict lists them as it lists policy exclusions (AT-3593). After the
+      # policy filter, so an excluded file is reported once, as excluded.
+      - name: List binary files
+        id: binaries
+        if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
+        run: |
+          SCRIPT=".ai-dev-pr-review/.github/scripts/list_binary_paths.py"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::warning::list_binary_paths.py not in pinned checkout; binary files are not listed on the verdict (AT-3593)"
+            exit 0
+          fi
+          python3 "$SCRIPT"
 
       - name: Append prior review context
         if: steps.size-check.outputs.skip == 'false' && steps.policy.outputs.policy_skipped != 'true'
