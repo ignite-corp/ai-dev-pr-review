@@ -1902,6 +1902,38 @@ jobs:
             echo "early_exit=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # --- Claude / Codex: Record the model that actually ran (AT-3591) ---
+      # Both write their verdict through the model (Codex into the
+      # model-writable workspace, Claude from its own JSON), so the field is
+      # set here, after the CLI is gone, from what the CLI itself recorded:
+      # Claude's result-message modelUsage keys, Codex's state-DB row for the
+      # thread its thread.started event names. Any value the model wrote is
+      # overwritten; what cannot be read is ["unknown"]. Gemini and Copilot
+      # set the field in their own adapters. Before 'Record cancel cause',
+      # which drops a link at the verdict path and is last before the upload.
+      # Guarded on the script being in the pinned checkout, as the AT-1606
+      # post-step is: self-review runs this YAML ahead of the release that
+      # ships the script. continue-on-error: a verdict without the field
+      # reads "unknown" in the comment, which is no reason to fail the job.
+      - name: Stamp actual models
+        if: (inputs.reviewer == 'claude' || inputs.reviewer == 'codex') && always()
+        continue-on-error: true
+        env:
+          REVIEWER: ${{ inputs.reviewer }}
+          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          SCRIPT="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/actual_models.py"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "actual_models.py not in pinned checkout, skipping"
+            exit 0
+          fi
+          if [ "$REVIEWER" = claude ]; then
+            python3 "$SCRIPT" claude review-claude.json "${EXEC_FILE:-}"
+          else
+            python3 "$SCRIPT" codex review-codex.json \
+              "${RUNNER_TEMP}/codex-events.jsonl" "${CODEX_HOME:-$HOME/.codex}"
+          fi
+
       # --- Common: Record why the job is being cancelled (AT-3410) ---
       # The aggregate posts nothing for a run cancelled from outside before
       # any reviewer produced a review: its "0/N all failed" would say the

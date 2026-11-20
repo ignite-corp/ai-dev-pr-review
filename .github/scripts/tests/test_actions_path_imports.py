@@ -36,6 +36,7 @@ THIRD_PARTY_ROOTS = frozenset({"yaml", "google"})
 
 # Scripts a base workflow runs with no `pip install` ahead of them.
 STDLIB_ONLY_SCRIPTS = (
+    "actual_models",
     "aggregate_reviews",
     "codex_review_auth",
     "extract_claude_review",
