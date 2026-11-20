@@ -812,6 +812,41 @@ def _size_warnings() -> list[str]:
     return lines
 
 
+# Paths named on the size-exclusion line; a vendored tree runs to thousands
+# of files, and the count says how many more there are (AT-3592).
+SIZE_EXCLUDED_LIST_MAX = 20
+
+
+def _size_exclusion_note() -> str | None:
+    """The lines prepare left out of the size count, or None when none were.
+
+    prepare subtracts files `.github/lens-ignore` excludes at both the base
+    and the head commit before comparing against the size limits (AT-3592), so the count it
+    compared can be lower than GitHub's. Said on the verdict, paths only,
+    so that is never silent.
+    """
+    raw_lines = os.environ.get("SIZE_EXCLUDED_LINES", "").strip()
+    if not raw_lines.isdigit() or int(raw_lines) == 0:
+        return None
+    paths = [
+        line.strip()
+        for line in os.environ.get("SIZE_EXCLUDED_PATHS", "").splitlines()
+        if line.strip()
+    ]
+    raw_files = os.environ.get("SIZE_EXCLUDED_FILES", "").strip()
+    files = int(raw_files) if raw_files.isdigit() else len(paths)
+    shown = paths[:SIZE_EXCLUDED_LIST_MAX]
+    listed = ", ".join(f"`{display_path(path)}`" for path in shown)
+    rest = files - len(shown)
+    if rest > 0:
+        listed = f"{listed} and {rest} more" if listed else f"{rest} paths not listed"
+    return (
+        f"[i] size: {raw_lines} changed lines in {files} file(s) matched by"
+        f" `{LENS_IGNORE_PATH}` at both the base and the head were not counted toward"
+        f" the size limit: {listed or 'paths not reported'}"
+    )
+
+
 def _size_overage_sentence(breaches: list[SizeBreach]) -> str:
     """` Over by ...; split into at least K PRs.`, or "" when not computable."""
     if not breaches or not all(
@@ -851,6 +886,9 @@ def format_size_skip_summary(breaches: list[SizeBreach]) -> str:
     else:
         measurement = format_size_skip_reason(breaches)
     headline = f"**Result: [X] Review skipped -- PR too large** -- {measurement}"
+    exclusion = _size_exclusion_note()
+    if exclusion:
+        headline = f"{headline}\n\n> {exclusion}"
     why_red = (
         "No reviewer ran, so this check reports a failure rather than a"
         " verdict. That is deliberate: a required check that is never"
@@ -2466,6 +2504,9 @@ def format_summary(  # noqa: PLR0915
     # stays as it is: the next round over the limit reviews nothing (AT-2415).
     for warning in _size_warnings():
         lines.append(f"\n> {warning}")
+    exclusion = _size_exclusion_note()
+    if exclusion:
+        lines.append(f"\n> {exclusion}")
     # A partial diff is announced on the verdict, paths only (AT-2206).
     excluded_count = _excluded_count()
     if excluded_count > 0:
