@@ -13,6 +13,7 @@ PR_SIZE_LIMIT.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -317,6 +318,9 @@ _SIZE_OUTPUTS = {
     "size_warn_axes": "warn_axes",
     "size_warn_total": "warn_total",
     "size_warn_limit": "warn_limit",
+    "size_excluded_lines": "excluded_lines",
+    "size_excluded_files": "excluded_files",
+    "size_excluded_paths": "excluded_paths",
 }
 
 
@@ -521,3 +525,207 @@ def test_a_valid_warn_percent_is_accepted(tmp_path, value):
     )
     assert result.returncode == 0, result.stderr
     assert outputs["skip"] == "false"
+
+
+# ------------------------------------- lens-ignore at the base (AT-3592)
+#
+# The tests above run with no pinned scripts checkout, so the step falls
+# back to GitHub's whole-PR count. These put the checkout in place (a
+# symlink to this tree's scripts) and answer the REST calls
+# pr_size_policy.py makes.
+
+_SCRIPTS = Path(__file__).resolve().parents[1]
+_VENDOR = "frontend/vendor/ignite-design-system"
+
+
+def _write_policy_gh_stub(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(
+        textwrap.dedent(
+            """\
+            #!/bin/bash
+            if [ "$1" = "api" ]; then
+              case "$*" in
+                */files*) cat "$FIXTURES/files.jsonl" ;;
+                */contents/*)
+                  for A in "$@"; do
+                    case "$A" in ref=*) REF="${A#ref=}" ;; esac
+                  done
+                  if [ -f "$FIXTURES/rules-$REF.json" ]; then
+                    cat "$FIXTURES/rules-$REF.json"
+                  else
+                    echo "gh: Not Found (HTTP 404)" >&2; exit 1
+                  fi ;;
+                *) cat "$FIXTURES/pr.json" ;;
+              esac
+            elif [ "$1 $2" = "pr comment" ]; then
+              shift 2
+              while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--body" ]; then printf '%s' "$2" > "$COMMENT_LOG"; fi
+                shift
+              done
+            else
+              echo "unexpected gh invocation: $*" >&2; exit 1
+            fi
+            """
+        ),
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def _read_outputs(path: Path) -> dict[str, str]:
+    """$GITHUB_OUTPUT, heredoc-delimited multi-line values included."""
+    outputs: dict[str, str] = {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if "<<" in line and "=" not in line:
+            key, _, delimiter = line.partition("<<")
+            body: list[str] = []
+            index += 1
+            while lines[index] != delimiter:
+                body.append(lines[index])
+                index += 1
+            outputs[key] = "\n".join(body)
+        else:
+            key, _, value = line.partition("=")
+            outputs[key] = value
+        index += 1
+    return outputs
+
+
+def _run_with_policy(
+    tmp_path: Path,
+    files: list[dict[str, Any]],
+    rules_by_ref: dict[str, str],
+    *,
+    repo_vars: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str | None]:
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    pr = {
+        "additions": sum(f["additions"] for f in files),
+        "deletions": sum(f["deletions"] for f in files),
+        "changed_files": len(files),
+        "base": {"sha": "base000"},
+        "head": {"sha": "head111"},
+    }
+    (fixtures / "pr.json").write_text(json.dumps(pr))
+    (fixtures / "files.jsonl").write_text("".join(json.dumps(f) + "\n" for f in files))
+    for ref, text in rules_by_ref.items():
+        content = base64.b64encode(text.encode()).decode()
+        (fixtures / f"rules-{ref}.json").write_text(
+            json.dumps({"encoding": "base64", "content": content})
+        )
+    checkout = tmp_path / ".ai-dev-pr-review" / ".github"
+    checkout.mkdir(parents=True)
+    (checkout / "scripts").symlink_to(_SCRIPTS)
+    output = tmp_path / "github_output"
+    output.touch()
+    comment = tmp_path / "comment.txt"
+    step = _step()
+    repo_vars = repo_vars or {}
+    env = {
+        "PATH": f"{_write_policy_gh_stub(tmp_path)}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "FIXTURES": str(fixtures),
+        "COMMENT_LOG": str(comment),
+        "LENS_TARGET_REPOSITORY": REPO,
+    }
+    for key, value in step["env"].items():
+        env[key] = _render(str(value), repo_vars)
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", _render(step["run"], repo_vars)],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    posted = comment.read_text(encoding="utf-8") if comment.exists() else None
+    return result, _read_outputs(output), posted
+
+
+def _like_234() -> list[dict[str, Any]]:
+    return [
+        {"filename": f"{_VENDOR}/dist/index.js", "additions": 6000, "deletions": 4564},
+        {
+            "filename": "frontend/vendor-integrity/ignite-design-system/files.sha256",
+            "additions": 90,
+            "deletions": 80,
+        },
+        {"filename": "frontend/src/a.test.js", "additions": 5, "deletions": 4},
+    ]
+
+
+def test_a_vendor_bump_under_a_base_rule_is_reviewed(tmp_path):
+    result, outputs, posted = _run_with_policy(
+        tmp_path,
+        _like_234(),
+        {"base000": f"{_VENDOR}/**\n", "head111": f"{_VENDOR}/**\n"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert outputs["skip"] == "false"
+    assert outputs["total"] == "179"
+    # GitHub's own counts are still reported as they were (AT-3052).
+    assert outputs["additions"] == "6095"
+    assert outputs["deletions"] == "4648"
+    assert outputs["excluded_lines"] == "10564"
+    assert outputs["excluded_files"] == "1"
+    assert outputs["excluded_paths"] == f"{_VENDOR}/dist/index.js"
+    assert posted is None
+
+
+def test_a_rule_only_at_the_head_does_not_rescue_the_pr(tmp_path):
+    files = [
+        {"filename": ".github/lens-ignore", "additions": 1, "deletions": 0},
+        {"filename": "src/hidden/payload.py", "additions": 5000, "deletions": 0},
+    ]
+
+    result, outputs, posted = _run_with_policy(
+        tmp_path, files, {"head111": "src/hidden/**\n"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert outputs["skip"] == "true"
+    assert outputs["total"] == "5001"
+    assert outputs["excluded_lines"] == "0"
+    assert posted is not None and "5001 lines changed" in posted
+
+
+def test_a_rule_the_head_removes_does_not_rescue_the_pr(tmp_path):
+    """The reviewers get what the head no longer excludes, so it is counted."""
+    files = [
+        {"filename": ".github/lens-ignore", "additions": 0, "deletions": 1},
+        {"filename": f"{_VENDOR}/big.txt", "additions": 5000, "deletions": 0},
+    ]
+
+    result, outputs, posted = _run_with_policy(
+        tmp_path, files, {"base000": f"{_VENDOR}/**\n"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert outputs["skip"] == "true"
+    assert outputs["total"] == "5001"
+    assert outputs["excluded_lines"] == "0"
+    assert posted is not None
+
+
+def test_the_per_axis_gate_also_subtracts_excluded_lines(tmp_path):
+    result, outputs, _ = _run_with_policy(
+        tmp_path,
+        _like_234(),
+        {"base000": f"{_VENDOR}/**\n", "head111": f"{_VENDOR}/**\n"},
+        repo_vars={"PR_SIZE_LIMIT_ADDITIONS": "100"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert outputs["skip"] == "false"
+    assert outputs["warned"].split() == ["PR_SIZE_LIMIT_ADDITIONS"]
+    assert outputs["warn_total"].split() == ["95"]

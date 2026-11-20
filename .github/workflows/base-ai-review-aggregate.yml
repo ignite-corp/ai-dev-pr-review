@@ -87,6 +87,21 @@ on:
         required: false
         default: ""
         description: "The limit of each size_warned entry (AT-2415)"
+      size_excluded_lines:
+        type: string
+        required: false
+        default: ""
+        description: "Changed lines the size count left out because .github/lens-ignore excludes their files at both the base and the head commit (AT-3592)"
+      size_excluded_files:
+        type: string
+        required: false
+        default: ""
+        description: "Number of files size_excluded_lines covers (AT-3592)"
+      size_excluded_paths:
+        type: string
+        required: false
+        default: ""
+        description: "Those files, one per line (AT-3592)"
       policy_skipped:
         type: string
         required: false
@@ -565,6 +580,9 @@ jobs:
           SIZE_WARN_AXES: ${{ inputs.size_warn_axes }}
           SIZE_WARN_TOTAL: ${{ inputs.size_warn_total }}
           SIZE_WARN_LIMIT: ${{ inputs.size_warn_limit }}
+          SIZE_EXCLUDED_LINES: ${{ inputs.size_excluded_lines }}
+          SIZE_EXCLUDED_FILES: ${{ inputs.size_excluded_files }}
+          SIZE_EXCLUDED_PATHS: ${{ inputs.size_excluded_paths }}
           POLICY_SKIPPED: ${{ inputs.policy_skipped }}
           EXCLUDED_COUNT: ${{ inputs.excluded_count }}
           EXCLUDED_PATHS: ${{ inputs.excluded_paths }}
