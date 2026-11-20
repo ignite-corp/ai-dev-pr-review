@@ -1085,13 +1085,15 @@ def _refs(
 # --------------------------------------------------------- gates and outcomes
 
 
-def _size_gate(monkeypatch, refs, limits) -> tuple[bool, dict[str, str], str | None]:
+def _size_gate(
+    monkeypatch, refs, limits, measured=None
+) -> tuple[bool, dict[str, str], str | None]:
     """Run size_gate; return (skipped, size dict, posted body or None)."""
     posted: dict[str, str] = {}
     monkeypatch.setattr(
         driver, "gh_comment", lambda repo, pr, body: posted.update(body=body)
     )
-    skipped, size = driver.size_gate("o/r", "1", refs, limits)
+    skipped, size = driver.size_gate("o/r", "1", refs, limits, measured)
     return skipped, size, posted.get("body")
 
 
@@ -1113,6 +1115,9 @@ def test_the_size_gate_reports_the_numbers_the_aggregate_renders(monkeypatch):
         "SIZE_WARN_AXES": "",
         "SIZE_WARN_TOTAL": "",
         "SIZE_WARN_LIMIT": "",
+        "SIZE_EXCLUDED_LINES": "0",
+        "SIZE_EXCLUDED_FILES": "0",
+        "SIZE_EXCLUDED_PATHS": "",
     }
     assert body is not None
     # Without the marker the stale-item pass cannot fold this, so every
@@ -1172,6 +1177,89 @@ def test_an_invalid_warn_percent_fails_as_the_workflow_does(monkeypatch, value):
     config = LocalConfig({}, workflow_defaults())
     with pytest.raises(driver.ConfigError, match="PR_SIZE_WARN_PERCENT"):
         driver.size_limits(config)
+
+
+def _measured(
+    additions, deletions, excluded_additions, excluded_deletions, paths
+) -> driver.SizeMeasure:
+    return driver.SizeMeasure(
+        additions=additions - excluded_additions,
+        deletions=deletions - excluded_deletions,
+        github_additions=additions,
+        github_deletions=deletions,
+        excluded_paths=tuple(paths),
+        fallback="",
+    )
+
+
+def test_the_size_gate_counts_only_lines_outside_base_lens_ignore(monkeypatch):
+    """aws-simple-deploy#234: a vendored tree the reviewers never see (AT-3592)."""
+    vendor = "frontend/vendor/ignite-design-system/dist/index.js"
+    skipped, size, body = _size_gate(
+        monkeypatch,
+        _refs(additions=6129, deletions=4634),
+        driver.SizeLimits(3000),
+        _measured(6129, 4634, 6000, 4564, [vendor]),
+    )
+
+    assert skipped is False
+    assert body is None
+    assert size["SIZE_TOTAL"] == "199"
+    # GitHub's own counts are still what SIZE_ADDITIONS/DELETIONS carry.
+    assert (size["SIZE_ADDITIONS"], size["SIZE_DELETIONS"]) == ("6129", "4634")
+    assert size["SIZE_EXCLUDED_LINES"] == "10564"
+    assert size["SIZE_EXCLUDED_FILES"] == "1"
+    assert size["SIZE_EXCLUDED_PATHS"] == vendor
+
+
+def test_measure_pr_size_ignores_a_rule_only_the_head_carries(monkeypatch):
+    calls: list[list[str]] = []
+    pr = {
+        "additions": 5001,
+        "deletions": 0,
+        "changed_files": 2,
+        "base": {"sha": "base000"},
+        "head": {"sha": "head111"},
+    }
+    files = [
+        {"filename": ".github/lens-ignore", "additions": 1, "deletions": 0},
+        {"filename": "src/hidden/payload.py", "additions": 5000, "deletions": 0},
+    ]
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        joined = " ".join(argv)
+        if "/files" in joined:
+            out = "".join(json.dumps(f) + "\n" for f in files)
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        if "/contents/" in joined:
+            # The rule exists only at the head; the base has no rule file.
+            return subprocess.CompletedProcess(argv, 1, "", "gh: Not Found (HTTP 404)")
+        return subprocess.CompletedProcess(argv, 0, json.dumps(pr), "")
+
+    monkeypatch.setattr(driver, "run", fake_run)
+
+    measured = driver.measure_pr_size("o/r", "9")
+
+    assert (measured.additions, measured.deletions) == (5001, 0)
+    contents = [c for c in calls if any("/contents/" in a for a in c)]
+    assert contents and all("ref=base000" in c for c in contents)
+
+
+def test_measure_pr_size_reads_the_operators_lens_ignore_path(monkeypatch):
+    """The gate must read the rule file the driver's diff filter reads."""
+    seen: list[str] = []
+
+    def fake_measure(repo, pr_number, gh, *, rule_path):
+        seen.append(rule_path)
+        return driver.full_count(1, 0)
+
+    monkeypatch.setattr(driver, "measure_pr", fake_measure)
+    monkeypatch.setenv("LENS_IGNORE_PATH", "ops/review-ignore")
+
+    driver.measure_pr_size("o/r", "9")
+
+    assert seen == ["ops/review-ignore"]
 
 
 def test_a_pr_within_the_limit_posts_nothing(monkeypatch):

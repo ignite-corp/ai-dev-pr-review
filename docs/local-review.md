@@ -269,7 +269,10 @@ another copy standing (AT-2208). `var=` names the limit that was exceeded --
 `PR_SIZE_LIMIT`, or `PR_SIZE_LIMIT_ADDITIONS` / `PR_SIZE_LIMIT_DELETIONS` when
 either per-axis limit is set (AT-3052); several are comma-joined, aligned with
 `lines=` and `limit=`. The driver reads all three the way the workflow does,
-and an unset per-axis limit stays unset rather than becoming 0. The comment
+and an unset per-axis limit stays unset rather than becoming 0. It measures
+the PR the way the workflow does too, through the same `pr_size_policy.py`:
+lines in files `.github/lens-ignore` excludes at both the base and the head commit are not
+counted (AT-3592). The comment
 also says how far over the limit the PR is and the fewest PRs to split it
 into (AT-2415), after the marker, which is unchanged. `PR_SIZE_WARN_PERCENT`
 is read the same way, and a PR within its limit but at or over that

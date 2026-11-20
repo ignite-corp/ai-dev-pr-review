@@ -5776,3 +5776,68 @@ class TestSameHeadApprovalStandsUntilReplaced:
             monkeypatch, [orphan], "approve", approve_quorum=False
         )
         assert issued == [("R_orphan", "dismiss"), ("R_orphan", "minimize")]
+
+
+class TestSizeExclusionNote:
+    """Lines lens-ignore kept out of the size count are announced (AT-3592).
+
+    prepare subtracts the files `.github/lens-ignore` at both the base and the head
+    excludes before comparing against the size limits. The verdict says how
+    many lines that was and which paths, on the reviewed path and on the
+    size-skip path alike, so a count lower than GitHub's is never silent.
+    """
+
+    _KEYS = ("SIZE_EXCLUDED_LINES", "SIZE_EXCLUDED_FILES", "SIZE_EXCLUDED_PATHS")
+
+    def test_a_reviewed_round_lists_the_lines_and_paths_left_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body, verdict = TestSizeWarning._run(
+            monkeypatch,
+            SIZE_EXCLUDED_LINES="10564",
+            SIZE_EXCLUDED_FILES="2",
+            SIZE_EXCLUDED_PATHS="vendor/a.js\nvendor/b.js",
+        )
+        assert verdict == "approve"
+        assert (
+            "> [i] size: 10564 changed lines in 2 file(s) matched by"
+            " `.github/lens-ignore` at both the base and the head were not counted"
+            " toward the size limit: `vendor/a.js`, `vendor/b.js`"
+        ) in body
+
+    def test_nothing_excluded_adds_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for key in self._KEYS:
+            monkeypatch.delenv(key, raising=False)
+        body, _ = TestSizeWarning._run(monkeypatch, SIZE_EXCLUDED_LINES="0")
+        assert "not counted toward the size limit" not in body
+
+    def test_a_long_path_list_is_cut_with_a_count_of_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import aggregate_reviews
+
+        shown = aggregate_reviews.SIZE_EXCLUDED_LIST_MAX
+        paths = [f"vendor/f{i}.js" for i in range(shown)]
+        body, _ = TestSizeWarning._run(
+            monkeypatch,
+            SIZE_EXCLUDED_LINES="900",
+            SIZE_EXCLUDED_FILES=str(shown + 7),
+            SIZE_EXCLUDED_PATHS="\n".join(paths),
+        )
+        assert f"`vendor/f{shown - 1}.js` and 7 more" in body
+
+    def test_the_size_skip_verdict_carries_the_note(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIZE_EXCLUDED_LINES", "12")
+        monkeypatch.setenv("SIZE_EXCLUDED_FILES", "1")
+        monkeypatch.setenv("SIZE_EXCLUDED_PATHS", "vendor/a.js")
+        body = format_size_skip_summary(
+            [SizeBreach("5001", "changed", "PR_SIZE_LIMIT", "3000")]
+        )
+        assert (
+            "> [i] size: 12 changed lines in 1 file(s) matched by"
+            " `.github/lens-ignore` at both the base and the head were not counted"
+        ) in body
