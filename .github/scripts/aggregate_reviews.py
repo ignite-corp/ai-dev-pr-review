@@ -40,6 +40,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple, NoReturn, TypeGuard, cast
 
+# Standard library only, through github_pr_support and review_status: this
+# aggregate runs with no `pip install` (AT-2510), and
+# test_actions_path_imports.py holds actual_models to that.
+from actual_models import FIELD as ACTUAL_MODELS_FIELD, sanitize as sanitize_models
+
 # The payload-shape pair is written once, in github_pr_support, so the two
 # reviewer shims can gate their direct-write path on the SAME test this
 # module applies -- see usable_verdict there. Imported under the names this
@@ -2514,10 +2519,22 @@ def format_summary(  # noqa: PLR0915
         listed, disposed = _split_reviewer_issues(name, issues, skip)
         if disposed:
             header += f" ({len(disposed)} dispositioned earlier, listed below)"
-        lines += ["", header, summary, *listed]
+        # The blank line keeps the summary out of the models line's paragraph.
+        lines += ["", header, _models_line(review), "", summary, *listed]
         disposed_lines += disposed
 
     return "\n".join(lines + _dispositioned_section(disposed_lines))
+
+
+def _models_line(review: dict[str, Any]) -> str:
+    """The models this reviewer actually ran on (AT-3591).
+
+    The payload comes back as a downloaded artifact, so the value is
+    re-checked here: only model-ID-shaped strings are rendered, and anything
+    else, an absent field included, reads ``unknown``.
+    """
+    models = sanitize_models(review.get(ACTUAL_MODELS_FIELD))
+    return "Model: " + ", ".join(f"`{model}`" for model in models)
 
 
 def _split_reviewer_issues(

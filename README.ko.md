@@ -340,10 +340,10 @@ jobs:
 | `MAJOR_CONSENSUS_OVERLAP` | `0.3` | 두 리뷰어의 major 발견이 같은 이슈로 간주되는 단어 중복 비율(0-1). |
 | `DEPENDABOT_MAJOR_CONSENSUS_OVERLAP` | `0.5` | Dependabot 전용. |
 | `MAJOR_CONSENSUS_MIN` | `2` | major 이슈에 대해 `request_changes`를 유발하는 합의에 필요한 리뷰어 수. |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | `claude_args --model`을 통해 `anthropics/claude-code-action`에 전달되는 모델. |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | `claude_args --model`을 통해 `anthropics/claude-code-action`에 전달되는 모델. 실제로 돈 모델은 판정 코멘트의 `Model:` 줄과 리뷰어 아티팩트의 `actual_models`에 남습니다(AT-3591). CLI 자체 기본 모델로 돌릴 수도 있지만 코드 변경이 필요합니다. 변수를 비워도 이 리터럴로 돌아가기 때문입니다. 그렇게 하면 기본 모델이 액션 핀을 따라 바뀝니다. [운영 문서](docs/ops/claude-auth-and-review-operations.md#model-selection) 참고. |
 | `CLAUDE_ALLOWED_BOTS` | `dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]` | `anthropics/claude-code-action`의 `allowed_bots` 입력으로 전달됨 — 봇이 시작한 PR이 해당 액션의 비인간 액터 가드를 통과하게 해주는 유일한 값. 쉼표로 구분되며, 각 항목은 트리밍·소문자화되고 양쪽 모두 끝의 `[bot]`을 제거한 뒤 액터와 비교되므로 접미사는 장식일 뿐임. 기본 목록에 **없는** 봇을 허용해야 할 때만 설정 — 기본 목록에 이미 있는 봇은 그 봇이 담긴 릴리스가 소비자에 도달하는 순간 저절로 허용되므로, 그런 봇이 거부되는 레포에 필요한 것은 핀 범프이지 이 변수가 아님. 값은 기본 목록에 추가되는 것이 아니라 통째로 **대체**되므로, 설정하는 레포는 위 기본 네 항목을 모두 적고 자기 봇을 더해야 하며, 그 뒤로는 base 기본값이 바뀌어도(다섯 번째 봇이 추가되어도) 누군가 변수를 손으로 고치기 전까지 그 레포에는 반영되지 않음. |
-| `CODEX_MODEL` | `gpt-5.6-luna` | `codex exec --model`에 전달되는 모델. |
-| `GEMINI_MODEL` | `gemini-2.5-pro` | `google-genai` 클라이언트에 전달되는 모델. |
+| `CODEX_MODEL` | `gpt-5.6-luna` | `codex exec --model`에 전달되는 모델. 실제로 돈 모델은 `CLAUDE_MODEL`과 같은 방식으로 남습니다. CLI 기본 모델도 같은 주의가 `@openai/codex` 핀에 적용됩니다. [운영 문서](docs/ops/claude-auth-and-review-operations.md#model-selection) 참고. |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | `google-genai` 클라이언트에 전달되는 모델. 실제로 돈 모델은 `CLAUDE_MODEL`과 같은 방식으로 남습니다. API에 기본 모델이 없어 값이 항상 필요합니다. |
 | `BOT_LOGIN` | `github-actions[bot]` | **취합기에서는 작동하지 않는 설정 -- 지정해도 판정은 달라지지 않음.** 취합기 자신의 판정 코멘트가 게시되는 신원을 가리키지만, 취합기 코드 중 이 값을 읽는 곳이 없음: 오래된 항목 접기는 작성자가 아니라 리뷰 마커로 판별하므로, 취합기는 판정을 게시하기 전에 이전 판정 코멘트를 최소화하고 이전 `APPROVED`·`CHANGES_REQUESTED` 리뷰를 누가 올렸든 해제함 -- 지난 head의 승인은 이 로그인이 올렸든 리뷰어 App이 올렸든 해제됨. 유일한 예외는 현재 head의 승인으로, 이번 라운드가 자기 리뷰를 게시할 때까지 그대로 남으므로 코멘트만 게시하는 라운드는 그 승인을 건드리지 않음. 로컬 리뷰 드라이버에서는 본인의 `gh` 로그인이 기본값이며, 이 값을 지정해도 드라이버의 `gh auth` 확인은 건너뛰지 않음(`docs/local-review.md`, "Differences from the Actions path"). |
 | `JACCARD_THRESHOLD` | `0.6` | 중복 제거용 토큰셋 Jaccard 유사도 임계값. 낮을수록 더 공격적으로 중복 제거(더 많은 문자열이 같은 이슈로 합쳐짐), 높을수록 엄격. 동작 트레이드오프는 `0.5`-`0.8`로 조정. |
 | `ALLOW_AUTO_APPROVE` | `false` | **모든** 정식 리뷰 이벤트를 제어하는 킬스위치. `false`일 때 "approve"와 "request_changes" 판정 모두 일반 코멘트로 게시됨(`gh pr review --approve` 및 `--request-changes` 미제출). `true`로 전환하면 실제 `gh pr review --approve` 및 `--request-changes`(Changes Requested) 이벤트 활성화. |

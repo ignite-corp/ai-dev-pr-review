@@ -18,6 +18,7 @@ from typing import Any, cast
 from google import genai
 from google.genai import types as genai_types
 
+from actual_models import FIELD as ACTUAL_MODELS_FIELD, sanitize
 from github_pr_support import is_json_array
 from review_status import stamp_model_status, write_verdict_json
 
@@ -339,6 +340,9 @@ def extract_json(text: str) -> dict[str, Any]:
 def main() -> None:
     context, diff = load_files()
     schema_dict = json.loads(_load_schema())
+    # What answered, from the response metadata, never from the model's text
+    # (AT-3591); unknown until a response arrives.
+    actual_models = sanitize(None)
 
     try:
         client = genai.Client(api_key=os.environ["GOOGLE_AI_API_KEY"])
@@ -357,6 +361,7 @@ def main() -> None:
             contents=build_user_prompt(diff),
             config=config,
         )
+        actual_models = sanitize([response.model_version])
         # Detect MAX_TOKENS truncation BEFORE attempting JSON parse, so the operator
         # gets a clear actionable error instead of an opaque JSONDecodeError.
         if (
@@ -378,7 +383,8 @@ def main() -> None:
             print(
                 f"INFO: Gemini usage -- prompt={response.usage_metadata.prompt_token_count}, "
                 f"output={response.usage_metadata.candidates_token_count}, "
-                f"total={response.usage_metadata.total_token_count}",
+                f"total={response.usage_metadata.total_token_count}, "
+                f"model={', '.join(actual_models)}",
                 file=sys.stderr,
             )
         text = response.text
@@ -405,6 +411,8 @@ def main() -> None:
             "error": str(exc),
         }
 
+    # Overwrites any value the model put in its own JSON.
+    review[ACTUAL_MODELS_FIELD] = actual_models
     # Link-safe: the workspace is model-writable, so REVIEW_FILE may be a
     # symlink; do not write through it (AT-2941).
     write_verdict_json(REVIEW_FILE, review, indent=2, ensure_ascii=False)

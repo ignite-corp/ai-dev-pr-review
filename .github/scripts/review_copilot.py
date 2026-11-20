@@ -20,6 +20,7 @@ from copilot.generated.rpc import AccountGetQuotaRequest, PermissionDecisionReje
 from copilot.session_events import AssistantUsageData, SessionEvent
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from actual_models import FIELD as ACTUAL_MODELS_FIELD, MODEL_ID_RE, sanitize
 from review_status import write_verdict_json
 from reviewer_prompts import build_copilot_prompt, copilot_system_prompt
 
@@ -244,8 +245,8 @@ async def run_review(
 
             def record_usage(event: SessionEvent) -> None:
                 data = event.data
-                if isinstance(data, AssistantUsageData) and re.fullmatch(
-                    r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", data.model
+                if isinstance(data, AssistantUsageData) and MODEL_ID_RE.fullmatch(
+                    data.model
                 ):
                     models.add(data.model)
 
@@ -338,7 +339,7 @@ def main() -> None:
         detail = f" ({exception_detail(cause)})" if cause is not None else ""
         print(f"::warning::Copilot review failed: {reason}{detail}", file=sys.stderr)
     payload["requested_model"] = "auto"
-    payload["actual_models"] = sorted(models) if models else ["unknown"]
+    payload[ACTUAL_MODELS_FIELD] = sanitize(list(models))
     write_verdict_json(REVIEW_FILE, payload, indent=2)
     step_output = os.environ.get("GITHUB_OUTPUT", "")
     if failure_code and step_output:

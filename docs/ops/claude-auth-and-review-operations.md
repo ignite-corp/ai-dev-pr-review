@@ -98,6 +98,29 @@ and the far-value clearing apply on merge.
   CLAUDE_MODEL repo vars" below.
 - **Avoid `gemini-2.5-flash-lite` for review** - it confabulates (fabricated 59
   "not English" flags on English text). Use `gemini-2.5-pro`.
+- **What actually ran** (AT-3591): the verdict comment has a `Model:` line
+  under the heading of each reviewer that returned a payload, and each
+  `review-<reviewer>.json` artifact has `actual_models`. The values are read
+  from what the CLI or API recorded, never from the reviewer's own text. For Claude it is the `modelUsage` keys
+  of the execution file's `result` message. For Codex it is `threads.model`
+  in `~/.codex/state_<n>.sqlite`, for the thread the `thread.started` event
+  names. For Gemini it is the response's `model_version`, and for Copilot the
+  SDK's usage events. A value that cannot be read shows as `unknown`. The
+  local review driver does not record the field, so its comment shows
+  `unknown` for Claude and Codex. The model is not in `review_result`: the
+  runner's `check_lifecycle.py` rejects a version 2 result with any extra
+  field.
+- **Running on the CLI's default model.** The Claude and Codex CLIs pick a
+  default model when they get no `--model`. Using that default needs a code
+  change today. Each variable falls back to a literal
+  (`vars.CLAUDE_MODEL || 'claude-sonnet-4-6'`), so an empty variable still
+  names a model. The Claude composite and `codex exec` always pass `--model`.
+  The risk: the model then changes whenever the `claude-code-action` or
+  `@openai/codex` pin is bumped, with no variable change to review. Cost
+  changes with it, unnoticed until the bill arrives, which is the AT-2202
+  pattern below. The Gemini API has no default: every call names a model or
+  an alias such as `gemini-flash-latest`. Copilot already runs on `auto`
+  (`review_copilot.py`).
 
 ## Release & pin discipline
 
