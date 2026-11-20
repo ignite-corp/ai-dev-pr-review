@@ -13,8 +13,8 @@ the REST endpoint (the branch the dispatch path takes, so the author login
 is the webhook spelling), a detached checkout on the PR head asserted
 against the diff, extract_pr_diff.sh, the context.md build from the BASE
 branch's prompt files behind the untrusted PR-metadata block,
-filter_pr_diff.py and its policy-skip comment, fetch_review_context.py,
-verify_action_shas.py, collect_review_threads.sh.
+filter_pr_diff.py and its policy-skip comment, list_binary_paths.py,
+fetch_review_context.py, verify_action_shas.py, collect_review_threads.sh.
 
 From base-ai-review-single.yml: the unresolved-thread load, one reviewer per
 LLM under REVIEW_MODE, and post_inline_comments.py per reviewer. The
@@ -104,6 +104,7 @@ POLICY_RESULT = ".review-context/lens-ignore.json"
 # Checked where POLICY_RESULT is parsed, so a missing field is a named
 # reason rather than a KeyError three frames later.
 POLICY_FIELDS = ("policy_skipped", "excluded_count", "excluded_paths")
+BINARY_RESULT = ".review-context/binary-paths.json"
 THREADS_FILE = ".review-context/unresolved-threads.json"
 REVIEW_MODE_SEQUENTIAL = "sequential"
 REVIEWER_SCRIPTS = {
@@ -411,7 +412,12 @@ def _axis_check(
 
 def initial_policy() -> dict[str, str]:
     """What the aggregate is told when the policy gate never reported."""
-    return {"POLICY_SKIPPED": "false", "EXCLUDED_COUNT": "", "EXCLUDED_PATHS": ""}
+    return {
+        "POLICY_SKIPPED": "false",
+        "EXCLUDED_COUNT": "",
+        "EXCLUDED_PATHS": "",
+        "BINARY_PATHS": "",
+    }
 
 
 def initial_conclusions(
@@ -1168,6 +1174,25 @@ def filter_policy_excluded(work: Path) -> dict[str, Any]:
             f"{POLICY_RESULT} does not carry {', '.join(POLICY_FIELDS)}: {excluded!r}"
         )
     return excluded
+
+
+def list_binaries(work: Path) -> list[str]:
+    """Read list_binary_paths.py's result, as the workflow's step does (AT-3593).
+
+    Stops the run like the policy result does: a verdict that cannot say
+    which files went unread is not one this driver posts.
+    """
+    run([sys.executable, str(SCRIPT_DIR / "list_binary_paths.py")], cwd=work)
+    try:
+        result = json.loads((work / BINARY_RESULT).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DriverError(
+            f"{BINARY_RESULT} is unreadable after list_binary_paths.py succeeded: {exc}"
+        ) from exc
+    paths = result.get("binary_paths") if is_json_object(result) else None
+    if not is_json_array(paths) or not all(isinstance(path, str) for path in paths):
+        raise DriverError(f"{BINARY_RESULT} does not carry binary_paths: {result!r}")
+    return paths
 
 
 def append_prior_context(work: Path, repo: str, pr_number: str) -> None:
@@ -2264,10 +2289,12 @@ def policy_gate(work: Path, repo: str, pr_number: str) -> dict[str, str]:
                 ]
             ),
         )
+    binaries = [] if excluded["policy_skipped"] else list_binaries(work)
     return {
         "POLICY_SKIPPED": "true" if excluded["policy_skipped"] else "false",
         "EXCLUDED_COUNT": str(count),
         "EXCLUDED_PATHS": "\n".join(excluded["excluded_paths"]),
+        "BINARY_PATHS": "\n".join(display_path(path) for path in binaries),
     }
 
 

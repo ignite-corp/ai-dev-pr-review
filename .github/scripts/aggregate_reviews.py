@@ -914,6 +914,12 @@ def _excluded_paths() -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
+def _binary_paths() -> list[str]:
+    """Paths pr.diff carried as binary, one per input line (AT-3593)."""
+    raw = os.environ.get("BINARY_PATHS", "")
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
 def _excluded_count() -> int:
     """EXCLUDED_COUNT as an int; the path list's length when it is unusable."""
     raw = os.environ.get("EXCLUDED_COUNT", "").strip()
@@ -2467,6 +2473,15 @@ def format_summary(  # noqa: PLR0915
         lines.append(
             f"\n> [i] {excluded_count} file(s) excluded by policy"
             f" ({LENS_IGNORE_PATH}): {listed or 'paths not reported'}"
+        )
+    # So is every binary entry: the reviewers read one "Binary files ...
+    # differ" line for it, not its content (AT-3593).
+    binaries = _binary_paths()
+    if binaries:
+        listed = ", ".join(f"`{display_path(path)}`" for path in binaries)
+        lines.append(
+            f"\n> [i] {len(binaries)} binary file(s) not reviewed (content not in"
+            f" the diff): {listed}"
         )
     review_mode = os.environ.get("REVIEW_MODE", _REVIEW_MODE_PARALLEL)
     if (

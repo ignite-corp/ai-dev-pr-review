@@ -35,6 +35,27 @@
 # fails naming the strategy, and the aggregate renders a failed prepare as an
 # explicit verdict (AT-2087) instead of three reviewers approving nothing.
 #
+# The tree under diff is the PR head, so git would read the head's
+# .gitattributes: a PR adding `src/** -diff` (or `binary`, or a `diff=`
+# driver) turned its own code into "Binary files ... differ" for every
+# reviewer, with nothing in the verdict to say so (AT-3593). review_diff
+# reads attributes from the empty tree instead, takes no global or system
+# config or attributes file, refuses textconv, external diff drivers,
+# GIT_DIFF_OPTS and colour, and pins the prefixes, the context and the
+# path scope on the command line, so the diff is a plain a/ b/ unified diff
+# whatever the PR or the operator's config says. The clone's own
+# $GIT_DIR/config is still read (actions/checkout writes it on a runner,
+# the local driver fingerprints it); nothing a PR carries reaches it, and
+# the shape it could change is pinned above. The `gh pr diff` fallback is
+# GitHub's rendering, outside review_diff and these guarantees; any binary
+# entry it carries is still listed on the verdict by list_binary_paths.py.
+# Git's own content check still marks a genuinely binary file "Binary
+# files ... differ"; files a repository wants kept from the reviewers
+# belong in .github/lens-ignore, which announces them. $GIT_DIR/info/attributes is read whatever the
+# attribute source is and no option turns it off, so a clone carrying rules
+# there is refused rather than diffed under them. --attr-source needs
+# git >= 2.40; an older git fails the step here instead of diffing.
+#
 # Env: BASE_REF, HEAD_SHA, PR_NUMBER, GITHUB_REPOSITORY, GH_TOKEN,
 #      PR_MERGED ("true" once merged), MERGE_COMMIT_SHA (empty unless merged).
 set -euo pipefail
@@ -42,6 +63,21 @@ set -euo pipefail
 OUT="pr.diff"
 PR_MERGED="${PR_MERGED:-false}"
 MERGE_COMMIT_SHA="${MERGE_COMMIT_SHA:-}"
+
+EMPTY_TREE=$(git hash-object -t tree /dev/null)
+INFO_ATTRIBUTES=$(git rev-parse --git-path info/attributes)
+if [ -f "$INFO_ATTRIBUTES" ] \
+  && grep -qv -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$INFO_ATTRIBUTES"; then
+  echo "::error title=Local attributes::${INFO_ATTRIBUTES} holds attribute rules, which git diff would apply to the review diff and no option disables; remove them from this clone"
+  exit 1
+fi
+
+review_diff() {
+  env -u GIT_DIFF_OPTS GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 \
+    git --attr-source="$EMPTY_TREE" -c core.attributesFile=/dev/null \
+    diff --no-ext-diff --no-textconv --no-color \
+    --src-prefix=a/ --dst-prefix=b/ --unified=3 --no-relative "$@"
+}
 
 # The merge commit is usable when it is (or can be) fetched and has a parent.
 merge_commit_usable() {
@@ -53,7 +89,7 @@ merge_commit_usable() {
 
 if [ "$PR_MERGED" != "true" ]; then
   STRATEGY="open PR: git diff origin/${BASE_REF}...${HEAD_SHA}"
-  git diff "origin/${BASE_REF}...${HEAD_SHA}" > "$OUT"
+  review_diff "origin/${BASE_REF}...${HEAD_SHA}" > "$OUT"
 else
   STRATEGY=""
   if [ -z "$MERGE_COMMIT_SHA" ]; then
@@ -80,7 +116,7 @@ else
         echo "::warning::ancestry of merge commit ${MERGE_COMMIT_SHA} and head ${HEAD_SHA} of PR #${PR_NUMBER} could not be determined (git exited ${rc}); falling back to gh pr diff"
       else
         STRATEGY="merged PR: git diff ${MERGE_COMMIT_SHA}^1...${HEAD_SHA}"
-        git diff "${MERGE_COMMIT_SHA}^1...${HEAD_SHA}" > "$OUT"
+        review_diff "${MERGE_COMMIT_SHA}^1...${HEAD_SHA}" > "$OUT"
         # Empty when HEAD's tree matches MERGE^1's -- for instance the head
         # reached the base by another route before this commit. GitHub's
         # record can still serve the PR, so fall back rather than fail here.
