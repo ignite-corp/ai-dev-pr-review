@@ -99,6 +99,15 @@ on:
       size_warn_limit:
         description: "The limit of each size_warned entry, in the same order (AT-2415)"
         value: ${{ jobs.prepare.outputs.size_warn_limit }}
+      size_excluded_lines:
+        description: "Changed lines left out of the size count because .github/lens-ignore excludes their files at both the base and the head commit; 0 when none were (AT-3592)"
+        value: ${{ jobs.prepare.outputs.size_excluded_lines }}
+      size_excluded_files:
+        description: "Number of files whose lines size_excluded_lines counts (AT-3592)"
+        value: ${{ jobs.prepare.outputs.size_excluded_files }}
+      size_excluded_paths:
+        description: "Those files, one per line, rendered like excluded_paths (AT-3592)"
+        value: ${{ jobs.prepare.outputs.size_excluded_paths }}
       head_sha:
         description: "The PR head commit the diff was computed against. Callers check out THIS, not github.ref"
         value: ${{ jobs.prepare.outputs.head_sha }}
@@ -146,6 +155,9 @@ jobs:
       size_warn_axes: ${{ steps.size-check.outputs.warn_axes }}
       size_warn_total: ${{ steps.size-check.outputs.warn_total }}
       size_warn_limit: ${{ steps.size-check.outputs.warn_limit }}
+      size_excluded_lines: ${{ steps.size-check.outputs.excluded_lines }}
+      size_excluded_files: ${{ steps.size-check.outputs.excluded_files }}
+      size_excluded_paths: ${{ steps.size-check.outputs.excluded_paths }}
       pr_author: ${{ steps.refs.outputs.pr_author }}
     steps:
       # Cross-repository review (AT-2520). `target_repo` names the repository
@@ -498,14 +510,44 @@ jobs:
           fi
           WARN_PERCENT=$((10#$PR_SIZE_WARN_PERCENT))
 
-          PR_DATA=$(gh pr view "$PR_NUMBER" \
-            --repo "$GITHUB_REPOSITORY" --json additions,deletions)
-          ADDITIONS=$(echo "$PR_DATA" | jq '.additions')
-          DELETIONS=$(echo "$PR_DATA" | jq '.deletions')
+          # Lines in files .github/lens-ignore excludes at BOTH the base and
+          # the head commit are not counted: the reviewers never see them
+          # (AT-3592). Base, so a PR cannot add a rule and the code it hides
+          # together; head, so a PR that removes a rule is counted for what
+          # the reviewers then get. Every doubt falls back to GitHub's full
+          # count (pr_size_policy.py).
+          # A pinned checkout that predates the script counts in full, which
+          # is the gate's behaviour before AT-3592.
+          SCRIPT=".ai-dev-pr-review/.github/scripts/pr_size_policy.py"
+          if [ -f "$SCRIPT" ]; then
+            MEASURE=$(python3 "$SCRIPT")
+          else
+            echo "::warning::pr_size_policy.py not in pinned checkout; the size gate counts every changed line, lens-ignore included (AT-3592)"
+            MEASURE=$(gh pr view "$PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" --json additions,deletions \
+              | jq -c '{additions, deletions, github_additions: .additions,
+                        github_deletions: .deletions, excluded_lines: 0,
+                        excluded_files: 0, excluded_paths: []}')
+          fi
+          ADDITIONS=$(jq '.additions' <<<"$MEASURE")
+          DELETIONS=$(jq '.deletions' <<<"$MEASURE")
           TOTAL=$((ADDITIONS + DELETIONS))
+          EXCLUDED_LINES=$(jq '.excluded_lines' <<<"$MEASURE")
+          if [ "$EXCLUDED_LINES" -gt 0 ]; then
+            echo "::notice::${EXCLUDED_LINES} changed lines in $(jq '.excluded_files' <<<"$MEASURE") file(s) excluded by .github/lens-ignore at both the base and the head are not counted toward the size limit"
+          fi
 
-          echo "additions=$ADDITIONS" >> "$GITHUB_OUTPUT"
-          echo "deletions=$DELETIONS" >> "$GITHUB_OUTPUT"
+          # GitHub's own counts, as before AT-3592; the gate compared TOTAL.
+          echo "additions=$(jq '.github_additions' <<<"$MEASURE")" >> "$GITHUB_OUTPUT"
+          echo "deletions=$(jq '.github_deletions' <<<"$MEASURE")" >> "$GITHUB_OUTPUT"
+          DELIM="size_excluded_$(openssl rand -hex 16)"
+          {
+            echo "excluded_lines=$EXCLUDED_LINES"
+            echo "excluded_files=$(jq '.excluded_files' <<<"$MEASURE")"
+            echo "excluded_paths<<$DELIM"
+            jq -r '.excluded_paths[]' <<<"$MEASURE"
+            echo "$DELIM"
+          } >> "$GITHUB_OUTPUT"
 
           # One entry per exceeded check, at the same position in each list:
           # exceeded/axes/total/limit are space-separated and the aggregate

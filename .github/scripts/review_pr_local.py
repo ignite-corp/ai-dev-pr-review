@@ -92,6 +92,7 @@ from local_review_config import (
     prompt_path_defaults,
 )
 from local_reviewer_support import DRIVER_ENV_MARKER, reviewer_env_allowlist
+from pr_size_policy import SizeMeasure, full_count, measure_pr
 from review_coordinates import check_reviewer_coordinates
 from review_status import write_verdict_json
 from reviewer_roster import DEFAULT_REVIEWERS, REVIEWERS_ENV, SUPPORTED_REVIEWERS
@@ -312,7 +313,8 @@ class Refs:
     merge_commit_sha: str
     labels: str
     # GitHub's own counts for the PR, before lens-ignore -- what the
-    # workflow's `Check PR size` step reads.
+    # workflow's `Check PR size` step reports as additions/deletions. The
+    # gate compares measure_pr_size's counts instead (AT-3592).
     additions: int
     deletions: int
 
@@ -367,15 +369,18 @@ def size_limits(config: LocalConfig) -> SizeLimits:
     )
 
 
-def size_checks(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach]]:
+def size_checks(
+    measured: SizeMeasure, limits: SizeLimits
+) -> tuple[bool, list[SizeBreach]]:
     """(split, every check the gate applies), mirroring `Check PR size`.
 
     With neither per-axis limit set the combined gate runs as it always
     has. With either set the combined check is dropped and each axis is
     held to its own limit, or to PR_SIZE_LIMIT when its own is unset.
+    The counts are the measured ones: base-lens-ignore lines left out.
     """
     if limits.additions is None and limits.deletions is None:
-        total = refs.additions + refs.deletions
+        total = measured.additions + measured.deletions
         checks = [
             SizeBreach(total, COMBINED_SIZE_AXIS, COMBINED_SIZE_VAR, limits.combined)
         ]
@@ -383,14 +388,14 @@ def size_checks(refs: Refs, limits: SizeLimits) -> tuple[bool, list[SizeBreach]]
     else:
         checks = [
             _axis_check(
-                refs.additions,
+                measured.additions,
                 ADDITIONS_SIZE_AXIS,
                 ADDITIONS_SIZE_VAR,
                 limits.additions,
                 limits,
             ),
             _axis_check(
-                refs.deletions,
+                measured.deletions,
                 DELETIONS_SIZE_AXIS,
                 DELETIONS_SIZE_VAR,
                 limits.deletions,
@@ -445,6 +450,9 @@ def initial_size() -> dict[str, str]:
         "SIZE_WARN_AXES": "",
         "SIZE_WARN_TOTAL": "",
         "SIZE_WARN_LIMIT": "",
+        "SIZE_EXCLUDED_LINES": "",
+        "SIZE_EXCLUDED_FILES": "",
+        "SIZE_EXCLUDED_PATHS": "",
     }
 
 
@@ -2193,16 +2201,60 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
     return (root / f"{owner}-{name}-pr{args.pr_number}").resolve()
 
 
+def measure_pr_size(repo: str, pr_number: str) -> SizeMeasure:
+    """pr_size_policy.measure_pr through this driver's `run` (AT-3592).
+
+    The same measure the workflow's `Check PR size` step takes: files
+    lens-ignore excludes at both the base and the head commit are not
+    counted, and every doubt
+    falls back to GitHub's full count.
+    """
+
+    def gh(args: list[str]) -> tuple[int, str, str]:
+        result = run(["gh", *args], capture=True, check=False)
+        return result.returncode, result.stdout or "", result.stderr or ""
+
+    try:
+        measured = measure_pr(repo, pr_number, gh)
+    except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+        raise DriverError(f"size measure failed: {exc}") from exc
+    if measured.fallback:
+        print(f"size counted in full -- {measured.fallback}")
+    if measured.excluded_lines:
+        print(
+            f"{measured.excluded_lines} changed lines in"
+            f" {len(measured.excluded_paths)} file(s) excluded by"
+            f" {DEFAULT_RULE_PATH} at both the base and the head are not counted toward the size limit"
+        )
+    return measured
+
+
+def _size_exclusion_outputs(measured: SizeMeasure) -> dict[str, str]:
+    """The aggregate's SIZE_EXCLUDED_* inputs, as prepare emits them (AT-3592)."""
+    return {
+        "SIZE_EXCLUDED_LINES": str(measured.excluded_lines),
+        "SIZE_EXCLUDED_FILES": str(len(measured.excluded_paths)),
+        "SIZE_EXCLUDED_PATHS": "\n".join(measured.excluded_paths),
+    }
+
+
 def size_gate(
-    repo: str, pr_number: str, refs: Refs, limits: SizeLimits
+    repo: str,
+    pr_number: str,
+    refs: Refs,
+    limits: SizeLimits,
+    measured: SizeMeasure | None = None,
 ) -> tuple[bool, dict[str, str]]:
     """Comment and report the skip when the PR is over a size limit.
 
     The strings are the aggregate's contract, the same values the
     workflow's `Check PR size` step emits; the caller branches on the bool
-    rather than parsing them back.
+    rather than parsing them back. Without `measured` the PR is counted in
+    full, as before AT-3592.
     """
-    split, checks = size_checks(refs, limits)
+    if measured is None:
+        measured = full_count(refs.additions, refs.deletions)
+    split, checks = size_checks(measured, limits)
     breaches = [check for check in checks if check.value > check.limit]
     warnings = [
         check
@@ -2217,7 +2269,7 @@ def size_gate(
         size_total = " ".join(str(breach.value) for breach in breaches)
         size_limit = " ".join(str(breach.limit) for breach in breaches)
     else:
-        size_total = str(refs.additions + refs.deletions)
+        size_total = str(measured.additions + measured.deletions)
         size_limit = str(limits.combined)
         summary = f"{size_total} lines changed, limit {size_limit}"
     if skipped:
@@ -2263,6 +2315,7 @@ def size_gate(
         "SIZE_WARN_AXES": " ".join(warning.axis for warning in warnings),
         "SIZE_WARN_TOTAL": " ".join(str(warning.value) for warning in warnings),
         "SIZE_WARN_LIMIT": " ".join(str(warning.limit) for warning in warnings),
+        **_size_exclusion_outputs(measured),
     }
 
 
@@ -2370,7 +2423,13 @@ def pre_review(
     bot_login = resolve_bot_login(config, require_gh_auth())
     refs = resolve_refs(args.repo, args.pr_number)
     verify_prompt_paths(args.repo, refs, (args.system_prompt_path, args.checklist_path))
-    size_skipped, size = size_gate(args.repo, args.pr_number, refs, size_limits(config))
+    size_skipped, size = size_gate(
+        args.repo,
+        args.pr_number,
+        refs,
+        size_limits(config),
+        measure_pr_size(args.repo, args.pr_number),
+    )
     return bot_login, refs, size_skipped, size
 
 

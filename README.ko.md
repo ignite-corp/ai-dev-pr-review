@@ -330,7 +330,7 @@ jobs:
 
 | 변수 | 기본값 | 영향 |
 |---|---|---|
-| `PR_SIZE_LIMIT` | `3000` | 추가+삭제 라인이 이 값을 초과하면 리뷰 건너뜀. PR에 코멘트하고 `skip=true` 반환. `PR_SIZE_LIMIT_ADDITIONS`나 `PR_SIZE_LIMIT_DELETIONS`가 설정되면 이 합산 검사는 빠지고, `PR_SIZE_LIMIT`은 자기 변수가 설정되지 않은 축의 한도로만 쓰입니다. |
+| `PR_SIZE_LIMIT` | `3000` | 추가+삭제 라인이 이 값을 초과하면 리뷰 건너뜀. base와 head 커밋 양쪽에서 `.github/lens-ignore`가 제외하는 파일의 라인은 세지 않음([리뷰에서 경로 제외하기](#리뷰에서-경로-제외하기-githublens-ignore) 참고). PR에 코멘트하고 `skip=true` 반환. `PR_SIZE_LIMIT_ADDITIONS`나 `PR_SIZE_LIMIT_DELETIONS`가 설정되면 이 합산 검사는 빠지고, `PR_SIZE_LIMIT`은 자기 변수가 설정되지 않은 축의 한도로만 쓰입니다. |
 | `PR_SIZE_LIMIT_ADDITIONS` | _(미설정)_ | 추가 라인에 대한 축별 크기 한도(AT-3052). 이 변수나 `PR_SIZE_LIMIT_DELETIONS`를 설정하면 합산 검사가 축별 검사로 바뀝니다: 추가 라인은 이 변수와, 삭제 라인은 `PR_SIZE_LIMIT_DELETIONS`와 비교하고, 자기 변수가 설정되지 않은 축은 `PR_SIZE_LIMIT`으로 대신합니다. 모든 검사를 통과해야 리뷰합니다. 건너뜀 코멘트와 판정은 초과한 변수 이름을 밝힙니다(예: `4200 added lines exceeds PR_SIZE_LIMIT_ADDITIONS 3000`, 여럿이면 `; `로 이어 붙임). 정수가 아니면 `prepare`가 실패합니다. |
 | `PR_SIZE_LIMIT_DELETIONS` | _(미설정)_ | 삭제 라인에 대한 축별 크기 한도. `PR_SIZE_LIMIT_ADDITIONS` 참고. 값을 높게 두면 추가 라인 한도를 올리지 않고도 삭제 위주의 PR을 리뷰할 수 있습니다. 정수가 아니면 `prepare`가 실패합니다. |
 | `PR_SIZE_WARN_PERCENT` | `80` | 크기 검사가 한도를 넘지 않았지만 한도의 이 비율에 도달하면 경고합니다(AT-2415). 게이트가 적용하는 검사마다(합산 검사, 또는 축별 검사 각각) 따로 경고하며, `prepare`에 `::notice::`를, 리뷰가 실행될 때는 판정 헤드라인 아래에 `[!] size: 2526/3000 changed lines (84% of PR_SIZE_LIMIT); the review is skipped above the limit. Consider splitting.` 같은 한 줄을 남깁니다. 한도를 넘은 검사가 있으면 리뷰는 여전히 건너뛰며, 건너뜀 판정은 초과한 검사만 다룹니다. 그 외에는 리뷰가 그대로 실행되고 판정, 종료 코드, 헤드라인은 바뀌지 않습니다. 한도를 넘으면 건너뜀 코멘트와 판정에 초과량과 최소 분할 수가 붙습니다(예: `Over by 1200 changed lines; split into at least 2 PRs.`). 1에서 99 사이의 정수가 아니면 `prepare`가 실패합니다. |
@@ -386,7 +386,7 @@ dist/**
 
 규칙 파일은 PR head(`prepare`가 이미 체크아웃하는 트리)에서 읽으므로, 같은 PR에서 추가된 민감한 파일을 같은 PR에서 덮을 수 있습니다. 대가는 PR이 규칙도 수정할 수 있다는 것이고, 완화책은 고정돼 있습니다 -- `.github/lens-ignore` 자체는 절대 제외될 수 없습니다. 이 파일에 매칭되는 규칙은 그 경로에 한해 경고와 함께 무시되므로, 정책의 모든 변경은 항상 리뷰되는 diff 안에 있고, 판정 코멘트는 정책이 제거한 것을 나열합니다.
 
-크기 게이트는 그대로입니다. `PR_SIZE_LIMIT`은 GitHub가 집계한 PR의 추가+삭제 라인을 비교하며(`PR_SIZE_LIMIT_ADDITIONS` / `PR_SIZE_LIMIT_DELETIONS`는 추가와 삭제를 따로 비교), 제외된 파일도 여기에 포함됩니다. 한도를 넘은 PR은 정책이 실행되기 전에 크기 때문에 건너뛰어지고, 판정은 어느 게이트에 걸렸는지 말해 줍니다(`size_skipped`와 `policy_skipped`는 `prepare`의 별개 출력이고, `skip`은 그 둘의 조합입니다).
+크기 게이트는 리뷰어가 보지 않을 라인을 세지 않습니다(AT-3592). `PR_SIZE_LIMIT`(축별로는 `PR_SIZE_LIMIT_ADDITIONS` / `PR_SIZE_LIMIT_DELETIONS`)은 GitHub가 집계한 추가·삭제 라인에서, PR의 base 커밋과 head 커밋 **양쪽** 모두에서 `.github/lens-ignore`가 제외하는 변경 파일의 라인을 뺀 값과 비교합니다. base 쪽 조건 때문에 규칙은 그 자신이 리뷰를 거쳐 머지된 뒤에야 크기를 줄입니다: 규칙과 그 규칙이 숨길 코드를 함께 추가하는 PR은 전부 세어지므로, 새 vendor 트리를 처음 들이는 PR은 여전히 한도 안에 들어야 하거나 규칙을 먼저 머지해야 합니다. head 쪽 조건 때문에 규칙을 지우거나 좁히는 PR은 리뷰어가 실제로 받는 만큼 세어집니다(diff 필터는 head의 규칙을 읽습니다). 규칙 파일 자체는 항상 셉니다. 셈을 믿을 수 없을 때는 GitHub 전체 수치로 되돌아갑니다: 변경 파일이 3000개(파일 API가 나열하는 최대치)를 넘을 때, 파일 목록이나 규칙 파일을 읽지 못했을 때, 파일별 수치의 합이 PR 수치와 맞지 않을 때입니다. 이 경우 `prepare`에 `::warning::`으로 이유가 남습니다. 판정에는 뺀 내용이 `> [i] size: 10564 changed lines in 2 file(s) matched by .github/lens-ignore at both the base and the head were not counted toward the size limit: ...` 같은 한 줄로 남으며, 경로는 처음 20개와 나머지 개수를 보여 줍니다. 한도를 넘은 PR은 여전히 정책 필터가 실행되기 전에 크기 때문에 건너뛰어지고, 판정은 어느 게이트에 걸렸는지 말해 줍니다(`size_skipped`와 `policy_skipped`는 `prepare`의 별개 출력이고, `skip`은 그 둘의 조합입니다).
 
 ### 변경된 파일이 전부 제외될 때
 

@@ -45,6 +45,7 @@ STDLIB_ONLY_SCRIPTS = (
     "filter_pr_diff",
     "list_binary_paths",
     "post_inline_comments",
+    "pr_size_policy",
     "switch_claude_auth",
     "verify_action_shas",
 )
