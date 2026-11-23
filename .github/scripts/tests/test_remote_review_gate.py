@@ -158,6 +158,17 @@ def transport(args):
         if config == "FETCH_ERROR":
             raise SystemExit(1)
         print(config)
+    elif "repos/o/r/contents/.github/scripts/check_ai_attribution.py" in joined:
+        # (e): a repository without the script, unless a run says otherwise.
+        # Real gh says this on stderr and exits 1 for a 404.
+        fetch = os.environ.get("AUDIT_ATTRIBUTION", "absent")
+        print(
+            "gh: Not Found (HTTP 404)"
+            if fetch == "absent"
+            else "gh: Bad credentials (HTTP 401)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     elif "/issues/7/comments" in joined:
         for row in comments:
             print(json.dumps(row))
@@ -268,6 +279,23 @@ def test_whole_gate_retains_old_round_findings(mode, marker, answered):
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "(a)(b)(d) clean" in result.stdout
+        assert "NOTICE (e): o/r has no .github/scripts/check_ai_attribution.py" in (
+            result.stdout
+        )
+
+
+def test_attribution_fetch_failure_other_than_404_stops_the_gate(monkeypatch):
+    """Only a 404 is an absent script; any other refusal is a read that
+    failed, and the gate stops rather than skipping (e)."""
+    monkeypatch.setenv("AUDIT_ATTRIBUTION", "denied")
+    result = run_gate("self", "round-cutoff-claude-r1", "yes")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "ERROR: could not fetch .github/scripts/check_ai_attribution.py" in (
+        result.stdout
+    )
+    assert "HTTP 401" in result.stdout
+    assert "NOTICE (e)" not in result.stdout
+    assert "(a)(b)(d) clean" not in result.stdout
 
 
 @pytest.mark.parametrize(
