@@ -76,6 +76,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # check_ai_attribution.py lists the PR's commits.
+      pull-requests: read
     outputs:
       # Empty means review; anything else is why not, shown as the aggregate
       # check's summary.
@@ -116,6 +118,26 @@ jobs:
             fi
           done
           echo "all script checkout tags exist; running self-review"
+      # AT-3651: no commit in the PR and not its body may carry AI
+      # attribution. Here because `guard` is the required check that already
+      # runs on every PR; a failure blocks the merge but does not by itself
+      # set skip_reason, so the review still runs unless the pin check above
+      # already skipped it. The body is read as it stands when this job runs:
+      # `edited` is not a trigger, so an edit after the last push is read by
+      # the pr-response-cycle merge gate's (e), which runs this script from
+      # the default branch right before the merge call. pull_request, not
+      # _target: the script here is the PR's own copy and runs with this
+      # job's read-only token. So a PR that weakens the script passes this
+      # step on its own copy; the gate's (e) runs the default branch's copy,
+      # which the PR cannot have changed yet.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version-file: .github/scripts/.python-version
+      - name: Check commits and PR body for AI attribution
+        id: ai-attribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/check_ai_attribution.py
 
   review:
     needs: guard

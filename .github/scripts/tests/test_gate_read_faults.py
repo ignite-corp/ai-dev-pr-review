@@ -49,6 +49,9 @@ from tests_support import DRILL, SKILL
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 PRODUCER_SHA = "89abcdef0123456789abcdef0123456789abcdef"
 PASS_LINE = "(a)(b)(d) clean"
+# The real (e) script, served as the default branch's copy.
+ATTRIBUTION_SCRIPT = Path(__file__).resolve().parents[1] / "check_ai_attribution.py"
+ATTRIBUTION_CLEAN = "(e) no AI attribution in 1 commit(s) and the PR body"
 
 # The drill's own extraction of the gate block (section 5l), lifted and run
 # rather than restated, as tests_support.gate_function lifts its extract().
@@ -120,6 +123,10 @@ ROUTES = (
     ("before=c1", "fpush2.json"),
     ("timelineItems", "fpush1.json"),
     ("/pulls/7/reviews", "reviews.json"),
+    # (e): the default-branch script and the two reads it makes itself.
+    ("check_ai_attribution.py", "attribution.py"),
+    ("pulls/7/commits", "pr_commits.json"),
+    ("--slurp repos/o/r/pulls/7", "pr_rest.json"),
     ("/contents/", "producer.sh"),
     (f"repos/o/r/commits/{HEAD}", "commit.json"),
 )
@@ -440,6 +447,9 @@ class Harness:
         fixtures.mkdir(parents=True)
         for file, content in {
             "pr.json": {"headRefOid": HEAD},
+            "attribution.py": ATTRIBUTION_SCRIPT.read_text(encoding="utf-8"),
+            "pr_rest.json": [{"body": "", "commits": 1, "head": {"sha": HEAD}}],
+            "pr_commits.json": [[{"sha": HEAD, "commit": {"message": "fix: x"}}]],
             **spec["fixtures"],
         }.items():
             text = content if isinstance(content, str) else json.dumps(content)
@@ -567,9 +577,70 @@ def test_every_read_stops_the_gate_when_it_fails(
         assert marker in result.baseline.output, (
             f"{name} no longer walks the path it is for: {marker!r} missing"
         )
+    assert ATTRIBUTION_CLEAN in result.baseline.output, (
+        f"{name} no longer reaches (e), so its reads are not swept"
+    )
     if name == "both-kinds":
         assert result.display_seen == set(DISPLAY_ONLY), "a display-only entry is stale"
     assert not result.unguarded, "unguarded reads:\n" + "\n".join(result.unguarded)
+
+
+@pytest.mark.parametrize(
+    ("file", "content", "expect"),
+    [
+        (
+            "pr_commits.json",
+            [
+                [
+                    {
+                        "sha": HEAD,
+                        "commit": {
+                            "message": "fix: x\n\n"
+                            "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+                        },
+                    }
+                ]
+            ],
+            "BLOCK (e): AI attribution on " + HEAD,
+        ),
+        (
+            "pr_rest.json",
+            [{"body": "x\nClaude-Session: y", "commits": 1, "head": {"sha": HEAD}}],
+            "BLOCK (e): AI attribution on " + HEAD,
+        ),
+        (
+            "pr_rest.json",
+            [{"body": "", "commits": 1, "head": {"sha": "e" * 40}}],
+            "ERROR: the (e) attribution check did not evaluate",
+        ),
+        (
+            "attribution.py",
+            "print('all fine')\n",
+            "ERROR: the (e) attribution check did not evaluate",
+        ),
+        ("attribution.py", "", "came back empty"),
+    ],
+    ids=[
+        "commit-trailer",
+        "body-edited-after-push",
+        "head-moved",
+        "no-clean-line",
+        "empty-script",
+    ],
+)
+def test_attribution_stops_the_gate(
+    block: str, tmp_path: Path, file: str, content: Any, expect: str
+) -> None:
+    """(e) on the live PR: an attributed commit or body blocks, and a run
+    that did not evaluate this head, or did not say it was clean, stops."""
+    harness = Harness(tmp_path)
+    script, fixtures = harness.scenario("both-kinds", block)
+    text = content if isinstance(content, str) else json.dumps(content)
+    (fixtures / file).write_text(text, encoding="utf-8")
+    outcome = harness.run(script, fixtures)
+    assert outcome.status == 1, outcome.output
+    assert expect in outcome.output
+    assert not outcome.passed
 
 
 # The anchor the controls insert beside, and the guard one of them cuts.
@@ -638,3 +709,21 @@ def test_control_two_stubbed_calls_in_one_pipeline_are_seen(
     assert outcome.calls[reader - 1] == ("jq", ".comments")
     with pytest.raises(AssertionError, match="piped into each other"):
         sweep(harness, script, fixtures)
+
+
+def test_control_attribution_fetch_failure_read_as_absent_is_named(
+    block: str, tmp_path: Path
+) -> None:
+    """(e) with its 404 test cut: every fetch failure then reads as a
+    repository without the script, the gate passes on a notice, and the
+    sweep must name the fetch."""
+    result = _control(
+        block,
+        tmp_path,
+        "grep -q 'HTTP 404'",
+        "true",
+    )
+    assert any(
+        "failed, gate passed" in line and "check_ai_attribution.py" in line
+        for line in result.unguarded
+    ), result.unguarded

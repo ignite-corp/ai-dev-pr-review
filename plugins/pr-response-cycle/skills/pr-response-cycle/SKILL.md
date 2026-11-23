@@ -645,7 +645,7 @@ A refusal here is not a merge block: it says this round is not the one that ends
 
 #### Standard merge
 
-The merge call runs only when, **on the same head SHA, read immediately before the call**: (a) at least one verdict exists on that SHA — a usable completed workflow/check round whose approving aggregate — a comment or a review, step 8's shape table — reports every configured reviewer, kind (i), or a local-review verdict comment opening with the repository's verdict header for that SHA whose newest instance approves, kind (ii); (b) that head's threads are all resolved; (c) every item each verdict raised has a disposition; and (d) no check on that SHA is still running. Each is a block on its own; a failed one means no merge — back to Stage 2 for the new items (reply + resolve, or a fixup, which pushes a new head, starts a new round, and brings you back to this gate). This block is the gate's only home; paste it whole. (a), (b) and (d) decide for themselves and exit non-zero, loud, on anything but a pass — the step 9 shape, because a query that does not block is not a gate. (c) is a read of the verdicts (a) named, so the merge call is a separate block after it — except the major items a verdict lists in the aggregate's item shape, the aggregate's unreviewed majors and a local verdict's items in that same shape, which the block checks itself on every verdict (a) named and exits non-zero on; what (c) can no longer do is read an empty list as a pass, because (a) refuses to reach it without a verdict.
+The merge call runs only when, **on the same head SHA, read immediately before the call**: (a) at least one verdict exists on that SHA — a usable completed workflow/check round whose approving aggregate — a comment or a review, step 8's shape table — reports every configured reviewer, kind (i), or a local-review verdict comment opening with the repository's verdict header for that SHA whose newest instance approves, kind (ii); (b) that head's threads are all resolved; (c) every item each verdict raised has a disposition; (d) no check on that SHA is still running; and (e) neither that head's commits nor the PR body as it stands carry AI attribution, read by the repository's own `.github/scripts/check_ai_attribution.py` from its default branch — a repository without one gets a notice, not a block. Each is a block on its own; a failed one means no merge — back to Stage 2 for the new items (reply + resolve, or a fixup, which pushes a new head, starts a new round, and brings you back to this gate). This block is the gate's only home; paste it whole. (a), (b), (d) and (e) decide for themselves and exit non-zero, loud, on anything but a pass — the step 9 shape, because a query that does not block is not a gate. (c) is a read of the verdicts (a) named, so the merge call is a separate block after it — except the major items a verdict lists in the aggregate's item shape, the aggregate's unreviewed majors and a local verdict's items in that same shape, which the block checks itself on every verdict (a) named and exits non-zero on; what (c) can no longer do is read an empty list as a pass, because (a) refuses to reach it without a verdict.
 
 **Where (c) reads a round's findings: on the verdict comment's body, on the aggregate's body, and on every first-line `round-cutoff-*` comment in the current-head review window and every first-line `inline-fallback-*` comment the PR carries, regardless of round — never on the thread count.** (b) returning zero unresolved threads is a statement about threads, and not about findings: from the convergence cutoff onward a round folds its remaining items into a cutoff comment, and those items carry no thread id at all, so a PR that has finished its reply pass reads 0 unresolved while carrying findings nobody has dispositioned. Observed on four PRs over 2026-10-06..08; the clearest had 11 threads and 0 unresolved, and then a round produced three findings, none of them a thread. When several folded items share a location, quote each item's whole rendered first line separately. A folded item is dispositioned instead by a quoted-response comment, Stage 4's issue-comment pattern, which names the cutoff comment it answers. The worked example to read rather than a description of one: `ignite-corp/ai-dev-pr-review#188`, comment `6015452260` at 2026-10-06T11:39:40Z — three items quoted with their round and their source (`(claude, R7 cutoff comment)` twice, `(claude, R7 verdict body)` once), two `Fixed:` with file:line, one `By design:`, and the cutoff comment it names now minimized `OUTDATED`. `cutoff_findings` in the block below is that read, and it blocks.
 
@@ -2233,6 +2233,53 @@ since=$(printf '%s' "$runs" | cutoff_window_start "$REVIEW_WF" "$first_verdict")
 [ -n "$since" ] || { echo "ERROR: no window start for the cutoff surface although (a) passed — no '$REVIEW_WF' run on $HEAD_SHA, first verdict '$first_verdict'"; exit 1; }
 printf '%s' "$comments" | cutoff_findings "$since" \
   || { echo "BLOCK (c): a cutoff or inline-fallback comment's findings on $HEAD_SHA have no disposition — back to Stage 2"; exit 1; }
+# (e) no AI attribution in this head's commits or in the PR body as it
+#     stands now (AT-3651). The patterns have one home: the repository's
+#     .github/scripts/check_ai_attribution.py, which the required `guard`
+#     check also runs. This read is here because `guard` runs on a push, so
+#     a body edited after it was never read. The script is taken from the
+#     DEFAULT branch, never from the PR head, whose copy is the PR author's
+#     to write, and it is run against HEAD_SHA: it refuses when the PR's
+#     head is another SHA or its commit list lacks HEAD_SHA. A repository that has
+#     no such script on its default branch (a 404) gets a NOTICE and the
+#     gate goes on: this skill ships to repositories that never adopted the
+#     check, and a block there could only be cleared by vendoring the script.
+#     Any other fetch failure, an empty file, a run that could not evaluate
+#     (exit 2), or an exit 0 without the script's clean line stops the gate.
+att_dir=$(mktemp -d) || { echo "ERROR: could not create a directory for the (e) script"; exit 1; }
+att_fetch=0
+gh api "repos/$OWNER/$REPO/contents/.github/scripts/check_ai_attribution.py" \
+  -H 'Accept: application/vnd.github.raw' > "$att_dir/check.py" 2> "$att_dir/err" || att_fetch=$?
+att_err=$(cat "$att_dir/err")
+att_size=$(wc -c < "$att_dir/check.py")
+att_rc=skipped
+att_out=''
+if [ "$att_fetch" -eq 0 ] && [ "$att_size" -gt 0 ]; then
+  att_rc=0
+  att_out=$(python3 "$att_dir/check.py" --repo "$OWNER/$REPO" --pr "$PR" --head-sha "$HEAD_SHA" 2>&1) || att_rc=$?
+fi
+rm -rf -- "$att_dir"
+if [ "$att_fetch" -ne 0 ]; then
+  if printf '%s' "$att_err" | grep -q 'HTTP 404'; then
+    echo "NOTICE (e): $OWNER/$REPO has no .github/scripts/check_ai_attribution.py on its default branch — the commits and the PR body were NOT checked for AI attribution"
+  else
+    echo "ERROR: could not fetch .github/scripts/check_ai_attribution.py from $OWNER/$REPO (gh exit $att_fetch) — a failed fetch is not an absent script:"
+    printf '%s\n' "$att_err" | sed 's/^/  /'
+    exit 1
+  fi
+elif [ "$att_size" -eq 0 ]; then
+  echo "ERROR: .github/scripts/check_ai_attribution.py from $OWNER/$REPO came back empty — an empty script checks nothing"; exit 1
+elif [ "$att_rc" = 1 ]; then
+  echo "BLOCK (e): AI attribution on $HEAD_SHA — remove it from the commits (then restart the gate on the new head) or edit the PR body:"
+  printf '%s\n' "$att_out" | sed 's/^/  /'
+  exit 1
+elif [ "$att_rc" = 0 ] && printf '%s\n' "$att_out" | grep -qE '^no AI attribution in [0-9]+ commit\(s\) and the PR body$'; then
+  echo "(e) $att_out"
+else
+  echo "ERROR: the (e) attribution check did not evaluate $HEAD_SHA (exit $att_rc):"
+  printf '%s\n' "$att_out" | sed 's/^/  /'
+  exit 1
+fi
 echo "(a)(b)(d) clean — read (c), then start the merge block with:"
 echo "  HEAD_SHA=$HEAD_SHA"
 ```
