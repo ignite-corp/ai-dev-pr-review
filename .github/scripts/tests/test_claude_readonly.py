@@ -23,7 +23,10 @@ def test_claude_tools_and_configuration_sources_are_restricted() -> None:
     assert step["with"]["settings"] == '{"disableAllHooks":true}'
     assert (
         doc["outputs"]["structured_output"]["value"]
-        == "${{ steps.claude-review.outputs.structured_output }}"
+        == "${{ steps.claude-review-api.outcome != 'skipped'"
+        " && steps.claude-review-api.outputs.structured_output"
+        " || (steps.claude-review-api.outcome == 'skipped'"
+        " && steps.claude-review.outputs.structured_output) || '' }}"
     )
 
 

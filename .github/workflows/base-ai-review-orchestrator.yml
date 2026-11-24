@@ -456,5 +456,11 @@ jobs:
         (needs.prepare.outputs.reviewer_2 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.outputs.copilot_failure || needs.review-2-p.outputs.copilot_failure)) ||
         (needs.prepare.outputs.reviewer_3 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.outputs.copilot_failure || needs.review-3-p.outputs.copilot_failure)) ||
         (needs.prepare.outputs.reviewer_4 == 'copilot' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.outputs.copilot_failure || needs.review-4-p.outputs.copilot_failure)) || '' }}
+      # The same for Claude's quota-chain code (AT-3714).
+      claude_failure: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.outputs.claude_failure || needs.review-1-p.outputs.claude_failure)) ||
+        (needs.prepare.outputs.reviewer_2 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.outputs.claude_failure || needs.review-2-p.outputs.claude_failure)) ||
+        (needs.prepare.outputs.reviewer_3 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.outputs.claude_failure || needs.review-3-p.outputs.claude_failure)) ||
+        (needs.prepare.outputs.reviewer_4 == 'claude' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.outputs.claude_failure || needs.review-4-p.outputs.claude_failure)) || '' }}
     secrets:
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}

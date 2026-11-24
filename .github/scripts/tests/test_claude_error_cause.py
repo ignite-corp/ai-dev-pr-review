@@ -205,8 +205,12 @@ class TestThePreCheckIsWiredBeforeTheAction:
 
     def test_the_composite_exposes_the_inner_steps_outcome(self) -> None:
         outputs = _composite()["outputs"]
+        # The API retry's outcome when it ran, else the first attempt's
+        # (AT-3714; test_claude_quota_chain.py evaluates the expression).
         assert outputs["inner_outcome"]["value"] == (
-            f"${{{{ steps.{_INNER_STEP_ID}.outcome }}}}"
+            "${{ steps.claude-review-api.outcome != 'skipped'"
+            " && steps.claude-review-api.outcome"
+            f" || steps.{_INNER_STEP_ID}.outcome }}}}"
         )
 
 

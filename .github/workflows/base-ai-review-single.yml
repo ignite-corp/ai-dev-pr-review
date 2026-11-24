@@ -57,6 +57,9 @@ on:
       copilot_failure:
         description: "Why the Copilot adapter could not review, as one fixed allowlisted code (review_failed for anything else); empty when it reviewed or did not finish. Read from the adapter's step output, never from the verdict artifact (AT-3487)"
         value: ${{ jobs.review.outputs.copilot_failure }}
+      claude_failure:
+        description: "included_quota_unavailable when Claude's quota chain ended in exclusion -- subscription limit with no API key, or the API attempt out of quota on a measured message -- else empty. Read from the claude-review composite's step output, never from the verdict artifact (AT-3714)"
+        value: ${{ jobs.review.outputs.claude_failure }}
 
 permissions:
   contents: read
@@ -85,6 +88,7 @@ jobs:
     outputs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
       copilot_failure: ${{ steps.copilot-failure.outputs.code }}
+      claude_failure: ${{ steps.claude-failure.outputs.code }}
     steps:
       # When the job began, for 'Record cancel cause' at the end (AT-3410).
       # First, so the clock is as close to the job cap's own start as a step
@@ -824,6 +828,25 @@ jobs:
           } + (if $cause == "" then {} else {error_cause: $cause} end)' > review-claude.json
           jq -e -s "$OBJECT_FILTER" review-claude.json >/dev/null
 
+      # The composite's quota-chain code (AT-3714), published the way
+      # 'Publish trusted Copilot failure code' publishes Copilot's: one
+      # allowlisted value, read only from the composite's step output, never
+      # from the verdict artifact. The STEP_OUTCOME check is defence in
+      # depth: a cut stops the composite before its failure-code step, and
+      # the caller's step can report success on a cut (run 38819148513).
+      - name: Publish trusted Claude failure code
+        if: inputs.reviewer == 'claude' && always()
+        id: claude-failure
+        env:
+          FAILURE_CODE: ${{ steps.claude-review.outputs.failure_code }}
+          STEP_OUTCOME: ${{ steps.claude-review.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$STEP_OUTCOME" != success ] || [ "$FAILURE_CODE" != included_quota_unavailable ]; then
+            exit 0
+          fi
+          echo "code=included_quota_unavailable" >> "$GITHUB_OUTPUT"
+
       # --- Claude: auto auth switch on usage-limit events (AT-1606) ---
       # When the review hits a subscription (OAuth) usage-limit error, set
       # the ignite-corp org vars CLAUDE_FORCE_API=true and
@@ -879,7 +902,10 @@ jobs:
           steps.auth_token_corp.outputs.token != ''
         continue-on-error: true
         env:
-          EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          # The OAuth attempt's log when the composite retried on the API
+          # key in the same run (AT-3714): the retry's own log no longer
+          # carries the limit the next run must be switched for.
+          EXEC_FILE: ${{ steps.claude-review.outputs.oauth_execution_file || steps.claude-review.outputs.execution_file }}
           GH_TOKEN: ${{ steps.auth_token_corp.outputs.token }}
         run: |
           SCRIPT="${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/switch_claude_auth.py"
