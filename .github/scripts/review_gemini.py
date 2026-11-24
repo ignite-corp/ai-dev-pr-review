@@ -26,11 +26,13 @@ REVIEW_FILE = "review-gemini.json"
 REVIEW_SCHEMA_PATH = (
     Path(__file__).resolve().parent.parent / "schemas" / "review-schema.json"
 )
-# Defaults to gemini-2.5-pro (current latest stable). Override via vars.GEMINI_MODEL
+# Defaults to gemini-4-hydrogen (owner choice, AT-3591). Override via vars.GEMINI_MODEL
 # in the orchestrator workflow (matches the CLAUDE_MODEL / CODEX_MODEL pattern).
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
-# Configurable via env (matches MODEL / *_MODEL pattern). gemini-2.5 family supports
-# up to 65536 output tokens; 32768 default keeps cost low while handling most large PRs.
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-4-hydrogen")
+# Configurable via env (matches MODEL / *_MODEL pattern). 32768 was chosen against
+# the gemini-2.5 family's 65536-token output limit, to keep cost low while handling
+# most large PRs. gemini-4-hydrogen's own output limit has not been checked
+# (AT-3591); lower GEMINI_MAX_OUTPUT_TOKENS if the API rejects this value.
 _DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 

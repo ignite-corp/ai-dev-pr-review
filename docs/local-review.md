@@ -166,6 +166,11 @@ The run now prints what it is using and where the value came from:
 Reviewers: claude=claude-sonnet-4-6 (workflow default)  codex=gpt-5.6-luna (workflow default)  gemini=gemini-2.5-pro (workflow default)
 ```
 
+Both the table and this line record that one run. The workflow defaults have
+changed since; Gemini's, for one, is `gemini-4-hydrogen` from AT-3591. Read the
+current defaults from `base-ai-review-single.yml`, or from the line the driver
+prints.
+
 The driver deliberately does **not** read `vars` to remove the difference.
 That needs repo-admin or `admin:org`, which you will not have when reviewing
 someone else's PR; this driver exists for repositories Actions cannot reach,

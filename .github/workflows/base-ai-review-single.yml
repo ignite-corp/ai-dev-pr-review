@@ -949,7 +949,7 @@ jobs:
         timeout-minutes: 10
         env:
           GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-pro' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-4-hydrogen' }}
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
         run: python "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/review_gemini.py"

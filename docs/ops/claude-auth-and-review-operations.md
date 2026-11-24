@@ -97,7 +97,9 @@ and the far-value clearing apply on merge.
   under "Op hazard - pilot consumer onboarding must set CODEX_MODEL and
   CLAUDE_MODEL repo vars" below.
 - **Avoid `gemini-2.5-flash-lite` for review** - it confabulates (fabricated 59
-  "not English" flags on English text). Use `gemini-2.5-pro`.
+  "not English" flags on English text). Use `gemini-4-hydrogen`, the workflow
+  default since AT-3591 (`gemini-2.5-pro` is deprecated and reroutes to a
+  flash model from 2026-12-01).
 - **What actually ran** (AT-3591): the verdict comment has a `Model:` line
   under the heading of each reviewer that returned a payload, and each
   `review-<reviewer>.json` artifact has `actual_models`. The values are read

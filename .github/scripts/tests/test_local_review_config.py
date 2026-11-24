@@ -85,6 +85,24 @@ def test_model_defaults_are_read_not_invented(monkeypatch):
     assert f"vars.GEMINI_MODEL || '{config.get('GEMINI_MODEL')}'" in single
 
 
+def test_gemini_default_is_the_owners_model_in_both_places():
+    """The workflow default and review_gemini.py's own fallback name one model.
+
+    gemini-2.5-pro is deprecated and reroutes to a flash model from
+    2026-12-01; the owner chose gemini-4-hydrogen on 2026-11-24 (AT-3591).
+    The script's fallback is a second copy of the pin, so it is held equal.
+    """
+    import re
+
+    assert workflow_defaults()["GEMINI_MODEL"] == "gemini-4-hydrogen"
+    script = (WORKFLOW_DIR.parent / "scripts" / "review_gemini.py").read_text(
+        encoding="utf-8"
+    )
+    fallback = re.search(r'os\.environ\.get\("GEMINI_MODEL", "([^"]+)"\)', script)
+    assert fallback is not None
+    assert fallback.group(1) == workflow_defaults()["GEMINI_MODEL"]
+
+
 def test_environment_beats_config_file(monkeypatch):
     monkeypatch.setenv("CLAUDE_MODEL", "from-env")
     assert _config({"CLAUDE_MODEL": "from-file"}).get("CLAUDE_MODEL") == "from-env"
