@@ -63,6 +63,9 @@ on:
       codex_failure:
         description: "included_quota_unavailable when Codex's quota chain ended in exclusion -- workspace quota out with no API key, or the API attempt out of quota on a measured message -- else empty. Read from the run step's output, never from the verdict artifact (AT-3714)"
         value: ${{ jobs.review.outputs.codex_failure }}
+      gemini_failure:
+        description: "included_quota_unavailable when Gemini's API quota is used up on a measured QuotaFailure quotaId -- none is listed yet, so today always empty. Read from the review step's output, never from the verdict artifact (AT-3714)"
+        value: ${{ jobs.review.outputs.gemini_failure }}
 
 permissions:
   contents: read
@@ -93,6 +96,7 @@ jobs:
       copilot_failure: ${{ steps.copilot-failure.outputs.code }}
       claude_failure: ${{ steps.claude-failure.outputs.code }}
       codex_failure: ${{ steps.codex-failure.outputs.code }}
+      gemini_failure: ${{ steps.gemini-failure.outputs.code }}
     steps:
       # When the job began, for 'Record cancel cause' at the end (AT-3410).
       # First, so the clock is as close to the job cap's own start as a step
@@ -984,6 +988,21 @@ jobs:
           THREAD_COUNT: ${{ steps.load-threads.outputs.thread_count }}
           EXISTING_COMMENTS: ${{ steps.load-threads.outputs.existing_comments }}
         run: python "${RUNNER_TEMP}/ai-dev-pr-review/.github/scripts/review_gemini.py"
+
+      # review_gemini.py's quota code (AT-3714), published the way
+      # 'Publish trusted Copilot failure code' publishes Copilot's.
+      - name: Publish trusted Gemini failure code
+        if: inputs.reviewer == 'gemini' && always()
+        id: gemini-failure
+        env:
+          FAILURE_CODE: ${{ steps.gemini-review.outputs.failure_code }}
+          STEP_OUTCOME: ${{ steps.gemini-review.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$STEP_OUTCOME" != success ] || [ "$FAILURE_CODE" != included_quota_unavailable ]; then
+            exit 0
+          fi
+          echo "code=included_quota_unavailable" >> "$GITHUB_OUTPUT"
 
       # The net for a clear that never ran -- the note above 'Clear
       # unowned Claude verdict file'. It must come before 'Emit Gemini

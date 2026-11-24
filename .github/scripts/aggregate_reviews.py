@@ -3243,9 +3243,9 @@ def post_verdict(
 # the reviewer's own workflow step published -- base-ai-review-single.yml,
 # 'Publish trusted Copilot failure code' -- forwarded per slot, and never
 # from a payload's error, which is uploaded data a PR can shape. Copilot
-# publishes one, and Claude and Codex since AT-3714 ('Publish trusted Claude
-# failure code', 'Publish trusted Codex failure code'); a reviewer absent
-# here can never be listed.
+# publishes one, and Claude, Codex and Gemini since AT-3714 (their own
+# 'Publish trusted <Reviewer> failure code' steps); a reviewer absent here
+# can never be listed.
 QUOTA_UNAVAILABLE_CODE = "included_quota_unavailable"
 # The headline segment that names them (AT-3714), matched by the
 # pr-response-cycle gate's headline_roster inside the bold Result only.
@@ -3254,6 +3254,7 @@ _TRUSTED_FAILURE_ENV = {
     "copilot": "REVIEWER_FAILURE_COPILOT",
     "claude": "REVIEWER_FAILURE_CLAUDE",
     "codex": "REVIEWER_FAILURE_CODEX",
+    "gemini": "REVIEWER_FAILURE_GEMINI",
 }
 
 

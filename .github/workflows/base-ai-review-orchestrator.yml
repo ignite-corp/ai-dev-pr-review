@@ -468,5 +468,11 @@ jobs:
         (needs.prepare.outputs.reviewer_2 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.outputs.codex_failure || needs.review-2-p.outputs.codex_failure)) ||
         (needs.prepare.outputs.reviewer_3 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.outputs.codex_failure || needs.review-3-p.outputs.codex_failure)) ||
         (needs.prepare.outputs.reviewer_4 == 'codex' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.outputs.codex_failure || needs.review-4-p.outputs.codex_failure)) || '' }}
+      # The same for Gemini's quota-chain code (AT-3714).
+      gemini_failure: >-
+        ${{ (needs.prepare.outputs.reviewer_1 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-1-s.outputs.gemini_failure || needs.review-1-p.outputs.gemini_failure)) ||
+        (needs.prepare.outputs.reviewer_2 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-2-s.outputs.gemini_failure || needs.review-2-p.outputs.gemini_failure)) ||
+        (needs.prepare.outputs.reviewer_3 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-3-s.outputs.gemini_failure || needs.review-3-p.outputs.gemini_failure)) ||
+        (needs.prepare.outputs.reviewer_4 == 'gemini' && (vars.REVIEW_MODE == 'sequential' && needs.review-4-s.outputs.gemini_failure || needs.review-4-p.outputs.gemini_failure)) || '' }}
     secrets:
       REVIEWER_APP_PRIVATE_KEY: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
