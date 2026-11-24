@@ -60,6 +60,9 @@ on:
       claude_failure:
         description: "included_quota_unavailable when Claude's quota chain ended in exclusion -- subscription limit with no API key, or the API attempt out of quota on a measured message -- else empty. Read from the claude-review composite's step output, never from the verdict artifact (AT-3714)"
         value: ${{ jobs.review.outputs.claude_failure }}
+      codex_failure:
+        description: "included_quota_unavailable when Codex's quota chain ended in exclusion -- workspace quota out with no API key, or the API attempt out of quota on a measured message -- else empty. Read from the run step's output, never from the verdict artifact (AT-3714)"
+        value: ${{ jobs.review.outputs.codex_failure }}
 
 permissions:
   contents: read
@@ -89,6 +92,7 @@ jobs:
       early_exit: ${{ steps.extract.outputs.early_exit }}
       copilot_failure: ${{ steps.copilot-failure.outputs.code }}
       claude_failure: ${{ steps.claude-failure.outputs.code }}
+      codex_failure: ${{ steps.codex-failure.outputs.code }}
     steps:
       # When the job began, for 'Record cancel cause' at the end (AT-3410).
       # First, so the clock is as close to the job cap's own start as a step
@@ -1447,6 +1451,20 @@ jobs:
                 ;;
             esac
           fi
+          # The quota chain's end (AT-3714): the workspace quota is out and
+          # no API key is configured -- not one whose fallback login failed,
+          # which NO_API_FALLBACK also covers -- or the attempt that used the
+          # key failed on a message in codex_review_auth's _API_QUOTA_MESSAGES,
+          # empty until one is measured, so that attempt stays a failure.
+          FAILURE_CODE=""
+          if [ -f "$AUTH" ] && [ "$EXIT_CODE" -ne 0 ]; then
+            if [ "$RETRY" -eq 3 ] && python3 "$AUTH" api-key-absent; then
+              FAILURE_CODE=included_quota_unavailable
+            elif python3 "$AUTH" api-quota --events "$EVENTS" --exit-code "$EXIT_CODE"; then
+              FAILURE_CODE=included_quota_unavailable
+            fi
+          fi
+          echo "failure_code=${FAILURE_CODE}" >> "$GITHUB_OUTPUT"
           echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
           # Last meaningful run-log line for fallback verdicts: strip ANSI
           # escapes and blank lines, keep one line, cap at 200 chars. Always
@@ -1576,6 +1594,21 @@ jobs:
               rm -f -- "$name"
             fi
           done
+
+      # The run step's quota-chain code (AT-3714), published the way
+      # 'Publish trusted Copilot failure code' publishes Copilot's.
+      - name: Publish trusted Codex failure code
+        if: inputs.reviewer == 'codex' && always()
+        id: codex-failure
+        env:
+          FAILURE_CODE: ${{ steps.codex_run.outputs.failure_code }}
+          STEP_OUTCOME: ${{ steps.codex_run.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$STEP_OUTCOME" != success ] || [ "$FAILURE_CODE" != included_quota_unavailable ]; then
+            exit 0
+          fi
+          echo "code=included_quota_unavailable" >> "$GITHUB_OUTPUT"
 
       - name: Persist Codex quota fallback
         if: inputs.reviewer == 'codex' && always()

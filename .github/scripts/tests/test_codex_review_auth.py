@@ -597,3 +597,61 @@ def test_fatal_prepare_is_an_error_but_control_plane_jobs_keep_warning_annotatio
     )
     assert result.returncode == 2
     assert result.stderr.startswith(f"::{annotation}::"), result.stderr
+
+
+# AT-3714 #323 R1: NO_API_FALLBACK also comes back when a key IS configured
+# but its fallback login failed. Only a key that is absent ends the chain in
+# exclusion; a broken key is a reviewer failure.
+
+
+@pytest.mark.parametrize(
+    ("key", "login_fails", "expected"),
+    [("", False, "absent"), ("test-key", True, "failed"), ("test-key", False, "ready")],
+)
+def test_prepare_records_why_there_is_or_is_not_an_api_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    login_fails: bool,
+    expected: str,
+) -> None:
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "test-token")
+    monkeypatch.setenv("OPENAI_API_KEY", key)
+    home = tmp_path / ".codex"
+
+    def login(credential: str, mode: str, destination: Path) -> bytes:
+        if mode == "api-key" and login_fails:
+            raise ValueError("Codex api-key login failed; exit=1")
+        return b'{"kind":"' + mode.encode() + b'"}'
+
+    monkeypatch.setattr(auth, "_login", login)
+    auth.prepare(home, None, NOW)
+    meta = json.loads((home / "review-auth.json").read_text())
+    assert meta["mode"] == "access-token"
+    assert meta["api_fallback"] == expected
+
+
+@pytest.mark.parametrize(
+    ("meta", "excluded"),
+    [
+        ({"mode": "access-token", "api_fallback": "absent"}, True),
+        ({"mode": "access-token", "api_fallback": "failed"}, False),
+        ({"mode": "access-token", "api_fallback": "ready"}, False),
+        # A record from before this field, or one that does not say: not
+        # shown to be absent, so not excluded.
+        ({"mode": "access-token"}, False),
+        ({"mode": "access-token", "api_fallback": True}, False),
+    ],
+)
+def test_only_an_absent_key_is_no_api_path(
+    tmp_path: Path, meta: dict[str, Any], excluded: bool
+) -> None:
+    home = tmp_path / ".codex"
+    home.mkdir()
+    (home / "review-auth.json").write_text(json.dumps(meta))
+    assert auth.api_key_absent(home) is excluded
+
+
+def test_the_api_quota_mode_has_its_own_exit_contract() -> None:
+    assert auth.API_QUOTA == 0
+    assert auth.NOT_API_QUOTA not in (auth.API_QUOTA, auth.NO_RETRY)
