@@ -88,7 +88,23 @@ version was not independently established by this change.
   and a partial flag write cannot lose a valid bounded window. These are
   operational state, not credentials or per-consumer configuration.
   A quota failure without API fallback material leaves no new persistent window
-  and reports `error_cause: quota_exhausted` in the failed verdict.
+  and reports `error_cause: quota_exhausted` in the failed verdict. Since
+  AT-3714, when no `OPENAI_API_KEY` is configured at all, that is also the
+  end of the quota chain: the run step publishes
+  `included_quota_unavailable`, and the aggregate lists Codex in
+  `review_result.quota_unavailable` and the headline's `quota-exempt`
+  segment, so the round passes on the approval quorum, ceil(N/2)+1 of
+  N >= 3, as it does for Copilot. A configured key whose fallback login
+  failed is not that: `prepare` records `api_fallback: failed`, and the
+  review stays a failure, because a broken key is a reviewer to fix, not
+  a missing path.
+- An attempt that used the API key and failed is excluded only on a terminal
+  `turn.failed` message listed in `codex_review_auth.py`'s
+  `_API_QUOTA_MESSAGES`. That list is empty: codex-rs 0.166.0 renders an API
+  quota failure as "Quota exceeded. Check your plan and billing details.",
+  but that is read from source and has not been measured in a run, so it is
+  not listed (owner's decision, 2026-11-25). Until a run measures one, a
+  failed API attempt stays a failure.
 - Prefer the provider reset time printed by the CLI. Its minute precision is
   rounded up, and the CLI runs in UTC. If no reliable future reset time is
   available, try the access token again after **five hours**. This is a probe

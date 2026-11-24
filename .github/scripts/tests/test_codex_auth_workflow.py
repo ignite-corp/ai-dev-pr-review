@@ -40,7 +40,11 @@ def _step(name: str) -> dict[str, Any]:
 
 
 def _fixture(
-    tmp_path: Path, scenario: str, fallback: bool = True, helper: bool = True
+    tmp_path: Path,
+    scenario: str,
+    fallback: bool = True,
+    helper: bool = True,
+    api_fallback: str | None = None,
 ) -> dict[str, str]:
     temp = tmp_path / "runner-temp"
     trusted = temp / "ai-dev-pr-review/.github/scripts"
@@ -59,7 +63,12 @@ def _fixture(
     home = tmp_path / "home"
     auth = home / ".codex"
     auth.mkdir(parents=True)
-    (auth / "review-auth.json").write_text('{"mode":"access-token"}')
+    # What prepare records (AT-3714): ready with a stored fallback, else
+    # absent unless a test says the key was there and its login failed.
+    recorded = api_fallback or ("ready" if fallback else "absent")
+    (auth / "review-auth.json").write_text(
+        json.dumps({"mode": "access-token", "api_fallback": recorded})
+    )
     (auth / "auth.json").write_text('{"kind":"token"}')
     if fallback:
         (auth / "review-api-auth.json").write_text('{"kind":"api"}')
@@ -99,6 +108,9 @@ def _fixture(
         "if scenario == 'api-fails':\n"
         " Path(names[0]).write_text(json.dumps(verdict))\n"
         " print(json.dumps({'type':'turn.failed','error':{'message':'API unavailable'}}))\n"
+        " sys.exit(1)\n"
+        "if scenario == 'api-quota':\n"
+        " print(json.dumps({'type':'turn.failed','error':{'message':'Quota exceeded. Check your plan and billing details.'}}))\n"
         " sys.exit(1)\n"
         "if scenario.startswith('events-') or scenario == 'retry-agent-leak':\n"
         " def event(kind, text): print(json.dumps({'type':'item.completed','item':{'type':kind,'text':text,'aggregated_output':text}}))\n"
@@ -776,3 +788,71 @@ def test_restore_auth_tokens_share_control_repository_scope(filename: str) -> No
     assert mint["with"]["owner"] == "ignite-corp"
     assert mint["with"]["repositories"] == "ai-dev-pr-review"
     assert mint["with"]["private-key"] == "${{ secrets.REVIEWER_APP_PRIVATE_KEY }}"
+
+
+# --- AT-3714: the quota chain ends in exclusion, never in a guessed one -----
+
+_QUOTA_CODE = "included_quota_unavailable"
+# codex-rs rust-v0.166.0 protocol/src/error.rs, QuotaExceeded's Display: read
+# from source, never measured in a run, so it is not on the list.
+_SOURCE_READ_API_QUOTA = "Quota exceeded. Check your plan and billing details."
+
+
+def _failure_code(tmp_path: Path) -> str:
+    outputs = dict(
+        line.split("=", 1)
+        for line in (tmp_path / "outputs").read_text().splitlines()
+        if "=" in line
+    )
+    return outputs.get("failure_code", "<absent>")
+
+
+def test_a_configured_key_whose_login_failed_is_not_excluded(tmp_path: Path) -> None:
+    env = _fixture(tmp_path, "quota", fallback=False, api_fallback="failed")
+    result = _run(tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert _failure_code(tmp_path) == ""
+
+
+def test_subscription_out_with_no_api_key_is_excluded(tmp_path: Path) -> None:
+    result = _run(tmp_path, _fixture(tmp_path, "quota", fallback=False))
+    assert result.returncode == 0, result.stderr
+    assert _failure_code(tmp_path) == _QUOTA_CODE
+
+
+@pytest.mark.parametrize("scenario", ["api-fails", "api-quota"])
+def test_a_failed_api_attempt_stays_a_failure(tmp_path: Path, scenario: str) -> None:
+    result = _run(tmp_path, _fixture(tmp_path, scenario))
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "attempt-count").read_text() == "2"
+    assert _failure_code(tmp_path) == ""
+
+
+def test_the_empty_list_is_the_only_reason_api_quota_is_not_excluded(
+    tmp_path: Path,
+) -> None:
+    env = _fixture(tmp_path, "api-quota")
+    helper = (
+        Path(env["RUNNER_TEMP"])
+        / "ai-dev-pr-review/.github/scripts/codex_review_auth.py"
+    )
+    source = helper.read_text()
+    empty = "_API_QUOTA_MESSAGES: frozenset[str] = frozenset()"
+    assert source.count(empty) == 1
+    helper.write_text(
+        source.replace(
+            empty, f"_API_QUOTA_MESSAGES = frozenset({{{_SOURCE_READ_API_QUOTA!r}}})"
+        )
+    )
+    result = _run(tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert _failure_code(tmp_path) == _QUOTA_CODE
+
+
+@pytest.mark.parametrize("scenario", ["success", "stderr-lookalike", "quota"])
+def test_a_review_or_any_other_failure_publishes_no_code(
+    tmp_path: Path, scenario: str
+) -> None:
+    result = _run(tmp_path, _fixture(tmp_path, scenario))
+    assert result.returncode == 0, result.stderr
+    assert _failure_code(tmp_path) == ""

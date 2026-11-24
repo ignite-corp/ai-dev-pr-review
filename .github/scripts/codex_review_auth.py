@@ -54,6 +54,20 @@ _QUOTA_MESSAGE = re.compile(
 )
 
 
+# AT-3714: the terminal messages that mean the API key itself is out of
+# quota. Empty by the owner's decision of 2026-11-25: only measured messages
+# are listed, and none has been measured. codex-rs rust-v0.166.0's
+# QuotaExceeded renders "Quota exceeded. Check your plan and billing
+# details." -- read from source, not from a run, so it is not here. Until a
+# run measures one, an API attempt that fails stays a failure.
+_API_QUOTA_MESSAGES: frozenset[str] = frozenset()
+# Exit contract of the api-quota and api-key-absent modes: 0 means yes (an API
+# quota failure; no key configured), NOT_API_QUOTA means no, and 2 is a
+# classifier error -- every non-zero exit is "not exempt".
+API_QUOTA = 0
+NOT_API_QUOTA = 1
+
+
 class ControlPlaneError(Exception):
     """The control plane could not be read or updated; absence is different."""
 
@@ -174,9 +188,12 @@ def _reset_epoch(text: str | None, now: float) -> int:
     return int(now) + PROBE_SECONDS
 
 
-def quota_until(events: Path, exit_code: int, now: float) -> int | None:
-    if exit_code == 0:
-        return None
+def _terminal_failure_message(events: Path) -> str | None:
+    """The message of the run's last terminal event when it is turn.failed.
+
+    The CLI's own JSONL on stdout; a line that is not a JSON object makes the
+    whole stream unreadable rather than skipped. Never the model's prose.
+    """
     terminal = None
     try:
         for line in events.read_text(encoding="utf-8").splitlines():
@@ -191,7 +208,14 @@ def quota_until(events: Path, exit_code: int, now: float) -> int | None:
         return None
     error = terminal.get("error")
     message = error.get("message") if is_json_object(error) else None
-    if not isinstance(message, str):
+    return message if isinstance(message, str) else None
+
+
+def quota_until(events: Path, exit_code: int, now: float) -> int | None:
+    if exit_code == 0:
+        return None
+    message = _terminal_failure_message(events)
+    if message is None:
         return None
     if message in _WORKSPACE_LIMITS:
         return int(now) + PROBE_SECONDS
@@ -267,16 +291,25 @@ def prepare(home: Path, store: Variables | None, now: float) -> None:
         raise ValueError(f"Codex selected {mode} credential is missing")
     fallback = home / "review-api-auth.json"
     fallback.unlink(missing_ok=True)
+    # Why there is or is not an API path behind the token (AT-3714): only a
+    # key that is absent ends the quota chain in exclusion. A configured key
+    # whose login failed is a broken reviewer, not a missing path.
+    api_fallback = "selected" if mode == "api-key" else "absent"
     if mode == "access-token" and key:
         try:
             data = _login(key, "api-key", home / "review-api-login")
             _write_private(fallback, data)
+            api_fallback = "ready"
         except (ValueError, OSError):
+            api_fallback = "failed"
             print("::warning::Codex API fallback credential preparation failed")
     selected = key if mode == "api-key" else token
     data = _login(selected, mode, home)
     _write_private(home / "auth.json", data)
-    _write_private(home / "review-auth.json", json.dumps({"mode": mode}).encode())
+    _write_private(
+        home / "review-auth.json",
+        json.dumps({"mode": mode, "api_fallback": api_fallback}).encode(),
+    )
     print(f"Codex selected auth: {mode}")
 
 
@@ -302,9 +335,50 @@ def retry(home: Path, events: Path, exit_code: int, now: float) -> int:
     return 0
 
 
+def api_quota(home: Path, events: Path, exit_code: int) -> bool:
+    """Did the attempt that used the API key fail for want of quota (AT-3714)?
+
+    Only an attempt the metadata records as api-key, that exited non-zero,
+    whose terminal turn.failed message is in _API_QUOTA_MESSAGES -- matched
+    whole, as quota_until matches the subscription messages.
+    """
+    meta = _meta(home)
+    if meta is None or meta.get("mode") != "api-key" or exit_code == 0:
+        return False
+    return _terminal_failure_message(events) in _API_QUOTA_MESSAGES
+
+
+def api_key_absent(home: Path) -> bool:
+    """No API key was configured behind the token (AT-3714).
+
+    Exactly what prepare recorded as "absent"; a failed fallback login, a
+    record without the field, or anything else is not shown to be absent.
+    """
+    meta = _meta(home)
+    return meta is not None and meta.get("api_fallback") == "absent"
+
+
+def _meta(home: Path) -> dict[str, Any] | None:
+    try:
+        meta = json.loads((home / "review-auth.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return meta if is_json_object(meta) else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["prepare", "retry", "persist", "restore"])
+    parser.add_argument(
+        "mode",
+        choices=[
+            "prepare",
+            "retry",
+            "persist",
+            "restore",
+            "api-quota",
+            "api-key-absent",
+        ],
+    )
     parser.add_argument("--events", type=Path)
     parser.add_argument("--exit-code", type=int, default=0)
     args = parser.parse_args()
@@ -319,6 +393,18 @@ def main() -> int:
             if args.events is None:
                 parser.error("retry requires --events")
             return retry(home, args.events, args.exit_code, now)
+        elif args.mode == "api-quota":
+            if args.events is None:
+                parser.error("api-quota requires --events")
+            # Exit 0 only for an API quota failure; the message is never
+            # printed.
+            return (
+                API_QUOTA
+                if api_quota(home, args.events, args.exit_code)
+                else NOT_API_QUOTA
+            )
+        elif args.mode == "api-key-absent":
+            return API_QUOTA if api_key_absent(home) else NOT_API_QUOTA
         elif args.mode == "persist":
             marker = home / "review-quota.json"
             if not marker.is_file():
