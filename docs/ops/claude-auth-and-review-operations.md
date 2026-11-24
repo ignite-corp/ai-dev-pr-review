@@ -43,6 +43,44 @@ The org `CLAUDE_CODE_OAUTH_TOKEN` variable has **private** visibility.
   CLI. Passing BOTH credentials silently bills the API. That is exactly why the
   composite passes the ternary (one or the other), never both.
 
+## Same-run API retry and exclusion (AT-3714)
+
+The org-var switch below reaches only the next review. On
+ai-dev-infra-common#1237 (run 45408958654, 2026-11-24) the OAuth attempt hit
+its usage limit, the switch set `CLAUDE_FORCE_API` a second later, and the
+round still ended 2/3. So the `claude-review` composite now follows the
+quota chain inside the run, subscription, then API key, then exclusion:
+
+- When the OAuth attempt fails and `switch_claude_auth.py classify oauth`
+  finds the usage-limit signature on its execution log, the composite runs
+  the same pinned action once more with `ANTHROPIC_API_KEY` alone. The
+  OAuth log is copied out first, because the retry overwrites the action's
+  log, and the org-var switch scans that copy. The original is then removed,
+  so a retry that writes no log of its own leaves nothing at that path.
+- The attempt that used the key is classified by `classify api`, on that
+  attempt's own log only, never the OAuth one. It counts
+  as out of quota only on an error text starting with a prefix in
+  `API_LIMIT_ERROR_PREFIXES`, together with the structured limit signal.
+  That list is empty: no API-key exhaustion has been measured in this
+  fleet, so an API attempt that fails stays a failure (owner's decision,
+  2026-11-25 KST, recorded on AT-3714). Add a prefix only from a measured run.
+- The composite's `failure_code` is `included_quota_unavailable` when the
+  subscription ran out with no API key to retry on, or when the key ran out
+  too. The caller publishes it as `claude_failure`, and the aggregate lists
+  Claude in `review_result.quota_unavailable` and in the headline's
+  `quota-exempt` segment. The round then passes on the approval quorum,
+  ceil(N/2)+1 of N >= 3, as Copilot's does. Any other failure stays a
+  failure.
+- The retry runs inside the caller's one Claude step cap
+  (`claude-timeout-minutes`, default 10). The OAuth limit failure measured
+  on #1237 took 455 ms, so the retry keeps nearly the whole cap. A retry cut
+  by the cap is a failure, never an exemption: the cut stops the composite
+  before `api-limit` and `failure-code` run, so no code is written, and a
+  retry that ends in failure is excluded only on a measured API limit, of
+  which there are none. The publish step's `STEP_OUTCOME` check is defence in
+  depth, not the safeguard: the caller's step can report success on a cut
+  (run 38819148513).
+
 ## Usage-limit auto switch (org vars)
 
 On a subscription usage limit, `switch_claude_auth.py detect-and-switch` (the

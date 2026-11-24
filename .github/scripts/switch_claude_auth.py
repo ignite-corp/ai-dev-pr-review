@@ -19,8 +19,17 @@ empty-secret toggle):
   for the cron (AT-3439). CLAUDE_FORCE_API=true with no UNTIL still forces
   the API path: that is an operator's manual pin.
 
-Two modes:
+Three modes:
 
+- classify <oauth|api> (AT-3714): read the execution file of one attempt
+  (env EXEC_FILE) and write limited=true|false to GITHUB_OUTPUT. It calls
+  no API and needs no token: the claude-review composite runs it between
+  its OAuth attempt and the same-run API retry, and on the API attempt,
+  to decide whether the reviewer ran out of quota rather than failed. Both
+  need the structured limit signal and a listed prefix -- the SDK's usage
+  prefixes for OAuth, API_LIMIT_ERROR_PREFIXES for the API attempt, which
+  is empty until an API-key exhaustion has been measured. The legacy CLI
+  signature counts only for detect-and-switch.
 - detect-and-switch: parse the claude-code-action execution file (path in
   env EXEC_FILE; a JSON array of Agent SDK messages) for a usage-limit
   failure -- see _detect_limit. On detection, set CLAUDE_FORCE_API=true and
@@ -46,6 +55,7 @@ must never fail the review job. Set DRY_RUN=true to log intended writes
 without calling the API.
 
 Usage: python3 switch_claude_auth.py <detect-and-switch|restore-if-due>
+       python3 switch_claude_auth.py classify <oauth|api>
 """
 
 from __future__ import annotations
@@ -99,6 +109,13 @@ USAGE_LIMIT_ERROR_PREFIXES: tuple[str, ...] = (
     "You're out of extra usage",
     "Your seat type doesn't include extra usage",
 )
+# AT-3714: the texts that mean the billed API key itself ran out (credits,
+# spend cap), as opposed to the subscription. Empty by the owner's decision
+# of 2026-11-25 KST (recorded on AT-3714): no API-key exhaustion has been measured in this fleet, and
+# only measured messages are listed, so an API attempt that fails stays a
+# failure. A text added here also needs the structured signal below.
+API_LIMIT_ERROR_PREFIXES: tuple[str, ...] = ()
+_ATTEMPTS = ("oauth", "api")
 _PREFIXES_SDK_VERSION = "0.3.316"
 _PREFIXES_ACTION_SHA = "d535f5172dec02b204866b393d6b20b9b2aaf98d"
 
@@ -283,9 +300,9 @@ def _assistant_texts(msg: dict[str, Any]) -> list[str]:
     return texts
 
 
-def _usage_prefix(text: str) -> str | None:
+def _usage_prefix(text: str, prefixes: tuple[str, ...] | None = None) -> str | None:
     stripped = text.lstrip()
-    for prefix in USAGE_LIMIT_ERROR_PREFIXES:
+    for prefix in USAGE_LIMIT_ERROR_PREFIXES if prefixes is None else prefixes:
         if stripped.startswith(prefix):
             return prefix
     return None
@@ -311,6 +328,84 @@ def _reset_epoch(infos: list[dict[str, Any]], now: float) -> tuple[int, str] | N
                 continue
             return int(value), key
     return None
+
+
+def _limit_signals(
+    msgs: list[dict[str, Any]],
+) -> tuple[bool, list[str], list[dict[str, Any]]]:
+    """(structured limit signal seen, error texts, rate-limit infos).
+
+    Error texts are an errored result's `result` and an errored assistant
+    message's text -- never what the reviewer read or wrote.
+    """
+    structured = False
+    error_texts: list[str] = []
+    infos: list[dict[str, Any]] = []
+    for msg in msgs:
+        kind = msg.get("type")
+        error = msg.get("error")
+        if kind == "assistant" and error is not None:
+            if isinstance(error, str) and error in _LIMIT_ERROR_KINDS:
+                structured = True
+            error_texts.extend(_assistant_texts(msg))
+        elif kind == "result" and msg.get("is_error") is True:
+            result = msg.get("result")
+            if isinstance(result, str):
+                error_texts.append(result)
+        elif kind == "rate_limit_event":
+            info = msg.get("rate_limit_info")
+            if _is_dict(info):
+                infos.append(info)
+                if info.get("status") == "rejected":
+                    structured = True
+    return structured, error_texts, infos
+
+
+def attempt_limited(text: str, attempt: str) -> bool:
+    """Did this attempt fail because its quota ran out (AT-3714)?
+
+    Both attempts need a JSON message list with a structured limit signal
+    AND an error text starting with a listed prefix: the SDK's
+    USAGE_LIMIT_ERROR_PREFIXES for the OAuth attempt, API_LIMIT_ERROR_PREFIXES
+    (empty today, so False) for the API one. A positive answer can take
+    Claude out of the required roster, so it never rests on the legacy CLI
+    signature that detect-and-switch also accepts: that is plain text, and a
+    file that is not a message list is scanned whole, reviewed content
+    included.
+    """
+    try:
+        messages = json.loads(text)
+    except ValueError:
+        return False
+    if not _is_list(messages):
+        return False
+    structured, error_texts, _ = _limit_signals([m for m in messages if _is_dict(m)])
+    prefixes = (
+        USAGE_LIMIT_ERROR_PREFIXES if attempt == "oauth" else API_LIMIT_ERROR_PREFIXES
+    )
+    return structured and any(_usage_prefix(t, prefixes) for t in error_texts)
+
+
+def classify(attempt: str) -> None:
+    """Write limited=true|false for one attempt; never raises, never prints
+    execution-file text (PUBLIC log)."""
+    limited = False
+    exec_file = os.environ.get("EXEC_FILE", "")
+    if exec_file and os.path.isfile(exec_file):
+        try:
+            with open(exec_file, encoding="utf-8") as f:
+                limited = attempt_limited(f.read(), attempt)
+        except (OSError, UnicodeDecodeError) as e:
+            _log(
+                f"Claude {attempt} attempt: cannot read execution file: {type(e).__name__}"
+            )
+    else:
+        _log(f"Claude {attempt} attempt: no execution file")
+    _log(f"Claude {attempt} attempt quota exhausted: {'yes' if limited else 'no'}")
+    output = os.environ.get("GITHUB_OUTPUT", "")
+    if output:
+        with open(output, "a", encoding="utf-8") as f:
+            f.write(f"limited={'true' if limited else 'false'}\n")
 
 
 def _detect_limit(text: str, now: float) -> _Detection:
@@ -343,26 +438,7 @@ def _detect_limit(text: str, now: float) -> _Detection:
         return _Detection(None, "no usage-limit signature (not a JSON message list)")
 
     msgs = [m for m in messages if _is_dict(m)]
-    structured = False
-    error_texts: list[str] = []
-    infos: list[dict[str, Any]] = []
-    for msg in msgs:
-        kind = msg.get("type")
-        error = msg.get("error")
-        if kind == "assistant" and error is not None:
-            if isinstance(error, str) and error in _LIMIT_ERROR_KINDS:
-                structured = True
-            error_texts.extend(_assistant_texts(msg))
-        elif kind == "result" and msg.get("is_error") is True:
-            result = msg.get("result")
-            if isinstance(result, str):
-                error_texts.append(result)
-        elif kind == "rate_limit_event":
-            info = msg.get("rate_limit_info")
-            if _is_dict(info):
-                infos.append(info)
-                if info.get("status") == "rejected":
-                    structured = True
+    structured, error_texts, infos = _limit_signals(msgs)
 
     prefix = next((p for t in error_texts if (p := _usage_prefix(t))), None)
     if structured and prefix is not None:
@@ -539,12 +615,19 @@ def restore_if_due(corp_token: str) -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "classify" and sys.argv[2] in _ATTEMPTS:
+        # No token and no API call: the answer is only ever false on error.
+        try:
+            classify(sys.argv[2])
+        except Exception as e:  # noqa: BLE001 -- fail-safe by design
+            _log(f"Claude attempt classify failed (ignored): {type(e).__name__}")
+        return
     if len(sys.argv) != 2 or sys.argv[1] not in (
         "detect-and-switch",
         "restore-if-due",
     ):
         print(
-            f"Usage: {sys.argv[0]} <detect-and-switch|restore-if-due>",
+            f"Usage: {sys.argv[0]} <detect-and-switch|restore-if-due|classify oauth|classify api>",
             file=sys.stderr,
         )
         sys.exit(1)

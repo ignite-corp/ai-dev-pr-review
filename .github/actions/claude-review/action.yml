@@ -58,19 +58,37 @@ inputs:
     description: Review prompt
     required: true
 outputs:
+  # The retry's results when it ran -- empty when it wrote none, never the
+  # first attempt's, which carries the OAuth limit -- else the first
+  # attempt's (AT-3714).
   structured_output:
     description: Review JSON returned by Claude's structured output
-    value: ${{ steps.claude-review.outputs.structured_output }}
+    value: ${{ steps.claude-review-api.outcome != 'skipped' && steps.claude-review-api.outputs.structured_output || (steps.claude-review-api.outcome == 'skipped' && steps.claude-review.outputs.structured_output) || '' }}
   execution_file:
     description: Path to the claude-code-action execution log
-    value: ${{ steps.claude-review.outputs.execution_file }}
+    value: ${{ steps.claude-review-api.outcome != 'skipped' && steps.claude-review-api.outputs.execution_file || (steps.claude-review-api.outcome == 'skipped' && steps.claude-review.outputs.execution_file) || '' }}
   inner_outcome:
     description: >-
-      Outcome of the claude-code-action step itself. The step is
-      continue-on-error, so the caller's own step outcome stays success when
-      the action fails; this is the only place that failure is visible
-      (AT-2276).
-    value: ${{ steps.claude-review.outcome }}
+      Outcome of the claude-code-action step itself -- the API retry's when
+      it ran (AT-3714). The step is continue-on-error, so the caller's own
+      step outcome stays success when the action fails; this is the only
+      place that failure is visible (AT-2276).
+    value: ${{ steps.claude-review-api.outcome != 'skipped' && steps.claude-review-api.outcome || steps.claude-review.outcome }}
+  oauth_execution_file:
+    description: >-
+      A copy of the OAuth attempt's execution log, kept only when that
+      attempt hit a usage limit: the API retry overwrites the action's own
+      log, and the caller's auth switch scans this copy so the limit still
+      reaches CLAUDE_FORCE_API for the next run (AT-3714).
+    value: ${{ steps.keep-oauth-log.outputs.path }}
+  failure_code:
+    description: >-
+      included_quota_unavailable when the quota chain ended in exclusion --
+      the subscription hit a usage limit with no API key to retry on, or the
+      API attempt hit a limit listed in switch_claude_auth.py's
+      API_LIMIT_ERROR_PREFIXES -- else empty (AT-3714). Derived only from
+      the action's execution logs by trusted code, never from the verdict.
+    value: ${{ steps.failure-code.outputs.failure_code }}
 runs:
   using: composite
   steps:
@@ -222,3 +240,102 @@ runs:
           --setting-sources user --strict-mcp-config --mcp-config '{"mcpServers":{}}'
           --disable-slash-commands --json-schema ${{ steps.review-schema.outputs.schema }}
         prompt: ${{ inputs.prompt }}
+    # AT-3714: the quota chain, subscription -> API key -> exclude. Before
+    # this the switch below reached only the NEXT run: on
+    # ai-dev-infra-common#1237 (run 45408958654) the OAuth attempt hit its
+    # limit, CLAUDE_FORCE_API was set a second later, and the round still
+    # ended 2/3. Classified by switch_claude_auth.py on the action's own
+    # execution log -- structured signal plus SDK prefix, never model text.
+    - id: oauth-limit
+      if: steps.claude-review.outcome == 'failure' && inputs.force_api != 'true' && inputs.claude_code_oauth_token != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+      run: python3 "$ACTION_PATH/../../scripts/switch_claude_auth.py" classify oauth
+    # The retry writes the action's log to the same path, so the OAuth log
+    # the caller's auth switch reads is copied out first. When a retry will
+    # run, the original is removed too: a retry that writes no log must not
+    # leave the OAuth log, with its limit signal, where its own would be.
+    # Without a retry it stays, for the caller's error net.
+    - id: keep-oauth-log
+      if: steps.oauth-limit.outputs.limited == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        EXEC_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        API_KEY_PRESENT: ${{ inputs.anthropic_api_key != '' }}
+      run: |
+        set -euo pipefail
+        KEPT="${RUNNER_TEMP}/claude-oauth-execution.json"
+        rm -f -- "$KEPT"
+        if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ] && [ ! -L "$EXEC_FILE" ]; then
+          # A failed copy keeps nothing and must not stop the removal below.
+          if cp -- "$EXEC_FILE" "$KEPT"; then
+            echo "path=$KEPT" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+        # Whether or not it could be kept: rm on a link removes the link.
+        if [ "$API_KEY_PRESENT" = true ] && [ -n "$EXEC_FILE" ]; then
+          rm -f -- "$EXEC_FILE"
+        fi
+    # The API retry (AT-3714): the action and arguments of claude-review
+    # above, whose comments explain them -- test_claude_quota_chain.py
+    # holds the two equal -- on the API key alone. The OAuth token is
+    # blanked so the CLI cannot prefer the exhausted subscription. It runs
+    # inside the caller's one Claude step cap; the measured OAuth limit
+    # failure took 455 ms (#1237), so the retry keeps nearly all of it.
+    - id: claude-review-api
+      if: steps.oauth-limit.outputs.limited == 'true' && inputs.anthropic_api_key != ''
+      continue-on-error: true
+      uses: anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d  # v1.0.266
+      env:
+        API_TIMEOUT_MS: ${{ inputs.api_timeout_ms }}
+        CLAUDE_STREAM_IDLE_TIMEOUT_MS: ${{ inputs.api_timeout_ms }}
+      with:
+        github_token: ${{ inputs.github_token }}
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        claude_code_oauth_token: ''
+        allowed_bots: ${{ inputs.allowed_bots }}
+        settings: '{"disableAllHooks":true}'
+        claude_args: >-
+          --model ${{ inputs.model }} --tools Read,Glob,Grep
+          --allowedTools "${{ inputs.allowed_tools }}"
+          --setting-sources user --strict-mcp-config --mcp-config '{"mcpServers":{}}'
+          --disable-slash-commands --json-schema ${{ steps.review-schema.outputs.schema }}
+        prompt: ${{ inputs.prompt }}
+    # The attempt that used the key: the retry, or a first attempt that was
+    # the API path already (force_api, or no OAuth token). Limited only on a
+    # prefix in API_LIMIT_ERROR_PREFIXES, which is empty: an unmeasured API
+    # exhaustion stays a failure (owner's decision of 2026-11-25 KST,
+    # recorded on AT-3714).
+    - id: api-limit
+      if: steps.claude-review-api.outcome == 'failure' || (steps.claude-review-api.outcome == 'skipped' && steps.claude-review.outcome == 'failure' && (inputs.force_api == 'true' || inputs.claude_code_oauth_token == ''))
+      continue-on-error: true
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        # The retry's own log when it ran, even an empty one: falling back
+        # to the OAuth log there would classify a key that failed for any
+        # reason on the OAuth limit's signal.
+        EXEC_FILE: ${{ steps.claude-review-api.outcome != 'skipped' && steps.claude-review-api.outputs.execution_file || (steps.claude-review-api.outcome == 'skipped' && steps.claude-review.outputs.execution_file) || '' }}
+      run: python3 "$ACTION_PATH/../../scripts/switch_claude_auth.py" classify api
+    # The chain ends in exclusion when the subscription ran out with no key
+    # to retry on, or the key ran out too. Anything else stays a failure.
+    - id: failure-code
+      if: always()
+      shell: bash
+      env:
+        OAUTH_LIMITED: ${{ steps.oauth-limit.outputs.limited }}
+        API_LIMITED: ${{ steps.api-limit.outputs.limited }}
+        API_KEY_PRESENT: ${{ inputs.anthropic_api_key != '' }}
+      run: |
+        set -euo pipefail
+        code=""
+        if [ "${OAUTH_LIMITED:-}" = true ] && [ "${API_KEY_PRESENT:-}" != true ]; then
+          code=included_quota_unavailable
+        elif [ "${API_LIMITED:-}" = true ]; then
+          code=included_quota_unavailable
+        fi
+        echo "failure_code=$code" >> "$GITHUB_OUTPUT"
