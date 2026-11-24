@@ -157,6 +157,11 @@ on:
         required: false
         default: ""
         description: "The Codex reviewer job's trusted quota-chain code (its codex_failure output); only included_quota_unavailable has an effect, listing codex in review_result.quota_unavailable (AT-3714)"
+      gemini_failure:
+        type: string
+        required: false
+        default: ""
+        description: "The Gemini reviewer job's trusted quota code (its gemini_failure output); only included_quota_unavailable has an effect, listing gemini in review_result.quota_unavailable (AT-3714)"
       skip_reason:
         type: string
         required: false
@@ -636,6 +641,7 @@ jobs:
           REVIEWER_FAILURE_COPILOT: ${{ inputs.copilot_failure }}
           REVIEWER_FAILURE_CLAUDE: ${{ inputs.claude_failure }}
           REVIEWER_FAILURE_CODEX: ${{ inputs.codex_failure }}
+          REVIEWER_FAILURE_GEMINI: ${{ inputs.gemini_failure }}
           # Killswitch: set repo var ALLOW_AUTO_APPROVE=true to enable auto-approve.
           # Default false -- operators can flip without editing workflow YAML.
           ALLOW_AUTO_APPROVE: ${{ vars.ALLOW_AUTO_APPROVE || 'false' }}

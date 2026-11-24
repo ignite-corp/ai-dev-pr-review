@@ -19,7 +19,7 @@ from google import genai
 from google.genai import types as genai_types
 
 from actual_models import FIELD as ACTUAL_MODELS_FIELD, sanitize
-from github_pr_support import is_json_array
+from github_pr_support import is_json_array, is_json_object
 from review_status import stamp_model_status, write_verdict_json
 
 REVIEW_FILE = "review-gemini.json"
@@ -49,6 +49,18 @@ def _max_output_tokens() -> int:
 
 MAX_OUTPUT_TOKENS = _max_output_tokens()
 
+# AT-3714: Gemini is API-only, so its quota chain is one step -- API quota
+# used up -> excluded. A 429 RESOURCE_EXHAUSTED is also a per-minute rate
+# limit (retried below), and only the QuotaFailure violations in the error's
+# details tell the two apart. These are the quotaIds that mean used up.
+# Empty by the owner's decision of 2026-11-25: only measured values are
+# listed and none has been measured, so a quota error stays a failure. The
+# fields are logged ("Gemini API error fields:") so one can be measured.
+_QUOTA_EXHAUSTED_IDS: frozenset[str] = frozenset()
+QUOTA_UNAVAILABLE_CODE = "included_quota_unavailable"
+_QUOTA_FAILURE_TYPE = "type.googleapis.com/google.rpc.QuotaFailure"
+_QUOTA_ID_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
 _MAX_RETRY_ATTEMPTS = 3
 _INITIAL_BACKOFF_SECONDS = 4.0
 _BACKOFF_MULTIPLIER = 2.0
@@ -68,6 +80,76 @@ def _is_rate_limit_error(exc: Exception) -> bool:
         if getattr(exc, attr, None) == 429:
             return True
     return False
+
+
+def _quota_ids(exc: Exception) -> list[str]:
+    """The quotaIds of the QuotaFailure violations in an API error's details.
+
+    Read from google-genai's structured `details` (the error response body),
+    never from the message, and empty on any shape that is not that.
+    """
+    details: object = getattr(exc, "details", None)
+    error = details.get("error") if is_json_object(details) else None
+    entries = error.get("details") if is_json_object(error) else None
+    if not is_json_array(entries):
+        return []
+    ids: list[str] = []
+    for entry in entries:
+        if not is_json_object(entry) or entry.get("@type") != _QUOTA_FAILURE_TYPE:
+            continue
+        violations = entry.get("violations")
+        if not is_json_array(violations):
+            continue
+        for violation in violations:
+            quota_id = violation.get("quotaId") if is_json_object(violation) else None
+            if isinstance(quota_id, str):
+                ids.append(quota_id)
+    return ids
+
+
+def quota_exhausted(exc: Exception) -> bool:
+    """A 429 RESOURCE_EXHAUSTED whose QuotaFailure names a listed quotaId."""
+    code = getattr(exc, "code", None)
+    return (
+        type(code) is int
+        and code == 429
+        and getattr(exc, "status", None) == "RESOURCE_EXHAUSTED"
+        and any(q in _QUOTA_EXHAUSTED_IDS for q in _quota_ids(exc))
+    )
+
+
+def _record_api_error(exc: Exception) -> None:
+    """Log an API error's structured fields, for measuring an exhaustion.
+
+    code, status and quotaIds only; the message is not printed here.
+    """
+    code = getattr(exc, "code", None)
+    status = getattr(exc, "status", None)
+    if code is None and status is None:
+        return
+    # Response-body strings reach a log GitHub scans for workflow commands,
+    # so only id-shaped values are printed: an int code, and a status and
+    # quotaIds that are whole matches of _QUOTA_ID_RE.
+    shown_status = (
+        status if isinstance(status, str) and _QUOTA_ID_RE.fullmatch(status) else "-"
+    )
+    quota_ids = (
+        ",".join(q if _QUOTA_ID_RE.fullmatch(q) else "-" for q in _quota_ids(exc))
+        or "-"
+    )
+    print(
+        f"Gemini API error fields: code={code if type(code) is int else '-'}"
+        f" status={shown_status}"
+        f" quota_ids={quota_ids}",
+        file=sys.stderr,
+    )
+
+
+def _write_failure_code(code: str) -> None:
+    output = os.environ.get("GITHUB_OUTPUT", "")
+    if output:
+        with open(output, "a", encoding="utf-8") as stream:
+            stream.write(f"failure_code={code}\n")
 
 
 def _call_gemini_with_retry(
@@ -399,6 +481,9 @@ def main() -> None:
         # value, otherwise derive from the early_exit flag.
         stamp_model_status(review)
     except Exception as exc:
+        _record_api_error(exc)
+        if quota_exhausted(exc):
+            _write_failure_code(QUOTA_UNAVAILABLE_CODE)
         print(
             f"::warning title=Gemini reviewer partial::Gemini reviewer hit"
             f" {type(exc).__name__}: {str(exc)[:200]}",
