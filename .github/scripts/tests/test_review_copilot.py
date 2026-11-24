@@ -208,64 +208,67 @@ def test_actual_model_comes_only_from_sanitized_sdk_usage(client, tmp_path):
     assert models == {"mai-code-1.1-flash"}
 
 
-# Two codes. Since AT-3525 (owner's decision, 2026-11-17) an account that
-# permits or records overage proceeds: the request is billed, not refused.
-# A report that cannot be read shows nothing about exhaustion, and only a
-# well-formed, used-up finite chat quota with no overage allowed is
-# included_quota_unavailable (AT-3487).
+# Two codes. Both overage settings are handled (AT-3525): an account that
+# permits overage proceeds and the request is billed, not refused; with
+# overage off, the owner's setting (AT-3710, 2026-11-24: subscription quota
+# only), a used-up quota stops the review until the monthly reset. A report
+# that cannot be read shows nothing about exhaustion, and only a well-formed,
+# used-up finite quota with no overage allowed is included_quota_unavailable
+# (AT-3487).
 EXHAUSTED = {"used_requests": 50, "remaining_percentage": 0}
 
+# Every preflight outcome that stops the review, as (change to a finite
+# quota, code). Each checked bucket is held to the same table (AT-3710).
+UNSUITABLE_QUOTA = [
+    (EXHAUSTED, "included_quota_unavailable"),
+    (
+        {"used_requests": 60, "remaining_percentage": 0},
+        "included_quota_unavailable",
+    ),
+    # Overage recorded earlier, but not allowed now: the next request
+    # is refused, not billed.
+    (EXHAUSTED | {"overage": 1}, "included_quota_unavailable"),
+    ({"entitlement_requests": 0}, "quota_unverifiable"),
+    ({"entitlement_requests": -1}, "quota_unverifiable"),
+    ({"used_requests": 50}, "quota_unverifiable"),
+    ({"used_requests": -1}, "quota_unverifiable"),
+    ({"remaining_percentage": 0}, "quota_unverifiable"),
+    ({"remaining_percentage": -1}, "quota_unverifiable"),
+    ({"remaining_percentage": 101}, "quota_unverifiable"),
+    ({"remaining_percentage": float("nan")}, "quota_unverifiable"),
+    ({"remaining_percentage": float("inf")}, "quota_unverifiable"),
+    # Malformed data is refused whatever overage says.
+    (
+        {"entitlement_requests": 0, "overage_allowed_with_exhausted_quota": True},
+        "quota_unverifiable",
+    ),
+    (
+        {"used_requests": 50, "usage_allowed_with_exhausted_quota": True},
+        "quota_unverifiable",
+    ),
+    # Used up with an unclear overage flag: fail closed, not into the
+    # exemption (AT-3525).
+    (
+        EXHAUSTED | {"overage_allowed_with_exhausted_quota": None},
+        "quota_unverifiable",
+    ),
+    (
+        EXHAUSTED | {"usage_allowed_with_exhausted_quota": None},
+        "quota_unverifiable",
+    ),
+    (EXHAUSTED | {"overage_allowed_with_exhausted_quota": 1}, "quota_unverifiable"),
+    (
+        EXHAUSTED
+        | {
+            "overage_allowed_with_exhausted_quota": True,
+            "usage_allowed_with_exhausted_quota": "true",
+        },
+        "quota_unverifiable",
+    ),
+]
 
-@pytest.mark.parametrize(
-    ("change", "code"),
-    [
-        (EXHAUSTED, "included_quota_unavailable"),
-        (
-            {"used_requests": 60, "remaining_percentage": 0},
-            "included_quota_unavailable",
-        ),
-        # Overage recorded earlier, but not allowed now: the next request
-        # is refused, not billed.
-        (EXHAUSTED | {"overage": 1}, "included_quota_unavailable"),
-        ({"entitlement_requests": 0}, "quota_unverifiable"),
-        ({"entitlement_requests": -1}, "quota_unverifiable"),
-        ({"used_requests": 50}, "quota_unverifiable"),
-        ({"used_requests": -1}, "quota_unverifiable"),
-        ({"remaining_percentage": 0}, "quota_unverifiable"),
-        ({"remaining_percentage": -1}, "quota_unverifiable"),
-        ({"remaining_percentage": 101}, "quota_unverifiable"),
-        ({"remaining_percentage": float("nan")}, "quota_unverifiable"),
-        ({"remaining_percentage": float("inf")}, "quota_unverifiable"),
-        # Malformed data is refused whatever overage says.
-        (
-            {"entitlement_requests": 0, "overage_allowed_with_exhausted_quota": True},
-            "quota_unverifiable",
-        ),
-        (
-            {"used_requests": 50, "usage_allowed_with_exhausted_quota": True},
-            "quota_unverifiable",
-        ),
-        # Used up with an unclear overage flag: fail closed, not into the
-        # exemption (AT-3525).
-        (
-            EXHAUSTED | {"overage_allowed_with_exhausted_quota": None},
-            "quota_unverifiable",
-        ),
-        (
-            EXHAUSTED | {"usage_allowed_with_exhausted_quota": None},
-            "quota_unverifiable",
-        ),
-        (EXHAUSTED | {"overage_allowed_with_exhausted_quota": 1}, "quota_unverifiable"),
-        (
-            EXHAUSTED
-            | {
-                "overage_allowed_with_exhausted_quota": True,
-                "usage_allowed_with_exhausted_quota": "true",
-            },
-            "quota_unverifiable",
-        ),
-    ],
-)
+
+@pytest.mark.parametrize(("change", "code"), UNSUITABLE_QUOTA)
 def test_unsuitable_quota_never_creates_session(client, tmp_path, change, code):
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
@@ -290,7 +293,7 @@ def test_unsuitable_quota_never_creates_session(client, tmp_path, change, code):
     ],
 )
 def test_overage_enabled_account_proceeds_to_create_session(client, tmp_path, change):
-    """AT-3525: the owner accepts overage billing (decision of 2026-11-17)."""
+    """AT-3525: with overage allowed, a used-up quota is billed, not refused."""
     _, instance, _ = client
     instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
         quota_snapshots={"chat": quota(**change)}
@@ -409,6 +412,91 @@ def test_missing_chat_beside_an_overage_bucket_is_unverifiable(client, tmp_path)
     with pytest.raises(adapter.ReviewFailure, match="^quota_unverifiable$"):
         asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
     instance.create_session.assert_not_awaited()
+
+
+# AT-3710: measured 2026-11-24 (runner diagnostic, CLI 1.0.105, SDK 1.0.28).
+# Chat and completions reported unlimited while the premium bucket was used up
+# with overage off, and the service then refused the send for quota.
+MEASURED_PREMIUM = {
+    "entitlement_requests": 1900,
+    "is_unlimited_entitlement": False,
+    "used_requests": 1900,
+    "remaining_percentage": 0.0,
+    "overage": 0.0,
+    "overage_allowed_with_exhausted_quota": False,
+    "usage_allowed_with_exhausted_quota": False,
+}
+
+
+def with_premium(premium):
+    snapshots = unlimited_snapshots()
+    snapshots.quota_snapshots["premium_interactions"] = premium
+    return snapshots
+
+
+def test_measured_used_up_premium_bucket_is_caught_before_send(
+    client, monkeypatch, tmp_path
+):
+    _, instance, session = client
+    instance.rpc.account.get_quota.return_value = with_premium(
+        quota(**MEASURED_PREMIUM)
+    )
+    payload, written = _run_main(monkeypatch, tmp_path)
+    assert payload["error"] == "included_quota_unavailable"
+    assert written == ["failure_code=included_quota_unavailable"]
+    instance.create_session.assert_not_awaited()
+    session.send_and_wait_typed.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("change", "code"), UNSUITABLE_QUOTA)
+def test_premium_bucket_is_held_to_the_chat_rules(client, tmp_path, change, code):
+    """Unlimited chat, and the premium bucket alone decides, in the same order."""
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = with_premium(quota(**change))
+    with pytest.raises(adapter.ReviewFailure, match=f"^{code}$"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {},
+        EXHAUSTED | {"overage_allowed_with_exhausted_quota": True},
+        EXHAUSTED | {"usage_allowed_with_exhausted_quota": True},
+    ],
+    ids=["remaining", "used-up-overage", "used-up-usage"],
+)
+def test_usable_premium_bucket_proceeds(client, tmp_path, change):
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = with_premium(quota(**change))
+    asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+    instance.create_session.assert_awaited_once()
+
+
+def test_used_up_chat_is_decided_before_the_premium_bucket(client, tmp_path):
+    _, instance, _ = client
+    instance.rpc.account.get_quota.return_value = AccountGetQuotaResult(
+        quota_snapshots={
+            "chat": quota(**EXHAUSTED),
+            "premium_interactions": quota(used_requests=50),
+        }
+    )
+    with pytest.raises(adapter.ReviewFailure, match="^included_quota_unavailable$"):
+        asyncio.run(adapter.run_review("p", "explicit", "/cli", tmp_path, set()))
+
+
+def test_unlimited_buckets_with_a_send_quota_refusal_are_caught_at_send(
+    client, monkeypatch, tmp_path
+):
+    """The 2026-11-16 (UTC) shape: every bucket unlimited, so only the send says so."""
+    _, instance, session = client
+    instance.rpc.account.get_quota.return_value = unlimited_snapshots()
+    session.send_and_wait_typed.side_effect = JsonRpcError(-32603, QUOTA_MESSAGE, None)
+    payload, written = _run_main(monkeypatch, tmp_path)
+    assert payload["error"] == "included_quota_unavailable"
+    assert written == ["failure_code=included_quota_unavailable"]
+    session.send_and_wait_typed.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -869,3 +957,97 @@ def test_a_json_rpc_error_outside_the_sdk_prints_no_code(
     assert (
         err == "::warning::Copilot review failed: review_failed:send (JsonRpcError)\n"
     )
+
+
+# AT-3710: the chat quota reports unlimited, so the preflight passes, and the
+# service then refuses the send with a quota message (measured 2026-11-16 and
+# 2026-11-24: JsonRpcError -32603, "You have exceeded your monthly quota
+# (Request ID: ...)"). That refusal is the included quota being gone, so it
+# takes the exemptible code; the message itself is still never printed.
+QUOTA_MESSAGE = f"You have exceeded your monthly quota (Request ID: 1:2) {SECRET}"
+
+
+def _impostor_with_quota_message() -> Exception:
+    impostor = type("JsonRpcError", (Exception,), {})
+    failure = impostor(QUOTA_MESSAGE)
+    failure.code = -32603  # type: ignore[attr-defined]
+    failure.message = QUOTA_MESSAGE  # type: ignore[attr-defined]
+    return failure
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        QUOTA_MESSAGE,
+        QUOTA_MESSAGE.upper(),
+        "you have exceeded your monthly quota",
+    ],
+    ids=["measured", "upper-case", "bare-phrase"],
+)
+def test_send_quota_rejection_is_included_quota_unavailable(
+    client, monkeypatch, tmp_path, capsys, message
+):
+    _, _, session = client
+    session.send_and_wait_typed.side_effect = JsonRpcError(-32603, message, SECRET)
+    payload, written = _run_main(monkeypatch, tmp_path)
+    log = capsys.readouterr()
+    assert payload["error"] == "included_quota_unavailable"
+    assert written == ["failure_code=included_quota_unavailable"]
+    assert log.err == (
+        "::warning::Copilot review failed: included_quota_unavailable"
+        " (JsonRpcError code=-32603)\n"
+    )
+    leaked = json.dumps(payload) + log.out + log.err
+    assert "exceeded" not in leaked.lower()
+    assert "SECRET" not in leaked
+    assert "ghp_" not in leaked
+    session.abort.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # A JSON-RPC error whose message names no quota.
+        JsonRpcError(-32603, f"Internal error {SECRET}", SECRET),
+        # The phrase only in data, which is never read.
+        JsonRpcError(-32603, SECRET, "You have exceeded your monthly quota"),
+        # A message that is not a string.
+        JsonRpcError(-32603, None, SECRET),  # type: ignore[arg-type]
+        # Words near the phrase but not the phrase.
+        JsonRpcError(-32603, f"quota service unavailable {SECRET}", None),
+        JsonRpcError(-32603, f"rate limit exceeded {SECRET}", None),
+        # The phrase from something that is not the SDK's JsonRpcError.
+        RuntimeError(QUOTA_MESSAGE),
+        _impostor_with_quota_message(),
+    ],
+    ids=[
+        "other-message",
+        "phrase-in-data",
+        "non-str-message",
+        "quota-word",
+        "rate-limit",
+        "not-json-rpc",
+        "impostor-class",
+    ],
+)
+def test_other_send_failures_stay_review_failed_send(
+    client, monkeypatch, tmp_path, capsys, failure
+):
+    _, _, session = client
+    session.send_and_wait_typed.side_effect = failure
+    payload, written = _run_main(monkeypatch, tmp_path)
+    log = capsys.readouterr()
+    assert payload["error"] == "review_failed:send"
+    assert written == ["failure_code=review_failed:send"]
+    leaked = json.dumps(payload) + log.out + log.err
+    assert "exceeded" not in leaked.lower()
+    assert "SECRET" not in leaked
+
+
+def test_quota_message_before_send_keeps_its_stage_code(client, monkeypatch, tmp_path):
+    """Only the send stage reads the message; earlier stages keep their code."""
+    _, instance, _ = client
+    instance.create_session.side_effect = JsonRpcError(-32603, QUOTA_MESSAGE, None)
+    payload, written = _run_main(monkeypatch, tmp_path)
+    assert payload["error"] == "review_failed:session"
+    assert written == ["failure_code=review_failed:session"]
