@@ -2365,6 +2365,7 @@ def format_summary(  # noqa: PLR0915
     sequential_bypass: bool = False,
     folded: dict[str, int | None] | None = None,
     dispositioned: Mapping[tuple[str, int], str] | None = None,
+    quota_unavailable: list[str] | None = None,
 ) -> str:
     """Build the headline as three independent axes (AT-2240).
 
@@ -2403,6 +2404,14 @@ def format_summary(  # noqa: PLR0915
     section of their own, so the body's ``- + **major**`` lines are the
     headline's N -- the equality the pr-response-cycle merge gate (c)
     checks. Omitted, every major is listed as unreviewed.
+
+    ``quota_unavailable`` is ``_quota_unavailable``'s list, the same one
+    review_result carries (AT-3714). It is rendered as a segment of the bold
+    Result -- ``| quota-exempt: copilot`` -- which is what the merge gate's
+    ``headline_roster`` reads to stop counting those reviewers as missing.
+    The names come only from that trusted list, never from a payload: the
+    ``(copilot: ...)`` reason further along is payload text, outside the
+    bold Result, and a gate must not read it as an exemption.
     """
     total = len(REVIEWERS)
     skip = dispositioned or {}
@@ -2457,6 +2466,10 @@ def format_summary(  # noqa: PLR0915
         label += f" | comment only | {coverage_segment}"
     else:
         label += f" | {coverage_segment}"
+
+    exempt = [name for name in REVIEWERS if name in (quota_unavailable or [])]
+    if exempt:
+        label += f" | {QUOTA_EXEMPT_SEGMENT}{', '.join(exempt)}"
 
     # The fold axis (AT-2553): findings a reviewer put in one comment -- a
     # round-cutoff summary, or the inline fallback -- are not threads, so a
@@ -3232,6 +3245,9 @@ def post_verdict(
 # from a payload's error, which is uploaded data a PR can shape. Only Copilot
 # publishes one; a reviewer absent here can never be listed.
 QUOTA_UNAVAILABLE_CODE = "included_quota_unavailable"
+# The headline segment that names them (AT-3714), matched by the
+# pr-response-cycle gate's headline_roster inside the bold Result only.
+QUOTA_EXEMPT_SEGMENT = "quota-exempt: "
 _TRUSTED_FAILURE_ENV = {"copilot": "REVIEWER_FAILURE_COPILOT"}
 
 
@@ -3577,6 +3593,7 @@ def _aggregate(result: dict[str, Any]) -> None:  # noqa: PLR0915
         sequential_bypass=sequential_bypass,
         folded=folded,
         dispositioned=dispositioned,
+        quota_unavailable=result["quota_unavailable"],
     )
     _post_recorded_verdict(
         result,

@@ -619,7 +619,7 @@ Converged is a property of a round's findings, not of a round number. **When a r
 
 Two things have to hold of a round before it can be the one that ends the lane, and both are default-deny.
 
-**It must be a full round.** A short-roster round reads as "no new findings" if nothing says otherwise, so a starved round looks like convergence — and the reviewer has been returning 2/3 intermittently on shared capacity, so starved rounds are the common case, not the exotic one. The fraction that decides it is the same one `headline_roster` already reads for kind (i): `N/M reviewers` and `N/M LLM responses` against `EXPECTED_REVIEWERS`. A round short on either is not a round, so it cannot be the round that shows nothing new — the gate refuses it as a verdict, and the lane must refuse it as convergence for the same reason.
+**It must be a full round.** A short-roster round reads as "no new findings" if nothing says otherwise, so a starved round looks like convergence — and the reviewer has been returning 2/3 intermittently on shared capacity, so starved rounds are the common case, not the exotic one. The fraction that decides it is the same one `headline_roster` already reads for kind (i): `N/M reviewers` and `N/M LLM responses` against `EXPECTED_REVIEWERS`. A round short on either is not a round, so it cannot be the round that shows nothing new — the gate refuses it as a verdict, and the lane must refuse it as convergence for the same reason. The one shortfall that is still a full round is a reviewer the aggregate names `quota-exempt` in the bold Result, within the approval quorum (AT-3714): `headline_roster` accepts it for both, so both treat it the same way.
 
 **The round report must state, beside the roster, whether the round's findings affect behaviour.** That statement is what made the tail-chasing shape visible in the first place, and nothing else enforces the paragraph above: without it, "these findings are all cosmetic" is an impression rather than a claim someone wrote down and can be held to. A report that does not say is not a report that said no.
 
@@ -1049,12 +1049,26 @@ remote_review_name() {
 # equal EXPECTED_REVIEWERS, the count step 8 has the operator read from the
 # review workflow: `2/2` is full only against a roster of two, and the
 # headline cannot say how many were configured.
+# One exception to every reviewer being present (AT-3714): a reviewer the
+# aggregate names in the bold Result's `| quota-exempt: <names>` segment
+# could not run because its quota is gone, and the runner's check already
+# accepts that round (AT-3497). Both numerators may then fall short by
+# exactly the exempt count, and no more, while the responses still reach
+# the aggregate's approval quorum, ceil(M/2)+1 of M >= 3. The segment is read
+# inside the bold Result only: the aggregate builds it from the code the
+# reviewer's own workflow step published, while the `(copilot: ...)` reason
+# after the bold is payload text, which no exemption is read from. Names
+# outside the four reviewers exempt nothing, and a name listed twice counts
+# once. Both are copies of what ai-dev-pr-review owns — the names of
+# reviewer_roster.py's SUPPORTED_REVIEWERS and the quorum of
+# aggregate_reviews.py's _has_approval_quorum — and
+# test_aggregate_quota_exempt_headline.py holds each copy to its source.
 # .github/scripts/gate_headline_drill.sh extracts this function from this
 # file by name and runs the measured headlines through it — edit it here, and
 # the drill follows.
 
 headline_roster() {
-  local h=$1 rv_n rv_m llm_n llm_m
+  local h=$1 rv_n rv_m llm_n llm_m bold names name exempt=0 seen=" "
   [[ ${EXPECTED_REVIEWERS:-} =~ ^[1-9][0-9]*$ ]] \
     || { echo "(a) kind (i) refused: EXPECTED_REVIEWERS is '${EXPECTED_REVIEWERS:-}', not a positive count — fill it from the review workflow (step 8) before the roster can be judged"; return 1; }
   local result_re='^\*\*Result: \[(OK|!)\] Approved( with ([0-9]+) unreviewed major issue\(s\))?( \|[^*]*)?\*\* -- '
@@ -1069,13 +1083,23 @@ headline_roster() {
   [[ $h =~ $llm_re ]] \
     || { echo "(a) kind (i) refused: no 'N/M LLM responses' fraction in the aggregate headline — no roster, no verdict: $h"; return 1; }
   llm_n=${BASH_REMATCH[1]}; llm_m=${BASH_REMATCH[2]}
-  echo "(a) kind (i) roster: reviewers $rv_n/$rv_m, LLM responses $llm_n/$llm_m, unreviewed major issues $agg_majors"
+  bold=${h%%\*\* -- *}
+  local exempt_re=' \| quota-exempt: ((claude|codex|gemini|copilot)(, (claude|codex|gemini|copilot))*)( \||$)'
+  if [[ $bold =~ $exempt_re ]]; then
+    names=${BASH_REMATCH[1]}
+    for name in ${names//,/ }; do
+      [[ $seen == *" $name "* ]] || { seen+="$name "; exempt=$(( exempt + 1 )); }
+    done
+  fi
+  echo "(a) kind (i) roster: reviewers $rv_n/$rv_m, LLM responses $llm_n/$llm_m, quota-exempt $exempt, unreviewed major issues $agg_majors"
   [[ $rv_m -eq $EXPECTED_REVIEWERS && $llm_m -eq $EXPECTED_REVIEWERS ]] \
     || { echo "(a) kind (i) refused: denominators $rv_m reviewers / $llm_m LLM responses, but $EXPECTED_REVIEWERS reviewers are configured — the round was not the configured round"; return 1; }
-  [[ $rv_n -eq $rv_m ]] \
-    || { echo "(a) kind (i) refused: $rv_n/$rv_m reviewers — a configured reviewer did not report (AT-2511); the job is green, the round is not complete"; return 1; }
-  [[ $llm_n -eq $llm_m ]] \
-    || { echo "(a) kind (i) refused: $llm_n/$llm_m LLM responses — a reviewer ran and produced no response; the job is green, the round is not complete"; return 1; }
+  [[ $rv_n -eq $((rv_m - exempt)) ]] \
+    || { echo "(a) kind (i) refused: $rv_n/$rv_m reviewers with $exempt quota-exempt — a configured reviewer did not report (AT-2511); the job is green, the round is not complete"; return 1; }
+  [[ $llm_n -eq $((llm_m - exempt)) ]] \
+    || { echo "(a) kind (i) refused: $llm_n/$llm_m LLM responses with $exempt quota-exempt — a reviewer ran and produced no response; the job is green, the round is not complete"; return 1; }
+  (( exempt == 0 )) || (( rv_m >= 3 && rv_n >= (rv_m + 1) / 2 + 1 )) \
+    || { echo "(a) kind (i) refused: $rv_n/$rv_m reviewers with $exempt quota-exempt — under the approval quorum ceil($rv_m/2)+1 of a roster of at least three"; return 1; }
   return 0
 }
 

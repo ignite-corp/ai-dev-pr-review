@@ -118,7 +118,11 @@ and the message is never printed.
 
 The adapter publishes its failure code as a step output, and only
 `included_quota_unavailable` lists Copilot in the aggregate's
-`review_result.quota_unavailable` (AT-3487). `quota_unverifiable` is not
+`review_result.quota_unavailable` (AT-3487). The same list is named in the
+aggregate headline's bold Result, as `| quota-exempt: copilot`, which is what
+the pr-response-cycle merge gate reads: there a quota-exempt reviewer is not
+missing, as long as the responses still reach ceil(N/2)+1 of N >= 3 (AT-3714).
+`quota_unverifiable` is not
 exempted, since a report that cannot be read shows nothing about whether the
 quota ran out. This preflight supports the tested request-quota account
 contract; it does not establish coverage of credit-based plans. Auto may

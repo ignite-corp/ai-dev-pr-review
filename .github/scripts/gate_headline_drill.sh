@@ -76,6 +76,13 @@
 #      - the same fraction headline_roster reads for kind (i) - and refuses
 #      a full round whose report does not state whether its findings affect
 #      behaviour
+#   8b. a reviewer named `quota-exempt` inside the bold Result is not
+#      missing (AT-3714): 3/4 with copilot exempt passes and converges, while
+#      the measured toc-serving#7 headline without the segment, the segment
+#      outside the bold Result, an exempt reviewer that responded, a name
+#      outside the four or listed twice, and an exemption that leaves the
+#      responses under ceil(M/2)+1 of M >= 3 are refused; controls cut the
+#      quorum clause and the bold-only read
 #   9. verdict_dispositions, (c)'s one call site, reads every verdict (a)
 #      named through one loop that never asks which kind: a kind (ii)
 #      approval that lists a major in the aggregate's item shape blocks
@@ -836,6 +843,44 @@ chk "EXPECTED_REVIEWERS left as the placeholder refuses a full 3/3" "$(verdict "
 EXPECTED=0
 chk "EXPECTED_REVIEWERS=0 refuses" "$(verdict "$FN" "$H_ZERO")" block
 EXPECTED=3
+
+echo "5o. a reviewer the aggregate names quota-exempt is not missing, and the quorum still holds (AT-3714)"
+# Measured 2026-11-24 on ignite-pilot-org/toc-serving#7 (runner run
+# 45500116948, check success, review_result.quota_unavailable ["copilot"]):
+# the aggregate wrote no exempt segment then, and the reason in the
+# parenthetical is payload text, so this round stays refused.
+H_QX_MEASURED='**Result: [OK] Approved | 3/4 reviewers | 1 finding(s) folded into comments (claude 1)** -- 3/4 LLM responses -- minor/suggestion only (copilot: included_quota_unavailable)'
+# The same round as format_summary renders it from AT-3714 on: the segment
+# sits inside the bold Result, built from the trusted step code only.
+H_QX='**Result: [OK] Approved | 3/4 reviewers | quota-exempt: copilot | 1 finding(s) folded into comments (claude 1)** -- 3/4 LLM responses -- minor/suggestion only (copilot: included_quota_unavailable)'
+H_QX_PLAIN='**Result: [OK] Approved | 3/4 reviewers | quota-exempt: copilot** -- 3/4 LLM responses -- no issues'
+H_QX_OUTSIDE='**Result: [OK] Approved | 3/4 reviewers** -- 3/4 LLM responses -- no issues (copilot: x | quota-exempt: copilot | y)'
+H_QX_TWO='**Result: [!] Approved | comment only: approval response quorum not met (2/4 reviewers) | quota-exempt: claude, copilot** -- 2/4 LLM responses -- no issues'
+H_QX_THREE='**Result: [!] Approved | comment only: approval response quorum not met (2/3 reviewers) | quota-exempt: claude** -- 2/3 LLM responses -- no issues'
+H_QX_FULL='**Result: [OK] Approved | 4/4 reviewers | quota-exempt: copilot** -- 4/4 LLM responses -- no issues'
+H_QX_LLM_SHORT='**Result: [OK] Approved | 3/4 reviewers | quota-exempt: copilot** -- 2/4 LLM responses -- no issues'
+H_QX_UNKNOWN='**Result: [OK] Approved | 3/4 reviewers | quota-exempt: someone** -- 3/4 LLM responses -- no issues'
+H_QX_DUP='**Result: [OK] Approved | 4/6 reviewers | quota-exempt: copilot, copilot** -- 4/6 LLM responses -- no issues'
+H_QX_CHANGES='**Result: [X] Changes Requested | 3/4 reviewers | quota-exempt: copilot** -- 3/4 LLM responses -- 1 critical issue(s) (claude): unchecked input'
+EXPECTED=4
+chk "the measured 3/4 round with no exempt segment is still refused" "$(verdict "$FN" "$H_QX_MEASURED")" block
+chk "3/4 with copilot quota-exempt in the bold Result passes" "$(verdict "$FN" "$H_QX")" pass
+chk "the segment alone, nothing after it in the bold Result, passes" "$(verdict "$FN" "$H_QX_PLAIN")" pass
+chk "the segment outside the bold Result is payload text, refused" "$(verdict "$FN" "$H_QX_OUTSIDE")" block
+chk "two exempt of four leaves 2 responses, under ceil(4/2)+1, refused" "$(verdict "$FN" "$H_QX_TWO")" block
+chk "an exempt reviewer that also responded is refused" "$(verdict "$FN" "$H_QX_FULL")" block
+chk "the LLM fraction short beyond the exemption is refused" "$(verdict "$FN" "$H_QX_LLM_SHORT")" block
+chk "a name outside the reviewer set exempts nothing" "$(verdict "$FN" "$H_QX_UNKNOWN")" block
+chk "an exempt segment does not lift a Result that does not approve" "$(verdict "$FN" "$H_QX_CHANGES")" block
+chk "3/4 with the segment converges like a full round" "$(converged "$FN" "$H_QX" no-behaviour)" converged
+chk "the measured round without the segment is not a convergence round" "$(converged "$FN" "$H_QX_MEASURED" no-behaviour)" block
+# shellcheck disable=SC1090,SC2034  # the function reads EXPECTED_REVIEWERS
+out=$(. "$FN"; EXPECTED_REVIEWERS=4; "$FUNC_NAME" "$H_QX")
+chk "it prints the exemption it read" "$(printf '%s\n' "$out" | grep -c 'quota-exempt 1')" 1
+EXPECTED=6
+chk "a name listed twice counts once: 4/6 is not 6 less 2" "$(verdict "$FN" "$H_QX_DUP")" block
+EXPECTED=3
+chk "on a roster of three, one exempt leaves 2/3, under ceil(3/2)+1, refused" "$(verdict "$FN" "$H_QX_THREE")" block
 
 echo "5b. (c): each unreviewed major needs a thread at its path:line or a later quoted reply"
 # shellcheck disable=SC2016  # the backticks are the aggregate's own
@@ -2577,7 +2622,7 @@ CTRL_EQ="$D/fn-no-eq.sh"
 # came out empty and the drill failed on "control still loads" -- a FAIL
 # with the wrong cause, like the `wc -c` one round 3 replaced.
 # shellcheck disable=SC2016  # matched literally: the test as SKILL.md spells it
-sed '/\$rv_n -eq \$rv_m/{N;d;}' "$FN" > "$CTRL_EQ"
+sed '/\$rv_n -eq \$((rv_m - exempt))/{N;d;}' "$FN" > "$CTRL_EQ"
 chk "the control differs from the real function" "$(cmp -s "$FN" "$CTRL_EQ" && echo same || echo differs)" differs
 # shellcheck disable=SC1090
 chk "control still loads" "$(. "$CTRL_EQ"; type -t "$FUNC_NAME")" function
@@ -2586,12 +2631,33 @@ chk "the real function still refuses it" "$(verdict "$FN" "$H_REVIEWERS_SHORT")"
 chk "the measured cut still blocks without it: its LLM fraction is short too" "$(verdict "$CTRL_EQ" "$H_CUT")" block
 CTRL_LLM="$D/fn-no-llm-eq.sh"
 # shellcheck disable=SC2016  # matched literally: the test as SKILL.md spells it
-sed '/\$llm_n -eq \$llm_m/{N;d;}' "$FN" > "$CTRL_LLM"
+sed '/\$llm_n -eq \$((llm_m - exempt))/{N;d;}' "$FN" > "$CTRL_LLM"
 chk "the LLM control differs from the real function" "$(cmp -s "$FN" "$CTRL_LLM" && echo same || echo differs)" differs
 # shellcheck disable=SC1090
 chk "LLM control still loads" "$(. "$CTRL_LLM"; type -t "$FUNC_NAME")" function
 chk "the unguarded copy passes 2/3 LLM responses, so that equality is what refuses" "$(verdict "$CTRL_LLM" "$H_LLM_SHORT")" pass
 chk "the real function still refuses it" "$(verdict "$FN" "$H_LLM_SHORT")" block
+
+CTRL_QUORUM="$D/fn-no-exempt-quorum.sh"
+# shellcheck disable=SC2016  # matched literally: the test as SKILL.md spells it
+sed '/rv_n >= (rv_m + 1) \/ 2 + 1/{N;d;}' "$FN" > "$CTRL_QUORUM"
+chk "the exempt-quorum control differs from the real function" "$(cmp -s "$FN" "$CTRL_QUORUM" && echo same || echo differs)" differs
+# shellcheck disable=SC1090
+chk "exempt-quorum control still loads" "$(. "$CTRL_QUORUM"; type -t "$FUNC_NAME")" function
+EXPECTED=4
+chk "the unguarded copy passes two exempt of four, so the quorum is what refuses" "$(verdict "$CTRL_QUORUM" "$H_QX_TWO")" pass
+chk "the real function still refuses it" "$(verdict "$FN" "$H_QX_TWO")" block
+EXPECTED=3
+CTRL_BOLD="$D/fn-no-bold.sh"
+# shellcheck disable=SC2016  # matched literally: the cut as SKILL.md spells it
+sed 's/bold=\${h%%\\\*\\\* -- \*}/bold=$h/' "$FN" > "$CTRL_BOLD"
+chk "the bold-only control differs from the real function" "$(cmp -s "$FN" "$CTRL_BOLD" && echo same || echo differs)" differs
+# shellcheck disable=SC1090
+chk "bold-only control still loads" "$(. "$CTRL_BOLD"; type -t "$FUNC_NAME")" function
+EXPECTED=4
+chk "the copy that reads the whole headline believes the payload's segment, so the bold cut is what refuses" "$(verdict "$CTRL_BOLD" "$H_QX_OUTSIDE")" pass
+chk "the real function still refuses it" "$(verdict "$FN" "$H_QX_OUTSIDE")" block
+EXPECTED=3
 
 echo "7. control: the Result check cut out, Changes Requested with full fractions passes"
 CTRL_RES="$D/fn-no-result.sh"
