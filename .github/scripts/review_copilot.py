@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Literal, Self
 
 from copilot import CopilotClient, RuntimeConnection
-from copilot.generated.rpc import AccountGetQuotaRequest, PermissionDecisionReject
+from copilot.generated.rpc import (
+    AccountGetQuotaRequest,
+    AccountQuotaSnapshot,
+    PermissionDecisionReject,
+)
 from copilot.session_events import AssistantUsageData, SessionEvent
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -94,6 +98,27 @@ def is_sdk_json_rpc_error(exc: BaseException) -> bool:
     return cls.__name__ == "JsonRpcError" and cls.__module__.startswith("copilot.")
 
 
+# Phrases the Copilot service puts in a send-stage JsonRpcError when it refuses
+# the request for quota (AT-3710, owner's decision of 2026-11-24). Measured
+# 2026-11-16 and 2026-11-24 with CLI 1.0.105 / SDK 1.0.28: code -32603,
+# "You have exceeded your monthly quota (Request ID: ...)". The preflight
+# catches the 2026-11-24 shape from the premium bucket; this is the backstop
+# for the 2026-11-16 one, where every bucket reported unlimited. Only measured
+# text is listed; anything else stays review_failed:send, the safe direction.
+_SEND_QUOTA_PHRASES = ("you have exceeded your monthly quota",)
+
+
+def is_send_quota_rejection(exc: BaseException) -> bool:
+    """Whether the service refused the send for quota. Reads, never prints."""
+    if not is_sdk_json_rpc_error(exc):
+        return False
+    message = getattr(exc, "message", None)
+    if not isinstance(message, str):
+        return False
+    folded = message.casefold()
+    return any(phrase in folded for phrase in _SEND_QUOTA_PHRASES)
+
+
 def exception_detail(exc: BaseException) -> str:
     detail = exception_class(exc)
     if is_sdk_json_rpc_error(exc):
@@ -165,33 +190,17 @@ async def verify_cli(cli: str, root: Path, env: dict[str, str]) -> None:
         raise ReviewFailure("cli_version_mismatch")
 
 
-async def require_included_quota(client: CopilotClient, token: str) -> None:
-    auth = await client.get_auth_status()
-    if not auth.isAuthenticated:
-        raise ReviewFailure("authentication_failed")
-    result = await client.rpc.account.get_quota(
-        AccountGetQuotaRequest(git_hub_token=token), timeout=CONTROL_TIMEOUT
-    )
-    # Two codes, because a target check exempts exactly one of them
-    # (AT-3487): included_quota_unavailable, and only for a chat quota that
-    # is well formed, used up and allows no overage. Overage itself is no
-    # longer refused (AT-3525, owner's decision of 2026-11-17): per the
-    # SDK 1.0.28 flag docs the service then allows additional usage,
-    # which the owner expects to be billed and accepts; not yet measured.
-    # A missing or inconsistent report shows nothing about exhaustion, so
-    # it fails closed without the exemption.
-    chat = result.quota_snapshots.get("chat")
-    if chat is None:
-        raise ReviewFailure("quota_unverifiable")
+def check_quota_snapshot(snapshot: AccountQuotaSnapshot) -> None:
+    """Raise the code for one quota bucket that cannot carry a review."""
     # An unlimited plan has no finite entitlement to check. Decide it from the
     # flag alone: a paid account measured 2026-11-16 reported entitlement 0
     # with the flag set, not the -1 the SDK documents. Anything but a literal
     # True, a missing field included, is a finite plan.
-    if getattr(chat, "is_unlimited_entitlement", False) is True:
+    if getattr(snapshot, "is_unlimited_entitlement", False) is True:
         return
-    entitlement = chat.entitlement_requests
-    used = chat.used_requests
-    remaining = chat.remaining_percentage
+    entitlement = snapshot.entitlement_requests
+    used = snapshot.used_requests
+    remaining = snapshot.remaining_percentage
     # The SDK's parser already refuses non-numbers and booleans.
     if (
         not all(math.isfinite(value) for value in (entitlement, used, remaining))
@@ -207,8 +216,8 @@ async def require_included_quota(client: CopilotClient, token: str) -> None:
     if not used_up:
         return
     flags = (
-        getattr(chat, "overage_allowed_with_exhausted_quota", None),
-        getattr(chat, "usage_allowed_with_exhausted_quota", None),
+        getattr(snapshot, "overage_allowed_with_exhausted_quota", None),
+        getattr(snapshot, "usage_allowed_with_exhausted_quota", None),
     )
     # Once the quota is used up the flags decide between a billed request and
     # the exemption, so an unclear flag fails closed, not into the exemption.
@@ -216,6 +225,37 @@ async def require_included_quota(client: CopilotClient, token: str) -> None:
         raise ReviewFailure("quota_unverifiable")
     if not any(flags):
         raise ReviewFailure("included_quota_unavailable")
+
+
+async def require_included_quota(client: CopilotClient, token: str) -> None:
+    auth = await client.get_auth_status()
+    if not auth.isAuthenticated:
+        raise ReviewFailure("authentication_failed")
+    result = await client.rpc.account.get_quota(
+        AccountGetQuotaRequest(git_hub_token=token), timeout=CONTROL_TIMEOUT
+    )
+    # Two codes, because a target check exempts exactly one of them
+    # (AT-3487): included_quota_unavailable, here only for a quota that is
+    # well formed, used up and allows no overage. Both overage settings are
+    # handled (AT-3525): with overage allowed the service allows additional
+    # usage (SDK 1.0.28 flag docs), billed; with it off, the owner's setting
+    # (AT-3710, 2026-11-24: subscription quota only), a used-up quota is
+    # included_quota_unavailable and Copilot sits out until the monthly
+    # reset. A missing or inconsistent report shows nothing about
+    # exhaustion, so it fails closed without the exemption.
+    snapshots = result.quota_snapshots
+    chat = snapshots.get("chat")
+    if chat is None:
+        raise ReviewFailure("quota_unverifiable")
+    check_quota_snapshot(chat)
+    # The chat bucket can report unlimited while premium requests are used
+    # up and the service refuses the send for quota (measured 2026-11-24,
+    # AT-3710), so that bucket is held to the same rules. It is optional: an
+    # account that reports none leaves the send-stage backstop to catch a
+    # refusal (is_send_quota_rejection).
+    premium = snapshots.get("premium_interactions")
+    if premium is not None:
+        check_quota_snapshot(premium)
 
 
 async def run_review(
@@ -269,9 +309,14 @@ async def run_review(
                 )
             try:
                 with stage(ReviewFailure("review_failed:send")):
-                    return await session.send_and_wait_typed(
-                        prompt, Review, timeout=REVIEW_TIMEOUT
-                    )
+                    try:
+                        return await session.send_and_wait_typed(
+                            prompt, Review, timeout=REVIEW_TIMEOUT
+                        )
+                    except Exception as exc:
+                        if is_send_quota_rejection(exc):
+                            raise ReviewFailure("included_quota_unavailable") from exc
+                        raise
             except BaseException:
                 # A failed/cancelled wait may leave work running. Abort is
                 # best effort and must not replace the original send error.

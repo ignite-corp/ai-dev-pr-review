@@ -67,32 +67,55 @@ of the verdict file and the step output.
 from SDK usage events, or `unknown` when the service supplies no such event.
 
 The model is fixed to Auto. Each invocation sends at most one review request,
-after checking that the explicit credential is authenticated and that its chat
-quota either has included requests remaining or allows overage. A chat quota
-that reports `is_unlimited_entitlement` as true is accepted without the
-included-request checks, since an unlimited plan has no finite entitlement.
-The decision reads the flag, not the number: a paid account measured
-2026-11-16 with CLI 1.0.105 / SDK 1.0.28 reported entitlement `0` with the
-flag set, not the SDK-documented `-1`. Overage is not refused (AT-3525,
-owner's decision of 2026-11-17): an account whose chat quota allows overage
-proceeds; overage recorded earlier does not by itself let an exhausted quota
-proceed. That the service then bills such a request instead of refusing it is
-the meaning the SDK gives the flags (`overage_allowed_with_exhausted_quota`:
-"Whether additional usage is allowed when quota is exhausted", SDK 1.0.28
-`copilot/generated/rpc.py`) and the owner's expectation; no billed request has
-been measured yet. Until AT-3525 such an account failed with
-`overage_enabled`; that code is retired. A finite chat quota whose included
-requests are used up, with `used_requests` at or above `entitlement_requests`
-and `remaining_percentage` at `0`, fails with `included_quota_unavailable`
-only when it allows no overage (`overage_allowed_with_exhausted_quota` and
-`usage_allowed_with_exhausted_quota` both `false`), because with overage the
-request is expected to be billed rather than refused. If either flag is
-missing or not a boolean on a used-up quota, it fails closed with
-`quota_unverifiable`. A missing chat quota, or one that is reported
-inconsistently (a non-finite, negative or out-of-range value, an entitlement
-of `0` on a finite plan, or the two counters disagreeing about exhaustion),
-fails closed with `quota_unverifiable` whatever its overage settings, and a
-missing unlimited flag counts as a finite plan.
+after checking that the explicit credential is authenticated and that each
+quota bucket it checks either has included requests remaining or allows
+overage. It checks the `chat` bucket, which must be present, and the
+`premium_interactions` bucket when the account reports one (AT-3710). Each is
+held to the same rules, in the same order, chat first. A bucket that reports
+`is_unlimited_entitlement` as true is accepted without the included-request
+checks, since an unlimited plan has no finite entitlement. The decision reads
+the flag, not the number: a paid account measured 2026-11-16 with
+CLI 1.0.105 / SDK 1.0.28 reported entitlement `0` with the flag set, not the
+SDK-documented `-1`.
+
+Both overage settings are handled. **With overage allowed**, a bucket whose
+included requests are used up still proceeds (AT-3525). That the service then
+bills such a request instead of refusing it is the meaning the SDK gives the
+flags (`overage_allowed_with_exhausted_quota`: "Whether additional usage is
+allowed when quota is exhausted", SDK 1.0.28 `copilot/generated/rpc.py`); no
+billed request has been measured. **With overage off**, a used-up bucket fails
+with `included_quota_unavailable`, and Copilot sits out until the monthly
+reset while the other reviewers run. Overage off is the account owner's
+setting (owner's decision of 2026-11-24, AT-3710): reviews use the subscription
+quota only. Overage recorded earlier does not by itself let a used-up quota
+proceed. Until AT-3525 an account with overage allowed failed with
+`overage_enabled`; that code is retired.
+
+A finite bucket is used up when `used_requests` is at or above
+`entitlement_requests` and `remaining_percentage` is `0`. It fails with
+`included_quota_unavailable` only when it allows no overage
+(`overage_allowed_with_exhausted_quota` and
+`usage_allowed_with_exhausted_quota` both `false`). If either flag is missing
+or not a boolean on a used-up bucket, it fails closed with
+`quota_unverifiable`. A missing chat bucket fails closed with
+`quota_unverifiable` whatever its overage settings. So does a checked bucket
+reported inconsistently: a non-finite, negative or out-of-range value, an
+entitlement of `0` on a finite plan, or the two counters disagreeing about
+exhaustion. A missing unlimited flag counts as a finite plan.
+
+The chat bucket alone was not enough. Measured 2026-11-24, chat reported
+unlimited while `premium_interactions` was at 1900 of 1900 with overage off,
+and the service refused the send. The premium check catches that before any
+request is sent. On 2026-11-16 (UTC) every bucket reported unlimited
+and the service still refused the send with JSON-RPC `-32603` and the message
+"You have exceeded your monthly quota (Request ID: ...)". The send stage is
+the backstop for that case: a send that fails with the SDK's `JsonRpcError`
+whose message contains that phrase, compared case-insensitively, fails with
+`included_quota_unavailable` instead of `review_failed:send` (AT-3710). That
+decision rests on the service's message text, not on model output. Only the
+measured phrase is listed. Any other send failure stays `review_failed:send`,
+and the message is never printed.
+
 The adapter publishes its failure code as a step output, and only
 `included_quota_unavailable` lists Copilot in the aggregate's
 `review_result.quota_unavailable` (AT-3487). `quota_unverifiable` is not
@@ -100,10 +123,10 @@ exempted, since a report that cannot be read shows nothing about whether the
 quota ran out. This preflight supports the tested request-quota account
 contract; it does not establish coverage of credit-based plans. Auto may
 choose a billable model; Auto itself is no no-charge guarantee. There is no
-paid fallback, provider key or adapter retry. Overage billing is the account
-owner's accepted cost; the preflight cannot cap it or prevent a concurrent
-account settings change. Model selection and quota availability remain
-service-controlled.
+paid fallback, provider key or adapter retry. Where overage is allowed, its
+billing is the account owner's cost; the preflight cannot cap it or prevent a
+concurrent account settings change. Model selection and quota availability
+remain service-controlled.
 
 The runtime receives isolated directories and a minimal environment, with no
 ambient login or inherited provider credentials. Filesystem tools, custom tools
