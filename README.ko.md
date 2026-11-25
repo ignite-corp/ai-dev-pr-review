@@ -35,7 +35,7 @@ Actions·로컬·cross-repo 경로 사이의 경계는 [`docs/tasks/AT-2564/desi
 
 ## 소비자 레포에 필요한 시크릿
 
-기본 3인 구성에서는 `GOOGLE_AI_API_KEY`가 필수이며, Gemini를 선택하지 않으면 필요하지 않습니다. Codex 리뷰어는 `CODEX_ACCESS_TOKEN` 또는 `OPENAI_API_KEY` 중 하나 이상이 필요하며, 구독 한도 소진 시 API로 전환하려면 둘 다 설정하세요([Codex 인증](docs/codex-auth.md) 참고). Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않으므로 — 동일 조직 여부와 무관하게 명시적으로 전달하세요.
+기본 3인 구성에서는 `GOOGLE_AI_API_KEY`가 필수이며, Gemini를 선택하지 않으면 필요하지 않습니다. Codex 리뷰어는 `CODEX_ACCESS_TOKEN` 또는 `OPENAI_API_KEY` 중 하나 이상이 필요하며, 구독 한도 소진 시 API로 전환하려면 둘 다 설정하세요([Codex 인증](docs/codex-auth.md) 참고). Claude 리뷰어는 `CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY` 중 **하나 이상**이 필요합니다(아래 [Claude 리뷰어 인증](#claude-리뷰어-인증-oauth-토큰-vs-api-키) 참고). 동일 조직이어도 명시적으로 전달하세요. `secrets: inherit`는 조직 간(cross-org)에서 동작하지 않고, 같은 조직 안에서는 소비자 레포가 읽을 수 있는 모든 조직·레포 시크릿(배포용·fleet App 키 포함)을 오케스트레이터에 넘깁니다(AT-3714). Copilot을 구성에 넣었을 때 찾을 수 있도록 `COPILOT_GITHUB_TOKEN`도 전달하세요. 이 시크릿을 선언한 첫 버전인 v1.22.0 이상의 오케스트레이터가 필요합니다.
 
 | 시크릿 | 필수 | 사용처 | 비고 |
 |---|---|---|---|
@@ -117,6 +117,7 @@ jobs:
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 ```
 
 조직 간 변형을 포함한 전체 파일은 `examples/consumer-thin-trigger.yml`를 참고하세요.
@@ -260,7 +261,13 @@ thin trigger가 호출하는 워크플로우인 `base-ai-review-orchestrator.yml
 jobs:
   review:
     uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
-    secrets: inherit
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 
   gate:
     needs: review

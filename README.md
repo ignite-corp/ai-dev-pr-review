@@ -35,7 +35,7 @@ The boundary between the Actions, local and cross-repo paths is recorded in [`do
 
 ## Required consumer-repo secrets
 
-`GOOGLE_AI_API_KEY` is required for the default three-reviewer roster; a roster without Gemini does not require it. Codex needs `CODEX_ACCESS_TOKEN` or `OPENAI_API_KEY`; keep both for quota fallback. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly — `secrets: inherit` does NOT work cross-org, same-org or not.
+`GOOGLE_AI_API_KEY` is required for the default three-reviewer roster; a roster without Gemini does not require it. Codex needs `CODEX_ACCESS_TOKEN` or `OPENAI_API_KEY`; keep both for quota fallback. The Claude reviewer needs at least one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (see [Claude reviewer auth](#claude-reviewer-auth-oauth-token-vs-api-key) below). Pass them explicitly, same-org included: `secrets: inherit` does NOT work cross-org, and within one org it would hand the orchestrator every org and repository secret the consumer can read, deploy and fleet App keys included (AT-3714). Forward `COPILOT_GITHUB_TOKEN` too, so a roster that selects Copilot finds it; it needs an orchestrator at v1.22.0 or later, the first to declare it.
 
 | Secret | Required | Used by | Notes |
 |---|---|---|---|
@@ -128,6 +128,7 @@ jobs:
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 ```
 
 See `examples/consumer-thin-trigger.yml` for the full file with cross-org variant.
@@ -272,7 +273,13 @@ Gate snippet — block a merge when a reviewer is missing for a reason that is n
 jobs:
   review:
     uses: ignite-corp/ai-dev-pr-review/.github/workflows/base-ai-review-orchestrator.yml@v1
-    secrets: inherit
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 
   gate:
     needs: review

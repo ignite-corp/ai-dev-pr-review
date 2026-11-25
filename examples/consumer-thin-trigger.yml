@@ -84,18 +84,26 @@ jobs:
     secrets:
       # Explicit mapping is required even within ignite-corp because
       # `secrets: inherit` ties the consumer to the same org AND prevents
-      # the consumer from auditing which secrets the workflow uses.
+      # the consumer from auditing which secrets the workflow uses. It
+      # would also hand the orchestrator every org and repository secret
+      # this repository can read, deploy and fleet App keys included,
+      # none of which a review needs (AT-3714).
+      # COPILOT_GITHUB_TOKEN is read only when the roster selects
+      # copilot; it needs an orchestrator at v1.22.0 or later, which
+      # declares it.
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 
 # --- Variant 2: cross-org (any external org on its own minutes) ---
 #
 # Prerequisites for cross-org:
 #   1. Org admin grants the consumer repo access to org-level secrets
-#      OPENAI_API_KEY, GOOGLE_AI_API_KEY, CLAUDE_CODE_OAUTH_TOKEN.
+#      OPENAI_API_KEY, GOOGLE_AI_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, and
+#      COPILOT_GITHUB_TOKEN when the roster selects copilot.
 #      Settings -> Organization -> Secrets and variables -> Actions
 #      -> add each secret and set "Repository access" to include this repo.
 #   2. Org admin allows `ignite-corp/ai-dev-pr-review` in
@@ -129,3 +137,4 @@ jobs:
 #       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
