@@ -177,6 +177,17 @@ class TestCompositeDefault:
         ):
             assert is_allowed_bot(existing, default), f"{existing} must remain admitted"
 
+    def test_default_admits_the_renamed_infra_automation_app(self) -> None:
+        # App 4179802 was renamed pilot-cd-dispatcher -> ignite-ai-infra-automation
+        # on 2026-11-25; the actor slug follows the rename, so Claude refused
+        # every PR it authored (ai-dev-infra-common#1258). The old slug stays
+        # listed for runs whose actor is still recorded under it.
+        doc = _load_yaml(ACTION_YML)
+        default = doc["inputs"]["allowed_bots"]["default"]
+        for actor in ("ignite-ai-infra-automation", "ignite-ai-infra-automation[bot]"):
+            assert is_allowed_bot(actor, default), f"{actor} must be admitted"
+        assert is_allowed_bot("pilot-cd-dispatcher[bot]", default)
+
     def test_default_does_not_admit_everything(self) -> None:
         doc = _load_yaml(ACTION_YML)
         default = doc["inputs"]["allowed_bots"]["default"]

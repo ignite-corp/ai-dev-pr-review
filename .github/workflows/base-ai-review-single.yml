@@ -671,7 +671,7 @@ jobs:
           # guarded against drift by
           # test_single_yml_fallback_matches_composite_default in
           # test_claude_review_allowed_bots.py.
-          allowed_bots: ${{ vars.CLAUDE_ALLOWED_BOTS || 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]' }}
+          allowed_bots: ${{ vars.CLAUDE_ALLOWED_BOTS || 'dependabot[bot],pilot-cd-dispatcher[bot],ignite-ai-infra-automation[bot],github-actions[bot],ignite-actions-token-app[bot]' }}
           prompt: ${{ env.CLAUDE_PROMPT }}
 
       # The net for a clear that never ran: an earlier step in this job

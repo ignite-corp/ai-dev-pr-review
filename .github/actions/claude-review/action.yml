@@ -42,7 +42,7 @@ inputs:
       is not merged with it, so overriding to add one bot means passing the
       complete list, not just the addition.
     required: false
-    default: 'dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],ignite-actions-token-app[bot]'
+    default: 'dependabot[bot],pilot-cd-dispatcher[bot],ignite-ai-infra-automation[bot],github-actions[bot],ignite-actions-token-app[bot]'
   api_timeout_ms:
     description: >-
       Timeout in milliseconds applied to the Claude CLI's API request cap
@@ -215,7 +215,9 @@ runs:
         # Claude reviewer: "Workflow initiated by non-human actor: dependabot
         # (type: Bot)" (AT-1837). Four bots author PRs in this fleet and all
         # four hit the guard: dependabot, pilot-cd-dispatcher (onboard /
-        # pages-callback scaffolds in ai-dev-infra-common), github-actions
+        # pages-callback scaffolds in ai-dev-infra-common; the same App,
+        # 4179802, is ignite-ai-infra-automation since its 2026-11-25
+        # rename, and both slugs are listed), github-actions
         # (age/KMS commits in ai-tf-t2a) and ignite-actions-token-app (PRs
         # opened with a minted App installation token; AT-2272 -- the actor
         # this token authenticates as resolves to account type Bot the same

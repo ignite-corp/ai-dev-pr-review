@@ -66,7 +66,8 @@ _NET_STEP = "Emit Claude error verdict (no verdict file)"
 _RUN_STEP = "Run Claude review"
 _MARKER_NAME = "claude-review-actor-check"
 _DEFAULT_BOTS = (
-    "dependabot[bot],pilot-cd-dispatcher[bot],github-actions[bot],"
+    "dependabot[bot],pilot-cd-dispatcher[bot],ignite-ai-infra-automation[bot],"
+    "github-actions[bot],"
     "ignite-actions-token-app[bot]"
 )
 _KIND = "action_invocation_failed"
