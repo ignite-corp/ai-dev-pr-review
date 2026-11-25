@@ -9,8 +9,8 @@
 #   - NOT EXERCISED: the Python/bash helper scripts. prepare/single/aggregate
 #     (base-ai-review-prepare.yml, base-ai-review-single.yml,
 #     base-ai-review-aggregate.yml) check out ignite-corp/ai-dev-pr-review
-#     pinned to release tags (single: v1.28.1; prepare: v1.28.0;
-#     aggregate: v1.29.0),
+#     pinned to release tags (single: v1.30.0; prepare: v1.28.0;
+#     aggregate: v1.30.0),
 #     and no input exists to override those refs. Script changes only take
 #     effect on self-review after they ship in a release tag.
 #
