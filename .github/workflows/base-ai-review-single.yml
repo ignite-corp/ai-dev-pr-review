@@ -836,8 +836,9 @@ jobs:
       # 'Publish trusted Copilot failure code' publishes Copilot's: one
       # allowlisted value, read only from the composite's step output, never
       # from the verdict artifact. The STEP_OUTCOME check is defence in
-      # depth: a cut stops the composite before its failure-code step, and
-      # the caller's step can report success on a cut (run 38819148513).
+      # depth -- the caller's step can report success on a cut (run
+      # 38819148513). What keeps a cut retry from an exemption is the
+      # composite: a cut skips api-limit, so API_LIMITED stays empty.
       - name: Publish trusted Claude failure code
         if: inputs.reviewer == 'claude' && always()
         id: claude-failure

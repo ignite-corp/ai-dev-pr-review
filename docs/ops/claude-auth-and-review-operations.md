@@ -74,12 +74,15 @@ quota chain inside the run, subscription, then API key, then exclusion:
 - The retry runs inside the caller's one Claude step cap
   (`claude-timeout-minutes`, default 10). The OAuth limit failure measured
   on #1237 took 455 ms, so the retry keeps nearly the whole cap. A retry cut
-  by the cap is a failure, never an exemption: the cut stops the composite
-  before `api-limit` and `failure-code` run, so no code is written, and a
-  retry that ends in failure is excluded only on a measured API limit, of
-  which there are none. The publish step's `STEP_OUTCOME` check is defence in
-  depth, not the safeguard: the caller's step can report success on a cut
-  (run 38819148513).
+  by the cap is a failure, never an exemption: `api-limit` carries no status
+  function, so a cut skips it and `API_LIMITED` stays empty; a retry ran only
+  because a key exists, so `OAUTH_LIMITED` alone never yields the code; and
+  a retry that ends in failure is excluded only on a measured API limit, of
+  which there are none. Whether the `always()` `failure-code` step itself
+  runs after a cut has not been measured, and nothing here depends on it.
+  The publish step's `STEP_OUTCOME` check is defence in depth, not the
+  safeguard: the caller's step can report success on a cut (run
+  38819148513).
 
 ## Usage-limit auto switch (org vars)
 
